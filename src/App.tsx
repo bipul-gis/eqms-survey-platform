@@ -40,6 +40,15 @@ const AppContent: React.FC = () => {
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const visibleFeatures = features;
 
+  const isImportedLandmarkPoint = (f: GeoFeature) => {
+    if (f.type !== 'point') return false;
+    const src = String(f.attributes?.__source || '');
+    return src === 'ccc_landmark' || src === 'ccc_landmark_geojson' || src === 'ccc_landmark_import';
+  };
+
+  const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
+  const otherFeaturesCount = Math.max(0, visibleFeatures.length - importedLandmarkFeatures.length);
+
   const distanceMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
     const toRad = (d: number) => (d * Math.PI) / 180;
     const R = 6371000; // earth radius meters
@@ -904,18 +913,26 @@ const AppContent: React.FC = () => {
               <div className="space-y-3">
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Verified</span>
-                  <span className="font-bold text-green-600">{visibleFeatures.filter(f => f.status === 'verified').length}</span>
+                  <span className="font-bold text-green-600">{importedLandmarkFeatures.filter(f => f.status === 'verified').length}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Pending</span>
-                  <span className="font-bold text-amber-600">{visibleFeatures.filter(f => f.status === 'pending').length}</span>
+                  <span className="font-bold text-amber-600">{importedLandmarkFeatures.filter(f => f.status === 'pending').length}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Rejected</span>
-                  <span className="font-bold text-red-600">{visibleFeatures.filter(f => f.status === 'rejected').length}</span>
+                  <span className="font-bold text-red-600">{importedLandmarkFeatures.filter(f => f.status === 'rejected').length}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
-                  <span className="text-slate-500">Total</span>
+                  <span className="text-slate-500">Landmarks (imported)</span>
+                  <span className="font-bold">{importedLandmarkFeatures.length}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-500">Other features</span>
+                  <span className="font-bold text-slate-700">{otherFeaturesCount}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs border-t border-slate-100 pt-2">
+                  <span className="text-slate-500">Total (all)</span>
                   <span className="font-bold">{visibleFeatures.length}</span>
                 </div>
                 <button 
