@@ -10,7 +10,7 @@ import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useFirestoreCollection } from './hooks/useFirestoreCollection';
 import { GeoFeature, WardBoundary, Questionnaire } from './types';
 import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle } from 'lucide-react';
-import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, deleteField } from 'firebase/firestore';
+import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
 import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
@@ -169,12 +169,9 @@ const AppContent: React.FC = () => {
             __source: 'ccc_landmark'
           },
           status: 'pending',
-          remarks: deleteField(),
-          collectorLocation: deleteField(),
           createdBy: 'ccc_landmark_import',
-          createdByUid: deleteField(),
           updatedBy: user?.email || 'ccc_landmark_import',
-          updatedByUid: user?.uid || deleteField(),
+          updatedByUid: user?.uid || null,
           updatedAt: serverTimestamp()
         });
         ops += 1;
