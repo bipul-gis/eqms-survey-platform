@@ -10,9 +10,10 @@ import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useFirestoreCollection } from './hooks/useFirestoreCollection';
 import { GeoFeature, WardBoundary, Questionnaire } from './types';
 import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle } from 'lucide-react';
-import { collection, addDoc, serverTimestamp, writeBatch, doc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, documentId } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
+import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
 
 const AppContent: React.FC = () => {
   const { user, userProfile, loading: authLoading, logout } = useAuth();
@@ -46,7 +47,8 @@ const AppContent: React.FC = () => {
   const importLandmarkGeoJson = async () => {
     if (!isAdmin) return;
     try {
-      const resp = await fetch('/src/data/CCC_all_Landmark.geojson');
+      // Use Vite asset URL so this works in production (e.g., Vercel) and local dev.
+      const resp = await fetch(landmarkGeoJsonUrl);
       if (!resp.ok) {
         throw new Error(`GeoJSON fetch failed (${resp.status})`);
       }
@@ -60,40 +62,102 @@ const AppContent: React.FC = () => {
         return;
       }
 
-      const chunkSize = 400;
-      for (let i = 0; i < points.length; i += chunkSize) {
-        const chunk = points.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
+      const pointRecords = points.map((f: any, idx: number) => ({
+        id: `landmark_${f?.properties?.FID ?? f?.id ?? `${idx}`}`,
+        feature: f
+      }));
 
-        chunk.forEach((f: any, idx: number) => {
-          const fid = f?.properties?.FID ?? f?.id ?? `${i + idx}`;
-          const ref = doc(db, 'features', `landmark_${fid}`);
-          const coords = f?.geometry?.coordinates || [0, 0];
-          const attrs = f?.properties || {};
+      // Keep original imported data intact: never overwrite existing landmark docs on re-import.
+      let importedCount = 0;
+      let skippedCount = 0;
+      const readChunkSize = 30; // Firestore "in" query limit
+      const writeChunkSize = 400;
 
-          batch.set(ref, {
-            type: 'point',
-            geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
-            attributes: {
-              ...attrs,
-              __source: 'ccc_landmark'
-            },
-            // Default imported landmarks to pending for both admin/enumerator workflows.
-            status: 'pending',
-            createdBy: 'ccc_landmark_import',
-            updatedBy: user?.email || 'admin',
-            updatedAt: serverTimestamp()
-          }, { merge: true });
-        });
+      for (let i = 0; i < pointRecords.length; i += readChunkSize) {
+        const readChunk = pointRecords.slice(i, i + readChunkSize);
+        const ids = readChunk.map((r) => r.id);
+        const existingSnap = await getDocs(
+          query(collection(db, 'features'), where(documentId(), 'in', ids))
+        );
+        const existingIds = new Set(existingSnap.docs.map((d) => d.id));
+        const newRecords = readChunk.filter((r) => !existingIds.has(r.id));
+        skippedCount += readChunk.length - newRecords.length;
 
-        await batch.commit();
+        for (let j = 0; j < newRecords.length; j += writeChunkSize) {
+          const writeChunk = newRecords.slice(j, j + writeChunkSize);
+          if (writeChunk.length === 0) continue;
+          const batch = writeBatch(db);
+          writeChunk.forEach(({ id, feature }) => {
+            const ref = doc(db, 'features', id);
+            const coords = feature?.geometry?.coordinates || [0, 0];
+            const attrs = feature?.properties || {};
+            batch.set(ref, {
+              type: 'point',
+              geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
+              attributes: {
+                ...attrs,
+                __source: 'ccc_landmark'
+              },
+              status: 'pending',
+              createdBy: 'ccc_landmark_import',
+              updatedBy: 'ccc_landmark_import',
+              updatedAt: serverTimestamp()
+            });
+          });
+          await batch.commit();
+          importedCount += writeChunk.length;
+        }
       }
 
-      alert(`Imported/updated ${points.length} landmark points from GeoJSON.`);
+      alert(`Import complete. New: ${importedCount}, skipped existing: ${skippedCount}.`);
     } catch (e) {
       console.error(e);
       alert('Landmark GeoJSON import failed: ' + e);
     }
+  };
+
+  const downloadChangedLandmarkJson = () => {
+    if (!isAdmin) return;
+
+    const changedFeatures = visibleFeatures.filter((feature) => {
+      const source = String(feature.attributes?.__source || '');
+      const isLandmarkSource = source.includes('ccc_landmark');
+      if (!isLandmarkSource) return false;
+
+      // "Changed/updated" means it is no longer pristine imported state.
+      return (
+        feature.updatedBy !== 'ccc_landmark_import' ||
+        feature.status !== 'pending' ||
+        Boolean(feature.remarks)
+      );
+    });
+
+    const exportPayload = {
+      exportedAt: new Date().toISOString(),
+      totalChanged: changedFeatures.length,
+      features: changedFeatures.map((feature) => ({
+        id: feature.id,
+        type: feature.type,
+        geometry: feature.geometry,
+        status: feature.status,
+        remarks: feature.remarks ?? null,
+        createdBy: feature.createdBy,
+        updatedBy: feature.updatedBy,
+        updatedAt: feature.updatedAt,
+        collectorLocation: feature.collectorLocation ?? null,
+        attributes: feature.attributes
+      }))
+    };
+
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `changed_landmarks_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   };
 
   const handleMapClick = async (lat: number, lng: number) => {
@@ -597,6 +661,12 @@ const AppContent: React.FC = () => {
                   className="w-full mt-1 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-[10px] font-bold uppercase transition-colors"
                 >
                   Import Landmark GeoJSON
+                </button>
+                <button
+                  onClick={downloadChangedLandmarkJson}
+                  className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition-colors"
+                >
+                  Download Changed JSON
                 </button>
               </div>
             </div>
