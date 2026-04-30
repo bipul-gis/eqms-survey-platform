@@ -473,19 +473,18 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                       <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
                         {key} <span className="text-red-500">*</span>
                       </p>
-                      <input
-                        type="text"
+                      <select
                         value={stringValue}
                         onChange={(e) => setAttributeValue('Ward_Name', e.target.value)}
-                        list="ward-name-options"
-                        placeholder="Type ward and select"
                         className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                      />
-                      <datalist id="ward-name-options">
+                      >
+                        <option value="">Select Ward</option>
                         {mergedWardOptions.map((option) => (
-                          <option key={option} value={option} />
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
                         ))}
-                      </datalist>
+                      </select>
                     </div>
                   </div>
                 );

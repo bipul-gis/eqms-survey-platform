@@ -65,13 +65,8 @@ const landmarkAttributesForTable = (attrs: Record<string, any>) => {
     .map((k) => [k, normalized[k]] as [string, any])
     .filter(([, v]) => String(v ?? '').trim() !== '');
 
-  if (ordered.length >= 2) return ordered.slice(0, 2);
-
-  const extras = Object.entries(attrs || {})
-    .filter(([k, v]) => !k.startsWith('__') && !LANDMARK_TABLE_ATTRIBUTE_ORDER.includes(k as any) && String(v ?? '').trim() !== '')
-    .sort((a, b) => a[0].localeCompare(b[0]));
-
-  return [...ordered, ...extras].slice(0, 2);
+  // Table list should follow landmark JSON schema only (no extra/custom keys).
+  return ordered.slice(0, 2);
 };
 
 const toTitleCaseWords = (input: string): string =>
@@ -131,20 +126,64 @@ const AppContent: React.FC = () => {
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [landmarkWardOptions, setLandmarkWardOptions] = useState<string[]>([]);
   const [landmarkZoneOptions, setLandmarkZoneOptions] = useState<string[]>([]);
+  const [selfMergedAssignedWards, setSelfMergedAssignedWards] = useState<string[]>([]);
+  const [tableSearchQuery, setTableSearchQuery] = useState('');
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
+
+  useEffect(() => {
+    if (
+      isAdmin ||
+      userProfile?.role !== 'enumerator' ||
+      userProfile?.status !== 'approved' ||
+      !userProfile?.email
+    ) {
+      setSelfMergedAssignedWards([]);
+      return;
+    }
+
+    const myEmailKey = userProfile.email.trim().toLowerCase();
+    const q = query(collection(db, 'users'), where('status', '==', 'approved'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const merged = new Set<string>();
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as UserProfile;
+          if (d.role !== 'enumerator') return;
+          if ((d.email || '').trim().toLowerCase() !== myEmailKey) return;
+          for (const w of assignedWardsFromUserProfile(d)) {
+            const v = String(w).trim();
+            if (v) merged.add(v);
+          }
+        });
+        setSelfMergedAssignedWards([...merged]);
+      },
+      () => {
+        setSelfMergedAssignedWards([]);
+      }
+    );
+    return () => unsub();
+  }, [isAdmin, userProfile?.role, userProfile?.status, userProfile?.email]);
 
   const assignedWardsForFilter = useMemo(() => {
     if (isAdmin) return [] as string[];
     if (userProfile?.role !== 'enumerator' || userProfile?.status !== 'approved') return [] as string[];
-    const list = userProfile.assignedWardNames;
+    const list = selfMergedAssignedWards.length > 0 ? selfMergedAssignedWards : userProfile.assignedWardNames;
     if (Array.isArray(list) && list.length > 0) {
       return [...new Set(list.map((w) => String(w).trim()).filter(Boolean))];
     }
     const legacy = userProfile.assignedWardName;
     if (typeof legacy === 'string' && legacy.trim()) return [legacy.trim()];
     return [] as string[];
-  }, [isAdmin, userProfile?.role, userProfile?.status, userProfile?.assignedWardNames, userProfile?.assignedWardName]);
+  }, [
+    isAdmin,
+    selfMergedAssignedWards,
+    userProfile?.role,
+    userProfile?.status,
+    userProfile?.assignedWardNames,
+    userProfile?.assignedWardName
+  ]);
 
   const visibleFeatures = useMemo(() => {
     if (assignedWardsForFilter.length === 0) return features;
@@ -186,6 +225,10 @@ const AppContent: React.FC = () => {
   }, []);
 
   const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
+  const wardOptionsForEditor = useMemo(() => {
+    if (isAdmin) return landmarkWardOptions;
+    return assignedWardsForFilter;
+  }, [isAdmin, landmarkWardOptions, assignedWardsForFilter]);
 
   const enumeratorTaskStats = useMemo(() => {
     const lm = visibleFeatures.filter(isImportedLandmarkPoint);
@@ -361,6 +404,43 @@ const AppContent: React.FC = () => {
     });
     return rows;
   }, [visibleFeatures]);
+
+  const filteredGroupedWardRows = useMemo(() => {
+    const q = tableSearchQuery.trim().toLowerCase();
+    if (!q) return groupedWardRows;
+
+    const matchesFeature = (f: GeoFeature) => {
+      const attrs = f.attributes || {};
+      const attrText = Object.entries(attrs)
+        .filter(([k]) => !k.startsWith('__'))
+        .map(([k, v]) => `${k} ${String(v ?? '')}`)
+        .join(' ');
+      const text = [
+        f.id,
+        f.type,
+        f.status,
+        String(attrs.name ?? ''),
+        String(attrs.FID ?? ''),
+        String(attrs.Category ?? ''),
+        String(attrs.Type ?? ''),
+        String(attrs.Ownership ?? ''),
+        String(attrs.Ward_Name ?? attrs.WARDNAME ?? attrs.WardName ?? ''),
+        String(attrs.Zone ?? ''),
+        attrText
+      ]
+        .join(' ')
+        .toLowerCase();
+      return text.includes(q);
+    };
+
+    return groupedWardRows
+      .map((row) => {
+        const wardHit = row.wardLabel.toLowerCase().includes(q);
+        const nextFeatures = wardHit ? row.features : row.features.filter(matchesFeature);
+        return { ...row, features: nextFeatures };
+      })
+      .filter((row) => row.features.length > 0);
+  }, [groupedWardRows, tableSearchQuery]);
 
   const wardOwnerByKey = useMemo(() => {
     const m = new Map<string, string>();
@@ -1312,6 +1392,15 @@ const AppContent: React.FC = () => {
                   <List size={24} className="text-blue-600" />
                   Attribute Data Table (Ward-wise)
                 </h2>
+                <div className="bg-white rounded-xl border border-slate-200 p-3">
+                  <input
+                    type="text"
+                    value={tableSearchQuery}
+                    onChange={(e) => setTableSearchQuery(e.target.value)}
+                    placeholder="Search by ward, name, FID, category, type, status..."
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  />
+                </div>
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                   <table className="w-full text-left border-collapse">
                     <thead className="bg-slate-50 border-b border-slate-100">
@@ -1323,7 +1412,7 @@ const AppContent: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {groupedWardRows.map((row) => {
+                      {filteredGroupedWardRows.map((row) => {
                         const expanded = expandedWardKeys.includes(row.wardKey);
                         return (
                           <React.Fragment key={row.wardKey}>
@@ -1337,8 +1426,12 @@ const AppContent: React.FC = () => {
                                   <span className="inline-flex items-center justify-center h-5 w-5 rounded border border-slate-300 bg-white text-slate-700 text-xs">
                                     {expanded ? '−' : '+'}
                                   </span>
-                                  <span>{row.wardLabel}</span>
-                                  <span className="text-[10px] text-slate-500">({row.features.length})</span>
+                                  <span>
+                                    Ward {parseWardNumber(row.wardLabel) ?? row.wardLabel}{' '}
+                                    <span className="text-[10px] text-slate-500">
+                                      (Total Landmark: {row.features.length})
+                                    </span>
+                                  </span>
                                 </button>
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-600">
@@ -1457,7 +1550,7 @@ const AppContent: React.FC = () => {
             <FeatureEditor 
               feature={selectedFeature} 
               allFeatures={features}
-              wardOptions={landmarkWardOptions}
+              wardOptions={wardOptionsForEditor}
               zoneOptions={landmarkZoneOptions}
               onClose={() => {
                 setSelectedFeature(null);
