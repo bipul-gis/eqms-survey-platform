@@ -111,6 +111,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }
   };
 
+  const normalizeLandmarkFid = (value: unknown): number | undefined => {
+    if (value === null || value === undefined || value === '') return undefined;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const n = Number(String(value).trim());
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  const fidsEqual = (a: unknown, b: unknown) => {
+    if (a === b) return true;
+    const na = normalizeLandmarkFid(a);
+    const nb = normalizeLandmarkFid(b);
+    if (na === undefined || nb === undefined) return false;
+    return na === nb;
+  };
+
+  const findMatchingFirestorePoint = (p: { lat: number; lng: number; properties: Record<string, any> }) => {
+    const fid = normalizeLandmarkFid(p.properties?.FID);
+    return features.find((f) => {
+      if (f.type !== 'point') return false;
+      if (fid !== undefined) return fidsEqual(f.attributes?.FID, fid);
+      if (!Array.isArray(f.geometry?.coordinates)) return false;
+      return (
+        Math.abs((f.geometry.coordinates[1] ?? 0) - p.lat) < 0.0000001 &&
+        Math.abs((f.geometry.coordinates[0] ?? 0) - p.lng) < 0.0000001
+      );
+    });
+  };
+
   const wardStyle = {
     color: '#ef4444', // Red boundary
     weight: 2,
@@ -178,7 +206,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
                 radius={isSelected ? 10 : 7}
                 pathOptions={{ 
-                  color: isSelected ? '#3b82f6' : color, 
+                  color: color,
                   fillColor: color, 
                   fillOpacity: 0.9,
                   weight: isSelected ? 3 : 2
@@ -253,17 +281,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             always interact with the live/editable record after first edit/create. */}
         {showLandmarks && landmarkPoints
           .filter((p) => {
-            const fid = p.properties?.FID;
-            const hasFirestoreMatch = features.some((f) => {
-              if (f.type !== 'point') return false;
-              if (fid !== undefined && f.attributes?.FID === fid) return true;
-              if (!Array.isArray(f.geometry?.coordinates)) return false;
-              return (
-                Math.abs((f.geometry.coordinates[1] ?? 0) - p.lat) < 0.0000001 &&
-                Math.abs((f.geometry.coordinates[0] ?? 0) - p.lng) < 0.0000001
-              );
-            });
-            return !hasFirestoreMatch;
+            // If a Firestore record exists for this landmark, render ONLY the Firestore marker
+            // (same status symbology) to avoid double-markers.
+            return !findMatchingFirestorePoint(p);
           })
           .map((p, idx) => (
           <CircleMarker
@@ -271,10 +291,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             center={[p.lat, p.lng]}
             radius={5}
             pathOptions={{
-              color: '#1d4ed8',
-              fillColor: '#3b82f6',
-              fillOpacity: 0.85,
-              weight: 1.5
+              color: getStatusColor('pending'),
+              fillColor: getStatusColor('pending'),
+              fillOpacity: 0.9,
+              weight: 2
             }}
           >
             <Popup>
