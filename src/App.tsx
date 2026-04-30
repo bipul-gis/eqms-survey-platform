@@ -626,6 +626,7 @@ const AppContent: React.FC = () => {
       if (v === null || v === undefined) return '';
       return JSON.stringify(v);
     };
+    const toNonEmptyString = (v: unknown) => String(v ?? '').trim();
 
     const exportPayload = {
       type: 'FeatureCollection',
@@ -651,8 +652,8 @@ const AppContent: React.FC = () => {
               ChangeRemarks: feature.remarks ?? '',
               MoveRemarks: feature.moveRemarks ?? '',
               NewFeatureRemarks: feature.newFeatureRemarks ?? '',
-              ChangeBy: feature.updatedBy ?? '',
-              ChangeAt: feature.updatedAt ?? '',
+              ChangeBy: toNonEmptyString(feature.attributes?.ChangeBy),
+              ChangeAt: toNonEmptyString(feature.attributes?.ChangeAt),
               GPS_Lat: feature.collectorLocation?.lat ?? '',
               GPS_Lng: feature.collectorLocation?.lng ?? '',
               GPS_Acc: feature.collectorLocation?.accuracy ?? ''
@@ -695,6 +696,104 @@ const AppContent: React.FC = () => {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
       setImportNotice({ type: 'error', message: `Failed to generate SHP ZIP download: ${message}` });
+    }
+  };
+
+  const downloadFullLandmarkShp = async () => {
+    if (!isAdmin) return;
+    setImportNotice(null);
+
+    const toNumber = (v: unknown): number | null => {
+      const n = typeof v === 'number' ? v : Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const toPrimitive = (v: unknown): string | number | boolean => {
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+      if (v === null || v === undefined) return '';
+      return JSON.stringify(v);
+    };
+    const toNonEmptyString = (v: unknown) => String(v ?? '').trim();
+
+    const allLandmarkFeatures = visibleFeatures.filter((feature) => {
+      if (feature.geometry?.type !== 'Point') return false;
+      const source = String(feature.attributes?.__source || '');
+      return source.includes('landmark');
+    });
+
+    if (allLandmarkFeatures.length === 0) {
+      setImportNotice({ type: 'error', message: 'No landmark point features available for full SHP download.' });
+      return;
+    }
+
+    const exportPayload = {
+      type: 'FeatureCollection',
+      name: 'all_landmarks',
+      features: allLandmarkFeatures
+        .map((feature) => {
+          const coords = Array.isArray(feature.geometry?.coordinates) ? feature.geometry.coordinates : [];
+          const lng = toNumber(coords[0]);
+          const lat = toNumber(coords[1]);
+          if (lng === null || lat === null) return null;
+
+          const sanitizedAttributes = Object.fromEntries(
+            Object.entries(feature.attributes || {}).map(([k, v]) => [k, toPrimitive(v)])
+          );
+
+          return {
+            type: 'Feature',
+            id: feature.attributes?.FID ?? feature.id,
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            properties: {
+              ...sanitizedAttributes,
+              ChangeStatus: feature.status,
+              ChangeRemarks: feature.remarks ?? '',
+              MoveRemarks: feature.moveRemarks ?? '',
+              NewFeatureRemarks: feature.newFeatureRemarks ?? '',
+              ChangeBy: toNonEmptyString(feature.attributes?.ChangeBy),
+              ChangeAt: toNonEmptyString(feature.attributes?.ChangeAt),
+              GPS_Lat: feature.collectorLocation?.lat ?? '',
+              GPS_Lng: feature.collectorLocation?.lng ?? '',
+              GPS_Acc: feature.collectorLocation?.accuracy ?? ''
+            }
+          };
+        })
+        .filter(Boolean)
+    };
+
+    // EPSG:4326 WGS84 projection for shapefile .prj
+    const wgs84Prj =
+      'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",' +
+      'SPHEROID["WGS_1984",6378137.0,298.257223563]],' +
+      'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]';
+
+    try {
+      const zipResult = await shpwrite.zip(exportPayload as any, {
+        folder: 'all_landmarks',
+        types: { point: 'all_landmarks' },
+        prj: wgs84Prj,
+        outputType: 'blob',
+        compression: 'STORE'
+      });
+
+      const blob = zipResult instanceof Blob
+        ? zipResult
+        : new Blob([zipResult as BlobPart], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `all_landmarks_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+      setImportNotice({
+        type: 'success',
+        message: `Full SHP ready. Exported ${(exportPayload.features as any[]).length} landmark point feature(s) as ZIP.`
+      });
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setImportNotice({ type: 'error', message: `Failed to generate full SHP ZIP download: ${message}` });
     }
   };
 
@@ -1323,6 +1422,7 @@ const AppContent: React.FC = () => {
           <div className="absolute top-0 right-0 h-full z-[1002] flex animate-in slide-in-from-right duration-300">
             <FeatureEditor 
               feature={selectedFeature} 
+              allFeatures={features}
               onClose={() => {
                 setSelectedFeature(null);
                 setMovingFeature(null);
@@ -1441,6 +1541,13 @@ const AppContent: React.FC = () => {
                   className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   Download Changed SHP
+                </button>
+                <button
+                  onClick={downloadFullLandmarkShp}
+                  disabled={isImportingLandmarks}
+                  className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  Download Full SHP
                 </button>
                 {importNotice && (
                   <div

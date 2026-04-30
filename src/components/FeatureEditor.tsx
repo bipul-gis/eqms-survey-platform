@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { GeoFeature, FeatureStatus } from '../types';
 import { X, Save, MapPin, User, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { doc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
@@ -9,6 +9,30 @@ import { useGeoLocation } from './GeoLocationProvider';
 // Match the attribute order in MapComponent popup
 const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
 const READ_ONLY_ATTRIBUTES = new Set(['FID', '_source']); // Fields that cannot be edited
+
+const CATEGORY_OPTIONS = [
+  'Commercial',
+  'Cultural Site',
+  'Educational',
+  'Health Facilities',
+  'Public Institutional Building',
+  'Recreational Area',
+  'Religious Place',
+  'Transport'
+] as const;
+
+const CATEGORY_TYPE_OPTIONS: Record<string, string[]> = {
+  Commercial: ['Shopping Mall', 'Supermarket', 'Market'],
+  'Cultural Site': ['Museum', 'Monument'],
+  Educational: ['School', 'College', 'University'],
+  'Health Facilities': ['Dentist', 'Hospital', 'Clinic', 'Pharmacy'],
+  'Public Institutional Building': ['Communications Tower', 'Courthouse', 'Ward Councilor Office', 'Military Training Academy'],
+  'Recreational Area': ['Park', 'Stadium'],
+  'Religious Place': ['Buddhist Temple', 'Church', 'Mosque', 'Madrasa', 'Temple'],
+  Transport: ['Air Port', 'Rail station']
+};
+
+const OWNERSHIP_OPTIONS = ['CCC', 'Government', 'Informal', 'NGO/Institutional', 'Private'] as const;
 
 const getOrderedAttributes = (attrs: Record<string, any>): Array<[string, any]> => {
   const normalized: Record<string, any> = {
@@ -32,6 +56,7 @@ const getOrderedAttributes = (attrs: Record<string, any>): Array<[string, any]> 
 
 interface FeatureEditorProps {
   feature: GeoFeature;
+  allFeatures?: GeoFeature[];
   onClose: () => void;
   isAdmin: boolean;
   isNewFeature?: boolean;
@@ -40,6 +65,7 @@ interface FeatureEditorProps {
 
 export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   feature,
+  allFeatures = [],
   onClose,
   isAdmin,
   isNewFeature = false,
@@ -52,18 +78,90 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [rejectionRemarks, setRejectionRemarks] = useState('');
   const [isDirty, setIsDirty] = useState(false);
+  const [customType, setCustomType] = useState('');
+  const [customOwnership, setCustomOwnership] = useState('');
+  const [typeOtherMode, setTypeOtherMode] = useState(false);
+  const [ownershipOtherMode, setOwnershipOtherMode] = useState(false);
+
+  const dynamicTypeOptionsByCategory = useMemo(() => {
+    const byCategory: Record<string, Set<string>> = {};
+    for (const category of CATEGORY_OPTIONS) {
+      byCategory[category] = new Set(CATEGORY_TYPE_OPTIONS[category] || []);
+    }
+    for (const f of allFeatures) {
+      const c = String(f.attributes?.Category ?? '').trim();
+      const t = String(f.attributes?.Type ?? '').trim();
+      if (!c || !t) continue;
+      if (!byCategory[c]) byCategory[c] = new Set<string>();
+      byCategory[c].add(t);
+    }
+    const out: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(byCategory)) out[k] = Array.from(v);
+    return out;
+  }, [allFeatures]);
+
+  const dynamicOwnershipOptions = useMemo(() => {
+    const extra = allFeatures
+      .filter((f) => String(f.attributes?.Category ?? '').trim() === 'Health Facilities')
+      .map((f) => String(f.attributes?.Ownership ?? '').trim())
+      .filter(Boolean);
+    return [...new Set([...OWNERSHIP_OPTIONS, ...extra])];
+  }, [allFeatures]);
 
   useEffect(() => {
     setAttributes(feature.attributes);
     setStatus(feature.status);
     setIsDirty(false);
     setRejectionRemarks((feature as any).remarks || '');
-  }, [feature]);
+
+    const category = String(feature.attributes?.Category ?? '').trim();
+    const type = String(feature.attributes?.Type ?? '').trim();
+    const ownership = String(feature.attributes?.Ownership ?? '').trim();
+    const knownTypes = dynamicTypeOptionsByCategory[category] || [];
+
+    const isKnownCategory = CATEGORY_OPTIONS.includes(category as any);
+    if (category && !isKnownCategory) {
+      setAttributeValue('Category', '');
+    }
+    setTypeOtherMode(Boolean(type) && !knownTypes.includes(type));
+    setOwnershipOtherMode(Boolean(ownership) && !dynamicOwnershipOptions.includes(ownership));
+    setCustomType(type && !knownTypes.includes(type) ? type : '');
+    setCustomOwnership(ownership && !dynamicOwnershipOptions.includes(ownership) ? ownership : '');
+  }, [feature, dynamicOwnershipOptions, dynamicTypeOptionsByCategory]);
+
+  const setAttributeValue = (key: string, value: string) => {
+    setAttributes((prev) => ({ ...prev, [key]: value }));
+    setIsDirty(true);
+  };
+
+  const selectedCategory = String(attributes?.Category ?? '').trim();
+  const typeOptions = dynamicTypeOptionsByCategory[selectedCategory] || [];
+
+  const validateOtherInputs = () => {
+    if (typeOtherMode && !String(attributes?.Type ?? '').trim()) {
+      alert('Please write a custom Type value for "Other".');
+      return false;
+    }
+    if (selectedCategory === 'Health Facilities' && ownershipOtherMode && !String(attributes?.Ownership ?? '').trim()) {
+      alert('Please write a custom Ownership value for "Other".');
+      return false;
+    }
+    return true;
+  };
 
   const handleSave = async () => {
     if (!user) return;
+    if (!validateOtherInputs()) return;
     setIsSaving(true);
     try {
+      const attributesToSave =
+        isDirty && !isNewFeature
+          ? {
+              ...attributes,
+              ChangeBy: user.email || '',
+              ChangeAt: new Date().toISOString()
+            }
+          : attributes;
       const nextStatus: FeatureStatus = isNewFeature
         ? 'pending'
         : (isDirty ? 'verified' : status);
@@ -71,11 +169,11 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         if (!onCreateFeature) {
           throw new Error('Create feature handler is missing.');
         }
-        await onCreateFeature({ attributes, status: nextStatus });
+        await onCreateFeature({ attributes: attributesToSave, status: nextStatus });
       } else {
         const featureRef = doc(db, 'features', feature.id);
         await updateDoc(featureRef, {
-          attributes,
+          attributes: attributesToSave,
           status: nextStatus,
           updatedBy: user.email,
           updatedByUid: user.uid,
@@ -191,6 +289,136 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           <div className="space-y-3">
             {getOrderedAttributes(attributes).map(([key, value]) => {
               const isReadOnly = READ_ONLY_ATTRIBUTES.has(key);
+              const stringValue = String(value ?? '');
+
+              if (key === 'Category') {
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
+                      <select
+                        value={stringValue}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setTypeOtherMode(false);
+                          setOwnershipOtherMode(false);
+                          setCustomType('');
+                          setCustomOwnership('');
+                          setAttributeValue('Category', next);
+                          setAttributeValue('Type', '');
+                          setAttributeValue('Ownership', '');
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      >
+                        <option value="">Select Category</option>
+                        {CATEGORY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (key === 'Type') {
+                const isOther = stringValue && !typeOptions.includes(stringValue);
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
+                      <select
+                        value={typeOtherMode || isOther ? 'Other' : stringValue}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          if (next === 'Other') {
+                            setTypeOtherMode(true);
+                            const nextCustom = stringValue && !typeOptions.includes(stringValue) ? stringValue : '';
+                            setCustomType(nextCustom);
+                            setAttributeValue('Type', nextCustom);
+                            return;
+                          }
+                          setTypeOtherMode(false);
+                          setCustomType('');
+                          setAttributeValue('Type', next);
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      >
+                        <option value="">{typeOptions.length > 0 ? 'Select Type' : 'Select Category first'}</option>
+                        {typeOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                        <option value="Other">Other</option>
+                      </select>
+                      {(typeOtherMode || isOther || customType) && (
+                        <input
+                          type="text"
+                          value={stringValue}
+                          onChange={(e) => {
+                            setCustomType(e.target.value);
+                            setAttributeValue('Type', e.target.value);
+                          }}
+                          placeholder="Write custom type"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+
+              if (key === 'Ownership') {
+                if (selectedCategory !== 'Health Facilities') return null;
+                const isOther = stringValue && !dynamicOwnershipOptions.includes(stringValue);
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
+                      <select
+                        value={ownershipOtherMode || isOther ? 'Other' : stringValue}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          if (next === 'Other') {
+                            setOwnershipOtherMode(true);
+                            const nextCustom = stringValue && !dynamicOwnershipOptions.includes(stringValue) ? stringValue : '';
+                            setCustomOwnership(nextCustom);
+                            setAttributeValue('Ownership', nextCustom);
+                            return;
+                          }
+                          setOwnershipOtherMode(false);
+                          setCustomOwnership('');
+                          setAttributeValue('Ownership', next);
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      >
+                        <option value="">Select Ownership</option>
+                        {dynamicOwnershipOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                        <option value="Other">Other</option>
+                      </select>
+                      {(ownershipOtherMode || isOther || customOwnership) && (
+                        <input
+                          type="text"
+                          value={stringValue}
+                          onChange={(e) => {
+                            setCustomOwnership(e.target.value);
+                            setAttributeValue('Ownership', e.target.value);
+                          }}
+                          placeholder="Write custom ownership"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+
               return (
                 <div key={key} className="flex gap-2 items-center">
                   <div className="flex-1">
@@ -200,10 +428,9 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                     </p>
                     <input
                       type="text"
-                      value={String(value)}
+                      value={stringValue}
                       onChange={(e) => {
-                        setAttributes({ ...attributes, [key]: e.target.value });
-                        setIsDirty(true);
+                        setAttributeValue(key, e.target.value);
                       }}
                       disabled={isReadOnly}
                       className={`w-full px-3 py-2 text-sm border rounded-lg outline-none transition-all ${
