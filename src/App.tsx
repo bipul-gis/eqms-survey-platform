@@ -186,11 +186,12 @@ const AppContent: React.FC = () => {
   ]);
 
   const visibleFeatures = useMemo(() => {
-    if (assignedWardsForFilter.length === 0) return features;
+    if (isAdmin) return features;
+    if (assignedWardsForFilter.length === 0) return [] as GeoFeature[];
     return features.filter((f) =>
       featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
-  }, [features, assignedWardsForFilter, wardsData]);
+  }, [isAdmin, features, assignedWardsForFilter, wardsData]);
 
   useEffect(() => {
     let mounted = true;
@@ -227,8 +228,7 @@ const AppContent: React.FC = () => {
   const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
   const wardOptionsForEditor = useMemo(() => {
     if (isAdmin) return landmarkWardOptions;
-    const assignedKeys = new Set(assignedWardsForFilter.map((w) => normalizeWardKey(String(w))));
-    return landmarkWardOptions.filter((w) => assignedKeys.has(normalizeWardKey(String(w))));
+    return landmarkWardOptions.filter((w) => wardMatchesAssignedList(String(w), assignedWardsForFilter));
   }, [isAdmin, landmarkWardOptions, assignedWardsForFilter]);
 
   const enumeratorTaskStats = useMemo(() => {
@@ -638,6 +638,176 @@ const AppContent: React.FC = () => {
     } catch (e) {
       console.error(e);
       setImportNotice({ type: 'error', message: 'Landmark GeoJSON import failed: ' + e });
+    } finally {
+      setIsImportingLandmarks(false);
+    }
+  };
+
+  const mergeUpdateLandmarkGeoJson = async () => {
+    if (!isAdmin || isImportingLandmarks) return;
+    setIsImportingLandmarks(true);
+    setImportNotice(null);
+    try {
+      const resp = await fetch(landmarkGeoJsonUrl);
+      if (!resp.ok) {
+        throw new Error(`GeoJSON fetch failed (${resp.status})`);
+      }
+      const geo = await resp.json();
+      const points = Array.isArray(geo?.features)
+        ? geo.features.filter((f: any) => f?.geometry?.type === 'Point')
+        : [];
+
+      if (points.length === 0) {
+        setImportNotice({ type: 'error', message: 'No Point features found in CCC_all_Landmark.geojson.' });
+        setImportProgress(null);
+        setIsImportingLandmarks(false);
+        return;
+      }
+
+      const confirmed = window.confirm(
+        'This will MERGE landmark JSON into existing data.\n\n' +
+          'Enumerator-edited records are preserved.\n' +
+          'Untouched landmark baseline records are refreshed from JSON.\n' +
+          'No full delete is performed.\n\n' +
+          'Continue?'
+      );
+      if (!confirmed) {
+        setImportProgress(null);
+        setIsImportingLandmarks(false);
+        return;
+      }
+
+      const pointRecords = points.map((f: any, idx: number) => {
+        const fid = normalizeLandmarkFid(f?.properties?.FID ?? f?.id ?? idx);
+        const id = `landmark_${fid !== undefined ? fid : idx}`;
+        return { id, fid, feature: f };
+      });
+
+      const featureById = new Map(features.map((f) => [f.id, f]));
+      const landmarkByFid = new Map<string, GeoFeature>();
+      for (const f of features) {
+        if (f.type !== 'point') continue;
+        const fid = normalizeLandmarkFid(f.attributes?.FID);
+        if (fid === undefined) continue;
+        landmarkByFid.set(String(fid), f);
+      }
+
+      const MAX_OPS = 450;
+      let batch = writeBatch(db);
+      let ops = 0;
+      const commitIfNeeded = async (nextCost: number) => {
+        if (ops + nextCost > MAX_OPS) {
+          await batch.commit();
+          batch = writeBatch(db);
+          ops = 0;
+        }
+      };
+      const commitBatch = async () => {
+        if (ops > 0) {
+          await batch.commit();
+          batch = writeBatch(db);
+          ops = 0;
+        }
+      };
+
+      let processed = 0;
+      let written = 0;
+      let created = 0;
+      let refreshed = 0;
+      let preserved = 0;
+      setImportProgress({ total: pointRecords.length, processed: 0, written: 0, previousRemoved: 0 });
+
+      for (const rec of pointRecords) {
+        const coords = rec.feature?.geometry?.coordinates || [0, 0];
+        const attrs = rec.feature?.properties || {};
+        const normalizedAttrs =
+          rec.fid !== undefined ? { ...attrs, FID: rec.fid } : { ...attrs };
+
+        const existingById = featureById.get(rec.id);
+        const existingByFid = rec.fid !== undefined ? landmarkByFid.get(String(rec.fid)) : undefined;
+        const existing = existingById || existingByFid;
+        const targetId = existing?.id || rec.id;
+        const ref = doc(db, 'features', targetId);
+
+        const source = String(existing?.attributes?.__source || '');
+        const hasUserEdits = !!existing && (
+          existing.status !== 'pending' ||
+          Boolean(existing.remarks) ||
+          Boolean(existing.moveRemarks) ||
+          Boolean(existing.newFeatureRemarks) ||
+          Boolean(String(existing.attributes?.ChangeBy || '').trim()) ||
+          Boolean(String(existing.attributes?.ChangeAt || '').trim()) ||
+          source.includes('landmark_manual')
+        );
+
+        await commitIfNeeded(1);
+
+        if (!existing) {
+          batch.set(ref, {
+            type: 'point',
+            geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
+            attributes: {
+              ...normalizedAttrs,
+              __source: 'ccc_landmark'
+            },
+            status: 'pending',
+            createdBy: 'ccc_landmark_import',
+            updatedBy: user?.email || 'ccc_landmark_import',
+            updatedByUid: user?.uid || null,
+            updatedAt: serverTimestamp()
+          });
+          created += 1;
+          written += 1;
+          ops += 1;
+        } else if (hasUserEdits) {
+          // Preserve enumerator-updated records; only ensure source tag remains landmark-related.
+          const preservedAttrs = {
+            ...(existing.attributes || {}),
+            __source: source || 'ccc_landmark'
+          };
+          batch.update(ref, {
+            attributes: preservedAttrs,
+            updatedAt: serverTimestamp()
+          });
+          preserved += 1;
+          written += 1;
+          ops += 1;
+        } else {
+          // Refresh untouched landmark baseline with latest JSON values.
+          batch.update(ref, {
+            geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
+            attributes: {
+              ...normalizedAttrs,
+              __source: 'ccc_landmark'
+            },
+            updatedBy: user?.email || 'ccc_landmark_import',
+            updatedByUid: user?.uid || null,
+            updatedAt: serverTimestamp()
+          });
+          refreshed += 1;
+          written += 1;
+          ops += 1;
+        }
+
+        processed += 1;
+        if (processed % 100 === 0 || processed === pointRecords.length) {
+          setImportProgress({
+            total: pointRecords.length,
+            processed,
+            written,
+            previousRemoved: 0
+          });
+        }
+      }
+
+      await commitBatch();
+      setImportNotice({
+        type: 'success',
+        message: `Merge update complete. Created: ${created}, refreshed: ${refreshed}, preserved edited: ${preserved}.`
+      });
+    } catch (e) {
+      console.error(e);
+      setImportNotice({ type: 'error', message: 'Landmark merge update failed: ' + e });
     } finally {
       setIsImportingLandmarks(false);
     }
@@ -1373,7 +1543,7 @@ const AppContent: React.FC = () => {
               features={visibleFeatures}
               wards={wardsData}
               enumeratorLandmarkWardFilter={
-                !isAdmin && assignedWardsForFilter.length > 0 ? assignedWardsForFilter : undefined
+                !isAdmin ? assignedWardsForFilter : undefined
               }
               onFeatureSelect={handleMapFeatureSelect}
               onRequestMoveFeature={startMoveFeature}
@@ -1646,6 +1816,13 @@ const AppContent: React.FC = () => {
                   className="w-full mt-1 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {isImportingLandmarks ? 'Importing Landmarks...' : 'Import Landmark GeoJSON'}
+                </button>
+                <button
+                  onClick={mergeUpdateLandmarkGeoJson}
+                  disabled={isImportingLandmarks}
+                  className="w-full py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  Merge Update Landmark GeoJSON
                 </button>
                 {importProgress && (
                   <div className="space-y-1">

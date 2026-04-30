@@ -115,7 +115,7 @@ const EnumeratorWardRow: React.FC<{
         </div>
         <p className="text-[10px] text-gray-500">
           {value.length === 0
-            ? 'No selection — enumerator sees all wards.'
+            ? 'No selection — enumerator sees no wards.'
             : `${value.length} ward(s) selected.`}
         </p>
         <button

@@ -164,10 +164,11 @@ export function staticLandmarkMatchesAssignedWards(
   lng: number,
   lat: number,
   properties: Record<string, any>,
-  assigned: string[],
+  assigned: string[] | undefined,
   wards: { features?: unknown[] } | null | undefined
 ): boolean {
-  if (assigned.length === 0) return true;
+  if (assigned === undefined) return true; // No role-based filter (e.g., admin)
+  if (assigned.length === 0) return false; // Assigned filtering active but empty => no scope
   const fromProps = wardLabelFromAttributes(properties);
   const label = fromProps || (wards ? getWardNameForLngLat(lng, lat, wards as any) : null);
   if (!label) return false;

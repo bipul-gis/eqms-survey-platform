@@ -561,7 +561,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     <div className="relative w-full h-full">
       <MapContainer 
         center={[22.3569, 91.7832]} // Chattogram, Bangladesh
-        zoom={13} 
+        zoom={13}
+        zoomControl={false}
+        maxZoom={22}
         className="w-full h-full"
       >
         <FocusOnSelectedFeature feature={selectedFeature} focusRequestKey={featureFocusRequestKey} />
@@ -569,12 +571,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            maxNativeZoom={19}
+            maxZoom={22}
           />
         )}
         {baseMap === 'satellite' && (
           <TileLayer
             attribution='Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            maxNativeZoom={19}
+            maxZoom={22}
           />
         )}
         {baseMap === 'hybrid' && (
@@ -582,7 +588,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             attribution='Map data &copy; Google'
             url="https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
             subdomains={['mt0', 'mt1', 'mt2', 'mt3']}
-            maxZoom={20}
+            maxNativeZoom={20}
+            maxZoom={22}
           />
         )}
 
@@ -664,7 +671,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               p.lng,
               p.lat,
               p.properties,
-              enumeratorLandmarkWardFilter ?? [],
+              enumeratorLandmarkWardFilter,
               wards
             )
           )
