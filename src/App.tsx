@@ -636,8 +636,8 @@ const AppContent: React.FC = () => {
             <Compass size={24} />
           </div>
           <div>
-            <h1 className="font-bold text-slate-900 leading-tight">Spatial Enumerator</h1>
-            <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest">Dhaka City Corp</p>
+            <h1 className="font-bold text-slate-900 leading-tight">EQMS Geosurvey</h1>
+            <p className="text-[10px] text-slate-400 font-medium tracking-wide">Collect and validate geospatial data from ground level</p>
           </div>
         </div>
 
