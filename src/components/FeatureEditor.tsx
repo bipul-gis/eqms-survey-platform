@@ -6,6 +6,30 @@ import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from './AuthProvider';
 import { useGeoLocation } from './GeoLocationProvider';
 
+// Match the attribute order in MapComponent popup
+const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
+const READ_ONLY_ATTRIBUTES = new Set(['FID', '_source']); // Fields that cannot be edited
+
+const getOrderedAttributes = (attrs: Record<string, any>): Array<[string, any]> => {
+  const normalized: Record<string, any> = {
+    FID: attrs?.FID ?? '',
+    name: attrs?.name ?? attrs?.Name ?? '',
+    Category: attrs?.Category ?? '',
+    Type: attrs?.Type ?? '',
+    Ownership: attrs?.Ownership ?? '',
+    Ward_Name: attrs?.Ward_Name ?? attrs?.WARDNAME ?? attrs?.WardName ?? '',
+    Zone: attrs?.Zone ?? ''
+  };
+
+  const seen = new Set<string>(Object.keys(normalized));
+  const extra = Object.entries(attrs || {})
+    .filter(([k]) => !seen.has(k) && !k.startsWith('__') && !k.startsWith('_'))
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  const ordered = LANDMARK_ATTRIBUTE_ORDER.map((k) => [k, normalized[k]]);
+  return [...ordered, ...extra] as Array<[string, any]>;
+};
+
 interface FeatureEditorProps {
   feature: GeoFeature;
   onClose: () => void;
@@ -165,25 +189,36 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         <section>
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Attributes</label>
           <div className="space-y-3">
-            {Object.entries(attributes).map(([key, value]) => (
-              <div key={key} className="flex gap-2 items-center">
-                <div className="flex-1">
-                  <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
-                  <input
-                    type="text"
-                    value={String(value)}
-                    onChange={(e) => {
-                      setAttributes({ ...attributes, [key]: e.target.value });
-                      setIsDirty(true);
-                    }}
-                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                  />
+            {getOrderedAttributes(attributes).map(([key, value]) => {
+              const isReadOnly = READ_ONLY_ATTRIBUTES.has(key);
+              return (
+                <div key={key} className="flex gap-2 items-center">
+                  <div className="flex-1">
+                    <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5 flex items-center gap-1">
+                      {key}
+                      {isReadOnly && <span className="text-gray-300 text-[8px]">🔒</span>}
+                    </p>
+                    <input
+                      type="text"
+                      value={String(value)}
+                      onChange={(e) => {
+                        setAttributes({ ...attributes, [key]: e.target.value });
+                        setIsDirty(true);
+                      }}
+                      disabled={isReadOnly}
+                      className={`w-full px-3 py-2 text-sm border rounded-lg outline-none transition-all ${
+                        isReadOnly
+                          ? 'bg-gray-100 border-gray-200 text-gray-500 cursor-not-allowed'
+                          : 'border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
+                      }`}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <p className="text-[10px] text-amber-600 mt-2">
-            Attribute fields are locked. You can edit values only.
+            🔒 = Read-only field. You can edit other values only.
           </p>
         </section>
 

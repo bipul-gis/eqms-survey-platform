@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
 import { MapComponent } from './components/MapComponent';
@@ -106,6 +106,7 @@ const AppContent: React.FC = () => {
   const { data: features, loading: featuresLoading } = useFirestoreCollection<GeoFeature>('features');
   
   const [selectedFeature, setSelectedFeature] = useState<GeoFeature | null>(null);
+  const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showQuestionnaireManager, setShowQuestionnaireManager] = useState(false);
@@ -591,8 +592,13 @@ const AppContent: React.FC = () => {
       const baselineEntry = baselineByFid.get(String(fid ?? ''));
       if (!baselineEntry) return true;
 
-      // Rejected/verified/remarks imply change.
-      if (feature.status !== 'pending' || Boolean(feature.remarks)) return true;
+      // Rejected/verified/any remarks imply change.
+      if (
+        feature.status !== 'pending' ||
+        Boolean(feature.remarks) ||
+        Boolean(feature.moveRemarks) ||
+        Boolean(feature.newFeatureRemarks)
+      ) return true;
 
       if (!isPointGeometrySame(feature.geometry, baselineEntry.geometry)) return true;
 
@@ -643,6 +649,8 @@ const AppContent: React.FC = () => {
               ...sanitizedAttributes,
               ChangeStatus: feature.status,
               ChangeRemarks: feature.remarks ?? '',
+              MoveRemarks: feature.moveRemarks ?? '',
+              NewFeatureRemarks: feature.newFeatureRemarks ?? '',
               ChangeBy: feature.updatedBy ?? '',
               ChangeAt: feature.updatedAt ?? '',
               GPS_Lat: feature.collectorLocation?.lat ?? '',
@@ -824,6 +832,12 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const handleMapFeatureSelect = useCallback((feature: GeoFeature) => {
+    setSelectedFeature(feature);
+    setFeatureFocusRequestKey((k) => k + 1);
+    setActiveTab('map');
+  }, []);
+
   const handleCreateFeatureFromEditor = async (payload: { attributes: Record<string, any>; status: 'pending' | 'verified' | 'rejected' }) => {
     if (!user || !selectedFeature) return;
     await addDoc(collection(db, 'features'), {
@@ -870,7 +884,7 @@ const AppContent: React.FC = () => {
     });
 
     if (existing) {
-      setSelectedFeature(existing);
+      handleMapFeatureSelect(existing);
       return;
     }
 
@@ -905,7 +919,7 @@ const AppContent: React.FC = () => {
           { merge: true }
         );
 
-        setSelectedFeature({
+        handleMapFeatureSelect({
           id: featureId,
           type: 'point',
           geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
@@ -937,7 +951,7 @@ const AppContent: React.FC = () => {
         })
       });
 
-      setSelectedFeature({
+      handleMapFeatureSelect({
         id: docRef.id,
         type: 'point',
         geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
@@ -1147,11 +1161,12 @@ const AppContent: React.FC = () => {
               enumeratorLandmarkWardFilter={
                 !isAdmin && assignedWardsForFilter.length > 0 ? assignedWardsForFilter : undefined
               }
-              onFeatureSelect={setSelectedFeature}
+              onFeatureSelect={handleMapFeatureSelect}
               onRequestMoveFeature={startMoveFeature}
               onCancelMoveFeature={cancelMoveFeature}
               onLandmarkPointSelect={handleLandmarkPointSelect}
               selectedFeatureId={selectedFeature?.id}
+              featureFocusRequestKey={featureFocusRequestKey}
               movingFeatureId={movingFeature?.id || null}
               onMapClick={handleMapClick}
               addFeatureType={isAddingFeature}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Polygon, useMapEvents, Circle, CircleMarker, GeoJSON, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { GeoFeature } from '../types';
@@ -66,6 +66,7 @@ interface MapComponentProps {
   onCancelMoveFeature?: () => void;
   onLandmarkPointSelect?: (point: { lat: number; lng: number; properties: Record<string, any> }) => void;
   selectedFeatureId?: string;
+  featureFocusRequestKey?: number;
   movingFeatureId?: string | null;
   onMapClick?: (lat: number, lng: number) => void;
   addFeatureType: 'point' | 'line' | 'polygon' | null;
@@ -89,30 +90,56 @@ const FocusOnUserForPointAdd = ({
   location: { lat: number; lng: number; accuracy: number } | null;
 }) => {
   const map = useMap();
+  const hasFocusedRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || !location) return;
+    if (!enabled) {
+      hasFocusedRef.current = false;
+      return;
+    }
+    if (!location || hasFocusedRef.current) return;
     // Zoom to user location when entering point-add mode.
     map.flyTo([location.lat, location.lng], Math.max(map.getZoom(), 19), {
       duration: 0.6
     });
+    hasFocusedRef.current = true;
   }, [enabled, location, map]);
 
   return null;
 };
 
-const FocusOnSelectedFeature = ({ feature }: { feature: GeoFeature | null }) => {
+const FocusOnSelectedFeature = ({
+  feature,
+  focusRequestKey
+}: {
+  feature: GeoFeature | null;
+  focusRequestKey?: number;
+}) => {
   const map = useMap();
+  const lastFocusedFeatureIdRef = useRef<string | null>(null);
+  const lastFocusRequestKeyRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!feature) return;
+    if (!feature) {
+      lastFocusedFeatureIdRef.current = null;
+      lastFocusRequestKeyRef.current = null;
+      return;
+    }
+
+    if (typeof focusRequestKey === 'number') {
+      if (lastFocusRequestKeyRef.current === focusRequestKey) return;
+    } else if (lastFocusedFeatureIdRef.current === feature.id) {
+      return;
+    }
 
     const coords = feature.geometry?.coordinates;
     if (feature.type === 'point' && Array.isArray(coords) && coords.length >= 2) {
       const lng = Number(coords[0]);
       const lat = Number(coords[1]);
       if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
-      map.flyTo([lat, lng], Math.max(map.getZoom(), 18), { duration: 0.7 });
+      map.setView([lat, lng], Math.max(map.getZoom(), 18), { animate: false });
+      lastFocusedFeatureIdRef.current = feature.id;
+      if (typeof focusRequestKey === 'number') lastFocusRequestKeyRef.current = focusRequestKey;
       return;
     }
 
@@ -121,7 +148,9 @@ const FocusOnSelectedFeature = ({ feature }: { feature: GeoFeature | null }) => 
         .map((c: [number, number]) => [Number(c[1]), Number(c[0])] as [number, number])
         .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]));
       if (latLngs.length > 0) {
-        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], maxZoom: 18, animate: true });
+        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], maxZoom: 18, animate: false });
+        lastFocusedFeatureIdRef.current = feature.id;
+        if (typeof focusRequestKey === 'number') lastFocusRequestKeyRef.current = focusRequestKey;
       }
       return;
     }
@@ -131,13 +160,193 @@ const FocusOnSelectedFeature = ({ feature }: { feature: GeoFeature | null }) => 
         .map((c: [number, number]) => [Number(c[1]), Number(c[0])] as [number, number])
         .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]));
       if (latLngs.length > 0) {
-        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], maxZoom: 18, animate: true });
+        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], maxZoom: 18, animate: false });
+        lastFocusedFeatureIdRef.current = feature.id;
+        if (typeof focusRequestKey === 'number') lastFocusRequestKeyRef.current = focusRequestKey;
       }
     }
-  }, [feature, map]);
+  }, [feature, focusRequestKey, map]);
 
   return null;
 };
+
+// Memoized point marker to prevent map shaking during updates
+const PointMarker = React.memo(({
+  feature,
+  isSelected,
+  isMoveTarget,
+  isPulsing,
+  color,
+  radius,
+  onFeatureSelect,
+  onRequestMoveFeature,
+  onCancelMoveFeature
+}: {
+  feature: GeoFeature;
+  isSelected: boolean;
+  isMoveTarget: boolean;
+  isPulsing: boolean;
+  color: string;
+  radius: number;
+  onFeatureSelect: (f: GeoFeature) => void;
+  onRequestMoveFeature?: (f: GeoFeature) => void;
+  onCancelMoveFeature?: () => void;
+}) => (
+  <CircleMarker
+    center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
+    radius={radius}
+    pathOptions={{ 
+      color: isMoveTarget ? '#2563eb' : color,
+      fillColor: isMoveTarget ? '#3b82f6' : color, 
+      fillOpacity: 0.9,
+      weight: isMoveTarget ? 4 : isSelected ? (isPulsing ? 4 : 3) : 2
+    }}
+  >
+    <Popup autoPan={false}>
+      <div className="min-w-[240px]">
+        <p className="text-xs font-bold text-gray-700 mb-2">Landmark Attributes</p>
+        <div className="max-h-48 overflow-auto border border-gray-100 rounded">
+          <table className="w-full text-[10px]">
+            <tbody>
+              {normalizeLandmarkAttributesForDisplay(feature.attributes || {}).map(([k, v]) => (
+                <tr key={k} className="border-b border-gray-100 last:border-b-0">
+                  <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
+                  <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
+          onClick={() => onFeatureSelect(feature)}
+        >
+          Edit Attributes
+        </button>
+        <button
+          className="mt-2 w-full bg-indigo-600 text-white text-xs font-medium py-1.5 rounded hover:bg-indigo-700"
+          onClick={() => onRequestMoveFeature?.(feature)}
+        >
+          {isMoveTarget ? 'Move Mode Active' : 'Move Point'}
+        </button>
+        {isMoveTarget && (
+          <button
+            className="mt-2 w-full bg-slate-100 text-slate-700 text-xs font-medium py-1.5 rounded hover:bg-slate-200"
+            onClick={() => onCancelMoveFeature?.()}
+          >
+            Cancel Move
+          </button>
+        )}
+      </div>
+    </Popup>
+  </CircleMarker>
+));
+
+PointMarker.displayName = 'PointMarker';
+
+// Memoized line renderer
+const LineMarker = React.memo(({
+  feature,
+  isSelected,
+  color,
+  onFeatureSelect
+}: {
+  feature: GeoFeature;
+  isSelected: boolean;
+  color: string;
+  onFeatureSelect: (f: GeoFeature) => void;
+}) => (
+  <Polyline
+    positions={feature.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]])}
+    pathOptions={{ 
+      color: isSelected ? '#3b82f6' : color, 
+      weight: isSelected ? 6 : 4 
+    }}
+    eventHandlers={{
+      click: () => onFeatureSelect(feature)
+    }}
+  />
+));
+
+LineMarker.displayName = 'LineMarker';
+
+// Memoized polygon renderer
+const PolygonMarker = React.memo(({
+  feature,
+  isSelected,
+  color,
+  onFeatureSelect
+}: {
+  feature: GeoFeature;
+  isSelected: boolean;
+  color: string;
+  onFeatureSelect: (f: GeoFeature) => void;
+}) => (
+  <Polygon
+    positions={feature.geometry.coordinates[0].map((coord: [number, number]) => [coord[1], coord[0]])}
+    pathOptions={{ 
+      color: isSelected ? '#3b82f6' : color, 
+      fillColor: color, 
+      fillOpacity: 0.4,
+      weight: isSelected ? 3 : 1
+    }}
+    eventHandlers={{
+      click: () => onFeatureSelect(feature)
+    }}
+  />
+));
+
+PolygonMarker.displayName = 'PolygonMarker';
+
+// Memoized landmark point from GeoJSON
+const LandmarkGeoJsonPoint = React.memo(({
+  p,
+  idx,
+  radius,
+  onLandmarkPointSelect
+}: {
+  p: { lat: number; lng: number; properties: Record<string, any> };
+  idx: number;
+  radius: number;
+  onLandmarkPointSelect?: (point: { lat: number; lng: number; properties: Record<string, any> }) => void;
+}) => (
+  <CircleMarker
+    center={[p.lat, p.lng]}
+    radius={radius}
+    pathOptions={{
+      color: '#f59e0b',
+      fillColor: '#f59e0b',
+      fillOpacity: 0.9,
+      weight: 2
+    }}
+  >
+    <Popup>
+      <div className="min-w-[220px]">
+        <p className="text-xs font-bold text-gray-700 mb-2">Landmark (GeoJSON)</p>
+        <div className="max-h-44 overflow-auto border border-gray-100 rounded">
+          <table className="w-full text-[10px]">
+            <tbody>
+              {normalizeLandmarkAttributesForDisplay(p.properties || {}).map(([k, v]) => (
+                <tr key={k} className="border-b border-gray-100 last:border-b-0">
+                  <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
+                  <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
+          onClick={() => onLandmarkPointSelect?.(p)}
+        >
+          Edit Attributes
+        </button>
+      </div>
+    </Popup>
+  </CircleMarker>
+));
+
+LandmarkGeoJsonPoint.displayName = 'LandmarkGeoJsonPoint';
 
 export const MapComponent: React.FC<MapComponentProps> = ({ 
   features, 
@@ -148,6 +357,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   onCancelMoveFeature,
   onLandmarkPointSelect,
   selectedFeatureId,
+  featureFocusRequestKey,
   movingFeatureId,
   onMapClick,
   addFeatureType,
@@ -341,6 +551,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
   };
 
+  // Memoize callbacks to prevent marker re-renders
+  const handleFeatureSelect = useCallback(onFeatureSelect, [onFeatureSelect]);
+  const handleRequestMoveFeature = useCallback((f: GeoFeature) => onRequestMoveFeature?.(f), [onRequestMoveFeature]);
+  const handleCancelMoveFeature = useCallback(() => onCancelMoveFeature?.(), [onCancelMoveFeature]);
+  const handleLandmarkPointSelect = useCallback((p: { lat: number; lng: number; properties: Record<string, any> }) => onLandmarkPointSelect?.(p), [onLandmarkPointSelect]);
+
   return (
     <div className="relative w-full h-full">
       <MapContainer 
@@ -348,7 +564,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         zoom={13} 
         className="w-full h-full"
       >
-        <FocusOnSelectedFeature feature={selectedFeature} />
+        <FocusOnSelectedFeature feature={selectedFeature} focusRequestKey={featureFocusRequestKey} />
         {baseMap === 'osm' && (
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -397,88 +613,41 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (feature.type === 'point') {
             if (!showLandmarks) return null;
             return (
-              <CircleMarker
+              <PointMarker
                 key={feature.id}
-                center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
+                feature={feature}
+                isSelected={isSelected}
+                isMoveTarget={isMoveTarget}
+                isPulsing={isPulsing}
+                color={color}
                 radius={radiusForLandmark(7, isSelected, isPulsing)}
-                pathOptions={{ 
-                  color: isMoveTarget ? '#2563eb' : color,
-                  fillColor: isMoveTarget ? '#3b82f6' : color, 
-                  fillOpacity: 0.9,
-                  weight: isMoveTarget ? 4 : isSelected ? (isPulsing ? 4 : 3) : 2
-                }}
-              >
-                <Popup>
-                  <div className="min-w-[240px]">
-                    <p className="text-xs font-bold text-gray-700 mb-2">Landmark Attributes</p>
-                    <div className="max-h-48 overflow-auto border border-gray-100 rounded">
-                      <table className="w-full text-[10px]">
-                        <tbody>
-                          {normalizeLandmarkAttributesForDisplay(feature.attributes || {}).map(([k, v]) => (
-                            <tr key={k} className="border-b border-gray-100 last:border-b-0">
-                              <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
-                              <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <button
-                      className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
-                      onClick={() => onFeatureSelect(feature)}
-                    >
-                      Edit Attributes
-                    </button>
-                    <button
-                      className="mt-2 w-full bg-indigo-600 text-white text-xs font-medium py-1.5 rounded hover:bg-indigo-700"
-                      onClick={() => onRequestMoveFeature?.(feature)}
-                    >
-                      {isMoveTarget ? 'Move Mode Active' : 'Move Point'}
-                    </button>
-                    {isMoveTarget && (
-                      <button
-                        className="mt-2 w-full bg-slate-100 text-slate-700 text-xs font-medium py-1.5 rounded hover:bg-slate-200"
-                        onClick={() => onCancelMoveFeature?.()}
-                      >
-                        Cancel Move
-                      </button>
-                    )}
-                  </div>
-                </Popup>
-              </CircleMarker>
+                onFeatureSelect={handleFeatureSelect}
+                onRequestMoveFeature={handleRequestMoveFeature}
+                onCancelMoveFeature={handleCancelMoveFeature}
+              />
             );
           }
 
           if (feature.type === 'line') {
             return (
-              <Polyline
+              <LineMarker
                 key={feature.id}
-                positions={feature.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]])}
-                pathOptions={{ 
-                  color: isSelected ? '#3b82f6' : color, 
-                  weight: isSelected ? 6 : 4 
-                }}
-                eventHandlers={{
-                  click: () => onFeatureSelect(feature)
-                }}
+                feature={feature}
+                isSelected={isSelected}
+                color={color}
+                onFeatureSelect={handleFeatureSelect}
               />
             );
           }
 
           if (feature.type === 'polygon') {
             return (
-              <Polygon
+              <PolygonMarker
                 key={feature.id}
-                positions={feature.geometry.coordinates[0].map((coord: [number, number]) => [coord[1], coord[0]])}
-                pathOptions={{ 
-                  color: isSelected ? '#3b82f6' : color, 
-                  fillColor: color, 
-                  fillOpacity: 0.4,
-                  weight: isSelected ? 3 : 1
-                }}
-                eventHandlers={{
-                  click: () => onFeatureSelect(feature)
-                }}
+                feature={feature}
+                isSelected={isSelected}
+                color={color}
+                onFeatureSelect={handleFeatureSelect}
               />
             );
           }
@@ -505,42 +674,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             return !findMatchingFirestorePoint(p);
           })
           .map((p, idx) => (
-          <CircleMarker
-            key={`landmark_geojson_${idx}`}
-            center={[p.lat, p.lng]}
-            radius={radiusForLandmark(5, false, false)}
-            pathOptions={{
-              color: getStatusColor('pending'),
-              fillColor: getStatusColor('pending'),
-              fillOpacity: 0.9,
-              weight: 2
-            }}
-          >
-            <Popup>
-              <div className="min-w-[220px]">
-                <p className="text-xs font-bold text-gray-700 mb-2">Landmark (GeoJSON)</p>
-                <div className="max-h-44 overflow-auto border border-gray-100 rounded">
-                  <table className="w-full text-[10px]">
-                    <tbody>
-                      {normalizeLandmarkAttributesForDisplay(p.properties || {}).map(([k, v]) => (
-                        <tr key={k} className="border-b border-gray-100 last:border-b-0">
-                          <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
-                          <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <button
-                  className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
-                  onClick={() => onLandmarkPointSelect?.(p)}
-                >
-                  Edit Attributes
-                </button>
-              </div>
-            </Popup>
-          </CircleMarker>
-        ))}
+            <LandmarkGeoJsonPoint
+              key={`landmark_geojson_${idx}`}
+              p={p}
+              idx={idx}
+              radius={radiusForLandmark(5, false, false)}
+              onLandmarkPointSelect={handleLandmarkPointSelect}
+            />
+          ))}
 
         {/* Enumerator Live Location */}
         {location && (
