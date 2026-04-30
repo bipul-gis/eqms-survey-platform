@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
 import { MapComponent } from './components/MapComponent';
@@ -8,13 +8,97 @@ import { UserManagement } from './components/UserManagement';
 import { QuestionnaireManager } from './components/QuestionnaireManager';
 import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useFirestoreCollection } from './hooks/useFirestoreCollection';
-import { GeoFeature, WardBoundary, Questionnaire } from './types';
-import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle } from 'lucide-react';
-import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, limit, startAfter, orderBy, documentId } from 'firebase/firestore';
+import { GeoFeature, Questionnaire, UserProfile } from './types';
+import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle, Users } from 'lucide-react';
+import {
+  collection,
+  addDoc,
+  setDoc,
+  serverTimestamp,
+  writeBatch,
+  doc,
+  query,
+  where,
+  getDocs,
+  limit,
+  startAfter,
+  orderBy,
+  documentId,
+  onSnapshot,
+  updateDoc
+} from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
 import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
 import shpwrite from '@mapbox/shp-write';
+import {
+  assignedWardsFromUserProfile,
+  effectiveWardLabelForFeature,
+  featureMatchesAssignedWardsResolved,
+  normalizeWardKey,
+  parseWardNumber,
+  wardMatchesAssignedList
+} from './lib/wardGeometry';
+
+const isImportedLandmarkPoint = (f: GeoFeature) => {
+  if (f.type !== 'point') return false;
+  const src = String(f.attributes?.__source || '');
+  return src === 'ccc_landmark' || src === 'ccc_landmark_geojson' || src === 'ccc_landmark_import';
+};
+
+const isNewlyAddedFeature = (f: GeoFeature) =>
+  typeof f.newFeatureRemarks === 'string' && f.newFeatureRemarks.trim().length > 0;
+
+const LANDMARK_TABLE_ATTRIBUTE_ORDER = ['FID', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
+
+const landmarkAttributesForTable = (attrs: Record<string, any>) => {
+  const normalized: Record<string, any> = {
+    FID: attrs?.FID ?? '',
+    Category: attrs?.Category ?? '',
+    Type: attrs?.Type ?? '',
+    Ownership: attrs?.Ownership ?? '',
+    Ward_Name: attrs?.Ward_Name ?? attrs?.WARDNAME ?? attrs?.WardName ?? '',
+    Zone: attrs?.Zone ?? ''
+  };
+
+  const ordered = LANDMARK_TABLE_ATTRIBUTE_ORDER
+    .map((k) => [k, normalized[k]] as [string, any])
+    .filter(([, v]) => String(v ?? '').trim() !== '');
+
+  if (ordered.length >= 2) return ordered.slice(0, 2);
+
+  const extras = Object.entries(attrs || {})
+    .filter(([k, v]) => !k.startsWith('__') && !LANDMARK_TABLE_ATTRIBUTE_ORDER.includes(k as any) && String(v ?? '').trim() !== '')
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  return [...ordered, ...extras].slice(0, 2);
+};
+
+const toTitleCaseWords = (input: string): string =>
+  input
+    .trim()
+    .split(/\s+/)
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w))
+    .join(' ');
+
+const normalizedFullName = (displayName: string | undefined, email: string): string => {
+  const raw = String(displayName || '').trim();
+  const emailLocal = email.split('@')[0] || '';
+  const rawKey = raw.toLowerCase();
+  const emailKey = email.toLowerCase();
+  const localKey = emailLocal.toLowerCase();
+  const looksLikeEmailOrUsername =
+    !raw ||
+    rawKey === emailKey ||
+    rawKey === localKey ||
+    /^[a-z0-9._-]+$/i.test(raw);
+
+  if (looksLikeEmailOrUsername) {
+    const pretty = emailLocal.replace(/[._-]+/g, ' ').trim();
+    return toTitleCaseWords(pretty || raw || email);
+  }
+  return toTitleCaseWords(raw);
+};
 
 const AppContent: React.FC = () => {
   const { user, userProfile, loading: authLoading, logout } = useAuth();
@@ -28,6 +112,14 @@ const AppContent: React.FC = () => {
   const [selectedQuestionnaire, setSelectedQuestionnaire] = useState<Questionnaire | null>(null);
   const [questionnaireLocation, setQuestionnaireLocation] = useState<{ lat: number; lng: number; ward?: string } | null>(null);
   const [activeTab, setActiveTab] = useState<'map' | 'list'>('map');
+  const [movingFeature, setMovingFeature] = useState<GeoFeature | null>(null);
+  const [lastMovedPoint, setLastMovedPoint] = useState<{
+    featureId: string;
+    featureName: string;
+    previousGeometry: any;
+  } | null>(null);
+  const [enumeratorQcExpanded, setEnumeratorQcExpanded] = useState(true);
+  const [expandedWardKeys, setExpandedWardKeys] = useState<string[]>([]);
   const [isImportingLandmarks, setIsImportingLandmarks] = useState(false);
   const [importProgress, setImportProgress] = useState<{
     total: number;
@@ -38,15 +130,221 @@ const AppContent: React.FC = () => {
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
-  const visibleFeatures = features;
 
-  const isImportedLandmarkPoint = (f: GeoFeature) => {
-    if (f.type !== 'point') return false;
-    const src = String(f.attributes?.__source || '');
-    return src === 'ccc_landmark' || src === 'ccc_landmark_geojson' || src === 'ccc_landmark_import';
-  };
+  const assignedWardsForFilter = useMemo(() => {
+    if (isAdmin) return [] as string[];
+    if (userProfile?.role !== 'enumerator' || userProfile?.status !== 'approved') return [] as string[];
+    const list = userProfile.assignedWardNames;
+    if (Array.isArray(list) && list.length > 0) {
+      return [...new Set(list.map((w) => String(w).trim()).filter(Boolean))];
+    }
+    const legacy = userProfile.assignedWardName;
+    if (typeof legacy === 'string' && legacy.trim()) return [legacy.trim()];
+    return [] as string[];
+  }, [isAdmin, userProfile?.role, userProfile?.status, userProfile?.assignedWardNames, userProfile?.assignedWardName]);
+
+  const visibleFeatures = useMemo(() => {
+    if (assignedWardsForFilter.length === 0) return features;
+    return features.filter((f) =>
+      featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
+    );
+  }, [features, assignedWardsForFilter, wardsData]);
 
   const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
+
+  const enumeratorTaskStats = useMemo(() => {
+    const lm = visibleFeatures.filter(isImportedLandmarkPoint);
+    let verified = 0;
+    let pending = 0;
+    let rejected = 0;
+    for (const f of lm) {
+      if (f.status === 'verified') verified += 1;
+      else if (f.status === 'rejected') rejected += 1;
+      else pending += 1;
+    }
+    const newAdded = visibleFeatures.filter(isNewlyAddedFeature).length;
+    return {
+      verified,
+      pending,
+      rejected,
+      newAdded,
+      landmarkTotal: lm.length,
+      scopeTotal: visibleFeatures.length
+    };
+  }, [visibleFeatures]);
+
+  const showEnumeratorQualityPanel =
+    !isAdmin &&
+    userProfile?.role === 'enumerator' &&
+    userProfile?.status === 'approved' &&
+    assignedWardsForFilter.length > 0;
+
+  const [approvedEnumeratorsAdmin, setApprovedEnumeratorsAdmin] = useState<
+    Array<{ email: string; displayName: string; assignedWardNames: string[] }>
+  >([]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setApprovedEnumeratorsAdmin([]);
+      return;
+    }
+    const q = query(collection(db, 'users'), where('status', '==', 'approved'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const byEmail = new Map<string, { email: string; displayName: string; assignedWardNames: string[] }>();
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as UserProfile;
+          if (d.role !== 'enumerator') return;
+          const email = (d.email || '').trim();
+          if (!email) return;
+          const key = email.toLowerCase();
+          const wards = assignedWardsFromUserProfile(d);
+          const candidateName = normalizedFullName(d.displayName, email);
+
+          const existing = byEmail.get(key);
+          if (!existing) {
+            byEmail.set(key, {
+              email,
+              displayName: candidateName,
+              assignedWardNames: wards
+            });
+            return;
+          }
+
+          // Prefer the most descriptive full-name variant.
+          const existingScore = existing.displayName.replace(/\s+/g, '').length + (existing.displayName.includes(' ') ? 100 : 0);
+          const candidateScore = candidateName.replace(/\s+/g, '').length + (candidateName.includes(' ') ? 100 : 0);
+          if (candidateScore > existingScore) {
+            existing.displayName = candidateName;
+          }
+          existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wards])];
+        });
+        const rows = Array.from(byEmail.values()).sort((a, b) => a.displayName.localeCompare(b.displayName));
+        setApprovedEnumeratorsAdmin(rows);
+      },
+      (err) => console.error('approved enumerators snapshot', err)
+    );
+    return () => unsub();
+  }, [isAdmin]);
+
+  type EnumeratorLandmarkSummaryRow = {
+    email: string;
+    displayName: string;
+    pending: number;
+    verified: number;
+    rejected: number;
+    newAdded: number;
+    total: number;
+  };
+
+  const adminLandmarksByEnumerator = useMemo(() => {
+    if (!isAdmin) {
+      return { rows: [] as EnumeratorLandmarkSummaryRow[], unassigned: null as EnumeratorLandmarkSummaryRow | null };
+    }
+
+    const byEmail = new Map<string, EnumeratorLandmarkSummaryRow>();
+    for (const e of approvedEnumeratorsAdmin) {
+      const key = e.email.toLowerCase();
+      byEmail.set(key, {
+        email: e.email,
+        displayName: e.displayName,
+        pending: 0,
+        verified: 0,
+        rejected: 0,
+        newAdded: 0,
+        total: 0
+      });
+    }
+
+    const unassigned: EnumeratorLandmarkSummaryRow = {
+      email: '',
+      displayName: 'Unassigned Landmark',
+      pending: 0,
+      verified: 0,
+      rejected: 0,
+      newAdded: 0,
+      total: 0
+    };
+
+    for (const f of features) {
+      if (!isImportedLandmarkPoint(f)) continue;
+      const wardLabel = effectiveWardLabelForFeature(f, wardsData);
+      let matchKey: string | null = null;
+      if (wardLabel) {
+        for (const e of approvedEnumeratorsAdmin) {
+          if (
+            e.assignedWardNames.length > 0 &&
+            wardMatchesAssignedList(wardLabel, e.assignedWardNames)
+          ) {
+            matchKey = e.email.toLowerCase();
+            break;
+          }
+        }
+      }
+      const agg = matchKey ? byEmail.get(matchKey) : null;
+      const t = agg ?? unassigned;
+      t.total += 1;
+      if (f.status === 'verified') t.verified += 1;
+      else if (f.status === 'rejected') t.rejected += 1;
+      else t.pending += 1;
+      if (isNewlyAddedFeature(f)) t.newAdded += 1;
+    }
+
+    return {
+      rows: Array.from(byEmail.values()),
+      unassigned: unassigned.total > 0 ? unassigned : null
+    };
+  }, [isAdmin, features, approvedEnumeratorsAdmin]);
+
+  const groupedWardRows = useMemo(() => {
+    const byWard = new Map<string, GeoFeature[]>();
+    for (const f of visibleFeatures) {
+      const ward = effectiveWardLabelForFeature(f, wardsData) || 'Unassigned';
+      const arr = byWard.get(ward) ?? [];
+      arr.push(f);
+      byWard.set(ward, arr);
+    }
+
+    const rows = Array.from(byWard.entries()).map(([wardLabel, wardFeatures]) => ({
+      wardLabel,
+      wardKey: normalizeWardKey(wardLabel),
+      features: wardFeatures.sort((a, b) => {
+        const an = String(a.attributes?.name || '');
+        const bn = String(b.attributes?.name || '');
+        return an.localeCompare(bn);
+      })
+    }));
+
+    rows.sort((a, b) => {
+      const an = parseWardNumber(a.wardLabel);
+      const bn = parseWardNumber(b.wardLabel);
+      if (an !== null && bn !== null) return an - bn;
+      if (an !== null) return -1;
+      if (bn !== null) return 1;
+      return a.wardLabel.localeCompare(b.wardLabel);
+    });
+    return rows;
+  }, [visibleFeatures]);
+
+  const wardOwnerByKey = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!isAdmin) return m;
+    for (const row of groupedWardRows) {
+      const owners = approvedEnumeratorsAdmin
+        .filter((e) => e.assignedWardNames.some((w) => wardMatchesAssignedList(row.wardLabel, [w])))
+        .map((e) => e.displayName);
+      const dedupedOwners = [...new Set(owners)];
+      if (dedupedOwners.length > 0) m.set(row.wardKey, dedupedOwners.join(', '));
+    }
+    return m;
+  }, [isAdmin, groupedWardRows, approvedEnumeratorsAdmin]);
+
+  const toggleWardExpanded = (wardKey: string) => {
+    setExpandedWardKeys((prev) =>
+      prev.includes(wardKey) ? prev.filter((k) => k !== wardKey) : [...prev, wardKey]
+    );
+  };
 
   const distanceMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
     const toRad = (d: number) => (d * Math.PI) / 180;
@@ -393,7 +691,54 @@ const AppContent: React.FC = () => {
   };
 
   const handleMapClick = async (lat: number, lng: number) => {
-    if (!isAddingFeature || !user) return;
+    if (!user) return;
+
+    if (movingFeature) {
+      if (movingFeature.type !== 'point') {
+        setMovingFeature(null);
+        return;
+      }
+      try {
+        const latestFeature =
+          features.find((f) => f.id === movingFeature.id) || movingFeature;
+        const previousGeometry = latestFeature.geometry;
+        const nextGeometry = { type: 'Point' as const, coordinates: [lng, lat] };
+        const prevLng = Number(previousGeometry?.coordinates?.[0]);
+        const prevLat = Number(previousGeometry?.coordinates?.[1]);
+        const moveRemark = `Feature moved from (${Number.isFinite(prevLat) ? prevLat.toFixed(6) : 'n/a'}, ${Number.isFinite(prevLng) ? prevLng.toFixed(6) : 'n/a'}) to (${lat.toFixed(6)}, ${lng.toFixed(6)}) by ${user.email || 'user'} at ${new Date().toISOString()}`;
+        await updateDoc(doc(db, 'features', movingFeature.id), {
+          geometry: nextGeometry,
+          moveRemarks: moveRemark,
+          updatedBy: user.email || 'user',
+          updatedByUid: user.uid,
+          updatedAt: serverTimestamp(),
+          ...(location && {
+            collectorLocation: {
+              lat: location.lat,
+              lng: location.lng,
+              accuracy: location.accuracy
+            }
+          })
+        });
+
+        setSelectedFeature((prev) =>
+          prev && prev.id === movingFeature.id
+            ? ({ ...prev, geometry: nextGeometry } as GeoFeature)
+            : prev
+        );
+        setLastMovedPoint({
+          featureId: movingFeature.id,
+          featureName: String(movingFeature.attributes?.name || 'Selected Landmark'),
+          previousGeometry
+        });
+        setMovingFeature(null);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, 'features');
+      }
+      return;
+    }
+
+    if (!isAddingFeature) return;
 
     try {
       let geometry: any;
@@ -459,6 +804,7 @@ const AppContent: React.FC = () => {
           __source: isAddingFeature === 'point' ? 'landmark_manual' : 'manual'
         },
         status: 'pending',
+        newFeatureRemarks: 'New added feature remarks.',
         createdBy: user.email,
         createdByUid: user.uid,
         updatedBy: user.email,
@@ -485,6 +831,7 @@ const AppContent: React.FC = () => {
       geometry: selectedFeature.geometry,
       attributes: payload.attributes,
       status: payload.status,
+      newFeatureRemarks: 'New added feature remarks.',
       createdBy: user.email,
       createdByUid: user.uid,
       updatedBy: user.email,
@@ -605,6 +952,45 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const startMoveFeature = (feature: GeoFeature) => {
+    if (feature.type !== 'point') {
+      alert('Only point features can be moved.');
+      return;
+    }
+    setMovingFeature(feature);
+    setIsAddingFeature(null);
+    setSelectedFeature(feature);
+    setActiveTab('map');
+  };
+
+  const cancelMoveFeature = () => {
+    setMovingFeature(null);
+  };
+
+  const undoLastMove = async () => {
+    if (!user || !lastMovedPoint) return;
+    try {
+      const undoLng = Number(lastMovedPoint.previousGeometry?.coordinates?.[0]);
+      const undoLat = Number(lastMovedPoint.previousGeometry?.coordinates?.[1]);
+      const undoRemark = `Move undone to (${Number.isFinite(undoLat) ? undoLat.toFixed(6) : 'n/a'}, ${Number.isFinite(undoLng) ? undoLng.toFixed(6) : 'n/a'}) by ${user.email || 'user'} at ${new Date().toISOString()}`;
+      await updateDoc(doc(db, 'features', lastMovedPoint.featureId), {
+        geometry: lastMovedPoint.previousGeometry,
+        moveRemarks: undoRemark,
+        updatedBy: user.email || 'user',
+        updatedByUid: user.uid,
+        updatedAt: serverTimestamp()
+      });
+      setSelectedFeature((prev) =>
+        prev && prev.id === lastMovedPoint.featureId
+          ? ({ ...prev, geometry: lastMovedPoint.previousGeometry } as GeoFeature)
+          : prev
+      );
+      setLastMovedPoint(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'features');
+    }
+  };
+
   if (authLoading) return (
     <div className="h-screen flex items-center justify-center bg-slate-50">
       <div className="animate-bounce flex space-x-2">
@@ -709,6 +1095,20 @@ const AppContent: React.FC = () => {
             <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
             <span className="text-xs font-medium text-slate-600">Live Sync Active</span>
           </div>
+          {assignedWardsForFilter.length > 0 && !isAdmin && (
+            <div
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-full border border-indigo-100 max-w-[min(100vw-12rem,320px)]"
+              title={`You only see features whose Ward_Name matches one of: ${assignedWardsForFilter.join(', ')}`}
+            >
+              <MapPin size={14} className="text-indigo-600 shrink-0" />
+              <span className="text-xs font-semibold text-indigo-800 truncate">
+                Wards:{' '}
+                {assignedWardsForFilter.length <= 2
+                  ? assignedWardsForFilter.join(', ')
+                  : `${assignedWardsForFilter.length} selected (${assignedWardsForFilter.slice(0, 2).join(', ')}…)`}
+              </span>
+            </div>
+          )}
           
           <div className="flex items-center gap-3 border-l border-slate-200 pl-4 ml-4">
             {isAdmin && (
@@ -744,9 +1144,15 @@ const AppContent: React.FC = () => {
             <MapComponent 
               features={visibleFeatures}
               wards={wardsData}
+              enumeratorLandmarkWardFilter={
+                !isAdmin && assignedWardsForFilter.length > 0 ? assignedWardsForFilter : undefined
+              }
               onFeatureSelect={setSelectedFeature}
+              onRequestMoveFeature={startMoveFeature}
+              onCancelMoveFeature={cancelMoveFeature}
               onLandmarkPointSelect={handleLandmarkPointSelect}
               selectedFeatureId={selectedFeature?.id}
+              movingFeatureId={movingFeature?.id || null}
               onMapClick={handleMapClick}
               addFeatureType={isAddingFeature}
               showPointAddBuffer={!isAdmin && isAddingFeature === 'point'}
@@ -756,48 +1162,108 @@ const AppContent: React.FC = () => {
               <div className="max-w-4xl mx-auto space-y-4">
                 <h2 className="text-xl font-bold flex items-center gap-2 mb-6">
                   <List size={24} className="text-blue-600" />
-                  Attribute Data Table
+                  Attribute Data Table (Ward-wise)
                 </h2>
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                   <table className="w-full text-left border-collapse">
                     <thead className="bg-slate-50 border-b border-slate-100">
                       <tr>
-                        <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type</th>
-                        <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Name/Attributes</th>
+                        <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Ward / Feature</th>
+                        <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type / Enumerator</th>
                         <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</th>
                         <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {visibleFeatures.map(f => (
-                        <tr key={f.id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-4 py-4 capitalize font-medium text-slate-600 text-sm">{f.type}</td>
-                          <td className="px-4 py-4">
-                            <span className="text-sm font-semibold">{f.attributes.name || 'Unnamed Feature'}</span>
-                            <div className="flex gap-1 mt-1">
-                              {Object.entries(f.attributes).slice(0, 2).map(([k, v]) => (
-                                <span key={k} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{k}: {v}</span>
+                      {groupedWardRows.map((row) => {
+                        const expanded = expandedWardKeys.includes(row.wardKey);
+                        return (
+                          <React.Fragment key={row.wardKey}>
+                            <tr className="bg-slate-50/80">
+                              <td className="px-4 py-3">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleWardExpanded(row.wardKey)}
+                                  className="inline-flex items-center gap-2 text-sm font-bold text-slate-800"
+                                >
+                                  <span className="inline-flex items-center justify-center h-5 w-5 rounded border border-slate-300 bg-white text-slate-700 text-xs">
+                                    {expanded ? '−' : '+'}
+                                  </span>
+                                  <span>{row.wardLabel}</span>
+                                  <span className="text-[10px] text-slate-500">({row.features.length})</span>
+                                </button>
+                              </td>
+                              <td className="px-4 py-3 text-xs text-slate-600">
+                                {isAdmin ? (
+                                  <>
+                                    <span className="font-semibold text-slate-500">Enumerator: </span>
+                                    {wardOwnerByKey.get(row.wardKey) || 'Not assigned'}
+                                  </>
+                                ) : (
+                                  'Assigned ward scope'
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-xs text-slate-500">
+                                {row.features.filter((f) => f.status === 'pending').length} P /{' '}
+                                {row.features.filter((f) => f.status === 'verified').length} V /{' '}
+                                {row.features.filter((f) => f.status === 'rejected').length} R
+                              </td>
+                              <td className="px-4 py-3 text-xs text-slate-400">
+                                {expanded ? 'Expanded' : 'Collapsed'}
+                              </td>
+                            </tr>
+
+                            {expanded &&
+                              row.features.map((f) => (
+                                <tr key={f.id} className="hover:bg-slate-50/50 transition-colors">
+                                  <td className="px-4 py-3">
+                                    <span className="text-sm font-semibold">{f.attributes.name || 'Unnamed Feature'}</span>
+                                    <div className="flex gap-1 mt-1 flex-wrap">
+                                      {landmarkAttributesForTable(f.attributes || {}).map(([k, v]) => (
+                                        <span key={k} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{k}: {v}</span>
+                                      ))}
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-3 capitalize font-medium text-slate-600 text-sm">{f.type}</td>
+                                  <td className="px-4 py-3">
+                                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
+                                      f.status === 'verified' ? 'bg-green-100 text-green-700' :
+                                      f.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                                    }`}>
+                                      {f.status}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <button
+                                      onClick={() => { setSelectedFeature(f); setActiveTab('map'); }}
+                                      className="text-blue-600 text-xs font-bold hover:underline"
+                                    >
+                                      Edit on Map
+                                    </button>
+                                    {f.type === 'point' && (
+                                      <>
+                                        <button
+                                          onClick={() => startMoveFeature(f)}
+                                          className="ml-3 text-indigo-600 text-xs font-bold hover:underline"
+                                        >
+                                          Move Point
+                                        </button>
+                                        {movingFeature?.id === f.id && (
+                                          <button
+                                            onClick={cancelMoveFeature}
+                                            className="ml-3 text-slate-600 text-xs font-bold hover:underline"
+                                          >
+                                            Cancel Move
+                                          </button>
+                                        )}
+                                      </>
+                                    )}
+                                  </td>
+                                </tr>
                               ))}
-                            </div>
-                          </td>
-                          <td className="px-4 py-4">
-                            <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
-                              f.status === 'verified' ? 'bg-green-100 text-green-700' :
-                              f.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
-                            }`}>
-                              {f.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4">
-                            <button 
-                              onClick={() => { setSelectedFeature(f); setActiveTab('map'); }}
-                              className="text-blue-600 text-xs font-bold hover:underline"
-                            >
-                              Edit on Map
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -842,7 +1308,10 @@ const AppContent: React.FC = () => {
           <div className="absolute top-0 right-0 h-full z-[1002] flex animate-in slide-in-from-right duration-300">
             <FeatureEditor 
               feature={selectedFeature} 
-              onClose={() => setSelectedFeature(null)} 
+              onClose={() => {
+                setSelectedFeature(null);
+                setMovingFeature(null);
+              }} 
               isAdmin={isAdmin}
               isNewFeature={selectedFeature.id.startsWith('draft_')}
               onCreateFeature={handleCreateFeatureFromEditor}
@@ -894,9 +1363,9 @@ const AppContent: React.FC = () => {
         </div>
 
         {/* Quick Stats Floating (Admin) */}
-        {isAdmin && activeTab === 'map' && (
+        {isAdmin && (
           <div className="absolute top-4 left-4 z-[1000] flex flex-col gap-2">
-            <div className="bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-lg border border-white/50 w-48">
+            <div className="bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-lg border border-white/50 w-64 max-w-[calc(100vw-2rem)]">
               <div className="flex items-center gap-2 mb-3">
                 <Shield size={16} className="text-blue-600" />
                 <span className="text-xs font-bold uppercase tracking-wider">Quality Control</span>
@@ -913,6 +1382,10 @@ const AppContent: React.FC = () => {
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Rejected</span>
                   <span className="font-bold text-red-600">{importedLandmarkFeatures.filter(f => f.status === 'rejected').length}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-500">New Added</span>
+                  <span className="font-bold text-violet-700">{visibleFeatures.filter(isNewlyAddedFeature).length}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Landmarks (imported)</span>
@@ -965,7 +1438,144 @@ const AppContent: React.FC = () => {
                     {importNotice.message}
                   </div>
                 )}
+
+                <div className="border-t border-slate-200 pt-3 mt-1">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Users size={14} className="text-slate-600 shrink-0" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                      By enumerator
+                    </span>
+                  </div>
+                  <p className="text-[9px] text-slate-400 mb-2 leading-snug">
+                    Imported landmark points: pending / verified / rejected by task ward (same rules as map).
+                  </p>
+                  <div className="max-h-56 overflow-y-auto rounded-lg border border-slate-100">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500">
+                          <th className="text-left px-1.5 py-1 font-semibold">Name</th>
+                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-amber-600" title="Pending">
+                            P
+                          </th>
+                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-green-600" title="Verified">
+                            V
+                          </th>
+                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-red-600" title="Rejected">
+                            R
+                          </th>
+                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-slate-600" title="Total">
+                            Σ
+                          </th>
+                          <th className="text-center px-0.5 py-1 w-7 font-semibold text-violet-700" title="New Added">
+                            N
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminLandmarksByEnumerator.rows.map((r) => (
+                          <tr key={r.email} className="border-t border-slate-100">
+                            <td className="px-1.5 py-1 text-slate-800 truncate max-w-[7rem]" title={r.email}>
+                              {r.displayName}
+                            </td>
+                            <td className="text-center py-1 font-semibold text-amber-600">{r.pending}</td>
+                            <td className="text-center py-1 font-semibold text-green-600">{r.verified}</td>
+                            <td className="text-center py-1 font-semibold text-red-600">{r.rejected}</td>
+                            <td className="text-center py-1 font-semibold text-slate-700">{r.total}</td>
+                            <td className="text-center py-1 font-semibold text-violet-700">{r.newAdded}</td>
+                          </tr>
+                        ))}
+                        {adminLandmarksByEnumerator.unassigned && (
+                          <tr className="border-t border-amber-100 bg-amber-50/60">
+                            <td className="px-1.5 py-1 text-amber-900 font-medium truncate max-w-[7rem]">
+                              {adminLandmarksByEnumerator.unassigned.displayName}
+                            </td>
+                            <td className="text-center py-1 font-bold text-amber-800">
+                              {adminLandmarksByEnumerator.unassigned.pending}
+                            </td>
+                            <td className="text-center py-1 font-bold text-green-800">
+                              {adminLandmarksByEnumerator.unassigned.verified}
+                            </td>
+                            <td className="text-center py-1 font-bold text-red-800">
+                              {adminLandmarksByEnumerator.unassigned.rejected}
+                            </td>
+                            <td className="text-center py-1 font-bold text-slate-800">
+                              {adminLandmarksByEnumerator.unassigned.total}
+                            </td>
+                            <td className="text-center py-1 font-bold text-violet-800">
+                              {adminLandmarksByEnumerator.unassigned.newAdded}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Quality Control — enumerator (assigned wards scope, map tab) */}
+        {showEnumeratorQualityPanel && (
+          <div className="absolute top-4 left-4 z-[1000] flex flex-col gap-2">
+            <div className="bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-lg border border-white/50 w-52">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Activity size={16} className="text-indigo-600" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-800">Quality Control</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEnumeratorQcExpanded((v) => !v)}
+                  className="h-6 w-6 shrink-0 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 text-xs font-bold"
+                  title={enumeratorQcExpanded ? 'Hide quality summary' : 'Expand quality summary'}
+                >
+                  {enumeratorQcExpanded ? '−' : '+'}
+                </button>
+              </div>
+              {enumeratorQcExpanded && (
+                <>
+                  <p className="text-[10px] text-slate-500 mb-3 leading-snug">
+                    Your wards:{' '}
+                    <span className="font-semibold text-slate-700">
+                      {assignedWardsForFilter.length <= 2
+                        ? assignedWardsForFilter.join(', ')
+                        : `${assignedWardsForFilter.length} wards`}
+                    </span>
+                  </p>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-500">Verified</span>
+                      <span className="font-bold text-green-600">{enumeratorTaskStats.verified}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-500">Pending</span>
+                      <span className="font-bold text-amber-600">{enumeratorTaskStats.pending}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-500">Rejected</span>
+                      <span className="font-bold text-red-600">{enumeratorTaskStats.rejected}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-500">New Added</span>
+                      <span className="font-bold text-violet-700">{enumeratorTaskStats.newAdded}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs border-t border-slate-100 pt-2">
+                      <span className="text-slate-500">Landmarks (assigned)</span>
+                      <span className="font-bold text-slate-800">{enumeratorTaskStats.landmarkTotal}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-500">Total (all features)</span>
+                      <span className="font-bold text-slate-800">{enumeratorTaskStats.scopeTotal}</span>
+                    </div>
+                  </div>
+                </>
+              )}
+              {!enumeratorQcExpanded && (
+                <div className="text-[10px] text-slate-500">
+                  Hidden. Click <span className="font-semibold">+</span> to expand.
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -975,6 +1585,41 @@ const AppContent: React.FC = () => {
       {isAddingFeature && (
         <div className="bg-blue-600 text-white text-center py-1 text-xs font-bold animate-pulse">
           MODE: CLICK ON MAP TO ADD {isAddingFeature.toUpperCase()}
+        </div>
+      )}
+      {movingFeature && (
+        <div className="bg-indigo-600 text-white text-center py-1.5 text-xs font-bold flex items-center justify-center gap-3">
+          <span>
+            MOVE MODE: Click map to set new location for {movingFeature.attributes?.name || 'selected landmark'}.
+          </span>
+          <button
+            type="button"
+            onClick={cancelMoveFeature}
+            className="px-2 py-0.5 rounded bg-white/20 hover:bg-white/30"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {!movingFeature && lastMovedPoint && (
+        <div className="bg-amber-600 text-white text-center py-1.5 text-xs font-bold flex items-center justify-center gap-3">
+          <span>
+            Point moved: {lastMovedPoint.featureName}
+          </span>
+          <button
+            type="button"
+            onClick={() => void undoLastMove()}
+            className="px-2 py-0.5 rounded bg-white/20 hover:bg-white/30"
+          >
+            Undo Move
+          </button>
+          <button
+            type="button"
+            onClick={() => setLastMovedPoint(null)}
+            className="px-2 py-0.5 rounded bg-white/20 hover:bg-white/30"
+          >
+            Dismiss
+          </button>
         </div>
       )}
     </div>

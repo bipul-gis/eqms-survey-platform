@@ -1,12 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Polygon, useMapEvents, Circle, CircleMarker, GeoJSON, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { GeoFeature, WardBoundary } from '../types';
+import { GeoFeature } from '../types';
 import { useGeoLocation } from './GeoLocationProvider';
+import { useAuth } from './AuthProvider';
+import { db } from '../lib/firebase';
+import { doc, setDoc } from 'firebase/firestore';
 import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
 import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
+import { staticLandmarkMatchesAssignedWards } from '../lib/wardGeometry';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
+const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
+
+const clampScale = (n: number) => Math.min(2.4, Math.max(0.6, Math.round(n * 10) / 10));
 
 const readStoredLandmarkIconScale = (): number => {
   try {
@@ -14,10 +21,30 @@ const readStoredLandmarkIconScale = (): number => {
     if (!raw) return 1;
     const n = Number(raw);
     if (!Number.isFinite(n)) return 1;
-    return Math.min(2.4, Math.max(0.6, Math.round(n * 10) / 10));
+    return clampScale(n);
   } catch {
     return 1;
   }
+};
+
+const normalizeLandmarkAttributesForDisplay = (attrs: Record<string, any>) => {
+  const normalized: Record<string, any> = {
+    FID: attrs?.FID ?? '',
+    name: attrs?.name ?? attrs?.Name ?? '',
+    Category: attrs?.Category ?? '',
+    Type: attrs?.Type ?? '',
+    Ownership: attrs?.Ownership ?? '',
+    Ward_Name: attrs?.Ward_Name ?? attrs?.WARDNAME ?? attrs?.WardName ?? '',
+    Zone: attrs?.Zone ?? ''
+  };
+
+  const seen = new Set<string>(Object.keys(normalized));
+  const extra = Object.entries(attrs || {})
+    .filter(([k]) => !seen.has(k) && !k.startsWith('__'))
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  const ordered = LANDMARK_ATTRIBUTE_ORDER.map((k) => [k, normalized[k]]);
+  return [...ordered, ...extra] as Array<[string, any]>;
 };
 
 // Fix for default marker icons in Leaflet with React
@@ -32,9 +59,14 @@ L.Icon.Default.mergeOptions({
 interface MapComponentProps {
   features: GeoFeature[];
   wards: any; // Using any for GeoJSON FeatureCollection
+  /** When set (e.g. ward-tasked enumerators), GeoJSON-only landmark dots must match one of these wards; ward polygons stay full layer via `wards`. */
+  enumeratorLandmarkWardFilter?: string[];
   onFeatureSelect: (feature: GeoFeature) => void;
+  onRequestMoveFeature?: (feature: GeoFeature) => void;
+  onCancelMoveFeature?: () => void;
   onLandmarkPointSelect?: (point: { lat: number; lng: number; properties: Record<string, any> }) => void;
   selectedFeatureId?: string;
+  movingFeatureId?: string | null;
   onMapClick?: (lat: number, lng: number) => void;
   addFeatureType: 'point' | 'line' | 'polygon' | null;
   showPointAddBuffer?: boolean;
@@ -69,33 +101,105 @@ const FocusOnUserForPointAdd = ({
   return null;
 };
 
+const FocusOnSelectedFeature = ({ feature }: { feature: GeoFeature | null }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!feature) return;
+
+    const coords = feature.geometry?.coordinates;
+    if (feature.type === 'point' && Array.isArray(coords) && coords.length >= 2) {
+      const lng = Number(coords[0]);
+      const lat = Number(coords[1]);
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+      map.flyTo([lat, lng], Math.max(map.getZoom(), 18), { duration: 0.7 });
+      return;
+    }
+
+    if (feature.type === 'line' && Array.isArray(coords) && coords.length > 0) {
+      const latLngs = coords
+        .map((c: [number, number]) => [Number(c[1]), Number(c[0])] as [number, number])
+        .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]));
+      if (latLngs.length > 0) {
+        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], maxZoom: 18, animate: true });
+      }
+      return;
+    }
+
+    if (feature.type === 'polygon' && Array.isArray(coords) && Array.isArray(coords[0])) {
+      const latLngs = coords[0]
+        .map((c: [number, number]) => [Number(c[1]), Number(c[0])] as [number, number])
+        .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]));
+      if (latLngs.length > 0) {
+        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50], maxZoom: 18, animate: true });
+      }
+    }
+  }, [feature, map]);
+
+  return null;
+};
+
 export const MapComponent: React.FC<MapComponentProps> = ({ 
   features, 
-  wards, 
+  wards,
+  enumeratorLandmarkWardFilter,
   onFeatureSelect, 
+  onRequestMoveFeature,
+  onCancelMoveFeature,
   onLandmarkPointSelect,
   selectedFeatureId,
+  movingFeatureId,
   onMapClick,
   addFeatureType,
   showPointAddBuffer = false
 }) => {
   const { location } = useGeoLocation();
+  const { user, userProfile } = useAuth();
   const [showWards, setShowWards] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>('osm');
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
   const [landmarkPoints, setLandmarkPoints] = useState<Array<{ lat: number; lng: number; properties: Record<string, any> }>>([]);
+  const [pulseFeatureId, setPulseFeatureId] = useState<string | null>(null);
   const isAddingFeature = !!addFeatureType;
   const landmarkScaleHydratedRef = useRef(false);
+  const pulseTimerRef = useRef<number | null>(null);
+
+  const selectedFeature = selectedFeatureId
+    ? features.find((f) => f.id === selectedFeatureId) || null
+    : null;
 
   const clampLandmarkRadius = (r: number) => Math.min(24, Math.max(3, Math.round(r)));
-  const radiusForLandmark = (base: number, selected: boolean) =>
-    clampLandmarkRadius(base * landmarkIconScale * (selected ? 1.35 : 1));
+  const radiusForLandmark = (base: number, selected: boolean, pulsing: boolean) =>
+    clampLandmarkRadius(base * landmarkIconScale * (selected ? (pulsing ? 1.9 : 1.35) : 1));
+
+  useEffect(() => {
+    if (!selectedFeatureId) return;
+    setPulseFeatureId(selectedFeatureId);
+    if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current);
+    pulseTimerRef.current = window.setTimeout(() => {
+      setPulseFeatureId((curr) => (curr === selectedFeatureId ? null : curr));
+    }, 1400);
+  }, [selectedFeatureId]);
+
+  useEffect(() => {
+    return () => {
+      if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     landmarkScaleHydratedRef.current = true;
   }, []);
+
+  useEffect(() => {
+    const remote = userProfile?.landmarkIconScale;
+    if (typeof remote === 'number' && Number.isFinite(remote)) {
+      const clamped = clampScale(remote);
+      setLandmarkIconScale(clamped);
+    }
+  }, [userProfile?.landmarkIconScale]);
 
   useEffect(() => {
     if (!landmarkScaleHydratedRef.current) return;
@@ -105,6 +209,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       /* ignore */
     }
   }, [landmarkIconScale]);
+
+  const syncLandmarkScaleToFirestore = useCallback(async (clamped: number) => {
+    if (!user) return;
+    try {
+      await setDoc(
+        doc(db, 'users', user.uid),
+        { landmarkIconScale: clamped },
+        { merge: true }
+      );
+    } catch (e) {
+      console.error('Failed to persist landmark icon scale', e);
+    }
+  }, [user]);
+
+  const bumpLandmarkScale = useCallback(
+    (delta: number) => {
+      setLandmarkIconScale((prev) => {
+        const next = clampScale(prev + delta);
+        void syncLandmarkScaleToFirestore(next);
+        return next;
+      });
+    },
+    [syncLandmarkScaleToFirestore]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -143,6 +271,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       default: return '#f59e0b';
     }
   };
+
+  const isNewlyAddedFeature = (feature: GeoFeature) =>
+    typeof feature.newFeatureRemarks === 'string' && feature.newFeatureRemarks.trim().length > 0;
+
+  const getFeatureColor = (feature: GeoFeature) =>
+    isNewlyAddedFeature(feature) ? '#7c3aed' : getStatusColor(feature.status);
 
   const normalizeLandmarkFid = (value: unknown): number | undefined => {
     if (value === null || value === undefined || value === '') return undefined;
@@ -188,6 +322,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         zoom={13} 
         className="w-full h-full"
       >
+        <FocusOnSelectedFeature feature={selectedFeature} />
         {baseMap === 'osm' && (
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -229,7 +364,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {/* Existing Features */}
         {features.map(feature => {
           const isSelected = feature.id === selectedFeatureId;
-          const color = getStatusColor(feature.status);
+          const isMoveTarget = feature.id === movingFeatureId;
+          const isPulsing = feature.id === pulseFeatureId;
+          const color = getFeatureColor(feature);
 
           if (feature.type === 'point') {
             if (!showLandmarks) return null;
@@ -237,12 +374,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               <CircleMarker
                 key={feature.id}
                 center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
-                radius={radiusForLandmark(7, isSelected)}
+                radius={radiusForLandmark(7, isSelected, isPulsing)}
                 pathOptions={{ 
-                  color: color,
-                  fillColor: color, 
+                  color: isMoveTarget ? '#2563eb' : color,
+                  fillColor: isMoveTarget ? '#3b82f6' : color, 
                   fillOpacity: 0.9,
-                  weight: isSelected ? 3 : 2
+                  weight: isMoveTarget ? 4 : isSelected ? (isPulsing ? 4 : 3) : 2
                 }}
               >
                 <Popup>
@@ -251,7 +388,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     <div className="max-h-48 overflow-auto border border-gray-100 rounded">
                       <table className="w-full text-[10px]">
                         <tbody>
-                          {Object.entries(feature.attributes || {}).map(([k, v]) => (
+                          {normalizeLandmarkAttributesForDisplay(feature.attributes || {}).map(([k, v]) => (
                             <tr key={k} className="border-b border-gray-100 last:border-b-0">
                               <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                               <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -266,6 +403,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     >
                       Edit Attributes
                     </button>
+                    <button
+                      className="mt-2 w-full bg-indigo-600 text-white text-xs font-medium py-1.5 rounded hover:bg-indigo-700"
+                      onClick={() => onRequestMoveFeature?.(feature)}
+                    >
+                      {isMoveTarget ? 'Move Mode Active' : 'Move Point'}
+                    </button>
+                    {isMoveTarget && (
+                      <button
+                        className="mt-2 w-full bg-slate-100 text-slate-700 text-xs font-medium py-1.5 rounded hover:bg-slate-200"
+                        onClick={() => onCancelMoveFeature?.()}
+                      >
+                        Cancel Move
+                      </button>
+                    )}
                   </div>
                 </Popup>
               </CircleMarker>
@@ -313,6 +464,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             Hide a GeoJSON point when a matching Firestore feature exists so users
             always interact with the live/editable record after first edit/create. */}
         {showLandmarks && landmarkPoints
+          .filter((p) =>
+            staticLandmarkMatchesAssignedWards(
+              p.lng,
+              p.lat,
+              p.properties,
+              enumeratorLandmarkWardFilter ?? [],
+              wards
+            )
+          )
           .filter((p) => {
             // If a Firestore record exists for this landmark, render ONLY the Firestore marker
             // (same status symbology) to avoid double-markers.
@@ -322,7 +482,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           <CircleMarker
             key={`landmark_geojson_${idx}`}
             center={[p.lat, p.lng]}
-            radius={radiusForLandmark(5, false)}
+            radius={radiusForLandmark(5, false, false)}
             pathOptions={{
               color: getStatusColor('pending'),
               fillColor: getStatusColor('pending'),
@@ -336,7 +496,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <div className="max-h-44 overflow-auto border border-gray-100 rounded">
                   <table className="w-full text-[10px]">
                     <tbody>
-                      {Object.entries(p.properties).map(([k, v]) => (
+                      {normalizeLandmarkAttributesForDisplay(p.properties || {}).map(([k, v]) => (
                         <tr key={k} className="border-b border-gray-100 last:border-b-0">
                           <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                           <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -390,7 +550,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </>
         )}
 
-        {isAddingFeature && onMapClick && <MapEvents onClick={onMapClick} />}
+        {(isAddingFeature || !!movingFeatureId) && onMapClick && <MapEvents onClick={onMapClick} />}
       </MapContainer>
 
       {/* Click-to-open layer panel */}
@@ -430,7 +590,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
-                    onClick={() => setLandmarkIconScale((s) => Math.max(0.6, Math.round((s - 0.1) * 10) / 10))}
+                    onClick={() => bumpLandmarkScale(-0.1)}
                     className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
                     title="Smaller landmark dots"
                     disabled={landmarkIconScale <= 0.6}
@@ -439,7 +599,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setLandmarkIconScale((s) => Math.min(2.4, Math.round((s + 0.1) * 10) / 10))}
+                    onClick={() => bumpLandmarkScale(0.1)}
                     className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
                     title="Larger landmark dots"
                     disabled={landmarkIconScale >= 2.4}

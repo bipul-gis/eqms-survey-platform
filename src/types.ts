@@ -8,6 +8,10 @@ export interface GeoFeature {
   attributes: Record<string, any>;
   status: FeatureStatus;
   remarks?: string;
+  /** Auto-generated backend note for point move operations. */
+  moveRemarks?: string;
+  /** Auto-generated backend note when a new feature is created. */
+  newFeatureRemarks?: string;
   createdBy: string;
   updatedBy: string;
   updatedAt: string;
@@ -30,6 +34,17 @@ export interface UserProfile {
   displayName: string;
   role: 'enumerator' | 'admin';
   status: 'pending' | 'approved' | 'rejected';
+  /** Map UI preference: landmark circle marker scale (client-clamped roughly 0.6–2.4). */
+  landmarkIconScale?: number;
+  /**
+   * @deprecated Use `assignedWardNames`. Kept for older user docs.
+   */
+  assignedWardName?: string | null;
+  /**
+   * Admin-assigned ward(s) for tasking: feature `Ward_Name` / `WARDNAME` must match one of these
+   * (same strings as ward boundary `WARDNAME`, e.g. Ward 01).
+   */
+  assignedWardNames?: string[];
 }
 
 export type QuestionType = 'text' | 'number' | 'select' | 'multiselect' | 'radio' | 'checkbox' | 'date' | 'location';

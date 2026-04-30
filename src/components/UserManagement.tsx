@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from './AuthProvider';
-import { UserPlus, X, Key, Mail, User as UserIcon, Shield, Check, Clock, Ban } from 'lucide-react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { UserPlus, X, Key, Mail, User as UserIcon, Shield, Check, Clock, Ban, ClipboardList } from 'lucide-react';
+import wardsData from '../data/ccc_wards.json';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, setDoc, collection, query, where, onSnapshot, updateDoc } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db } from '../lib/firebase';
 import { UserProfile } from '../types';
 
 type EnumeratorEntry = {
@@ -14,6 +14,114 @@ type EnumeratorEntry = {
   displayName: string;
   // One email can map to multiple Firebase Auth UIDs.
   uids: string[];
+  /** Normalized list (legacy single ward folded in when loading). */
+  assignedWardNames: string[];
+};
+
+const normalizeWardKey = (s: string) => s.trim().toLowerCase();
+
+const wardsFromUserProfile = (data: UserProfile): string[] => {
+  const list = data.assignedWardNames;
+  if (Array.isArray(list) && list.length > 0) {
+    return [...new Set(list.map((w) => String(w).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  }
+  const legacy = data.assignedWardName;
+  if (typeof legacy === 'string' && legacy.trim()) return [legacy.trim()];
+  return [];
+};
+
+const EnumeratorWardRow: React.FC<{
+  entry: EnumeratorEntry;
+  wardOptions: string[];
+  saving: boolean;
+  onSave: (wards: string[]) => void;
+  /** Normalized ward key -> holder (other enumerators only) */
+  wardHeldByOther: Map<string, { displayName: string; email: string }>;
+}> = ({ entry, wardOptions, onSave, saving, wardHeldByOther }) => {
+  const [value, setValue] = useState<string[]>(() => [...entry.assignedWardNames]);
+
+  useEffect(() => {
+    setValue([...entry.assignedWardNames]);
+  }, [entry.assignedWardNames, entry.email]);
+
+  const toggleWard = (w: string) => {
+    setValue((prev) => {
+      const next = prev.includes(w) ? prev.filter((x) => x !== w) : [...prev, w].sort((a, b) => a.localeCompare(b));
+      return next;
+    });
+  };
+
+  return (
+    <div className="bg-gray-50 border border-gray-100 rounded-xl p-3 space-y-2">
+      <div className="min-w-0">
+        <p className="text-xs font-semibold text-gray-800 truncate">{entry.displayName}</p>
+        <p className="text-[10px] text-gray-500 truncate">{entry.email}</p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Ward_Name (multi)</label>
+          <button
+            type="button"
+            disabled={saving || value.length === 0}
+            onClick={() => setValue([])}
+            className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
+          >
+            Clear all
+          </button>
+        </div>
+        <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
+          {wardOptions.map((w) => {
+            const key = normalizeWardKey(w);
+            const holder = wardHeldByOther.get(key);
+            const mine = value.includes(w);
+            const blocked = !!holder && !mine;
+            const title = blocked && holder
+              ? `Assigned to ${holder.displayName} (${holder.email})`
+              : undefined;
+
+            return (
+              <label
+                key={w}
+                title={title}
+                className={`flex items-start gap-2 text-xs select-none ${
+                  blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={mine}
+                  onChange={() => toggleWard(w)}
+                  disabled={saving || blocked}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mt-0.5 shrink-0"
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-gray-800">{w}</span>
+                  {blocked && holder && (
+                    <span className="block text-[10px] text-amber-700 leading-tight">
+                      Taken · {holder.displayName}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-gray-500">
+          {value.length === 0
+            ? 'No selection — enumerator sees all wards.'
+            : `${value.length} ward(s) selected.`}
+        </p>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => onSave(value)}
+          className="w-full text-xs font-bold py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save assignment'}
+        </button>
+      </div>
+    </div>
+  );
 };
 
 export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) => {
@@ -24,7 +132,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUsers, setPendingUsers] = useState<UserProfile[]>([]);
-  const [activeTab, setActiveTab] = useState<'create' | 'pending'>('pending');
+  const [activeTab, setActiveTab] = useState<'create' | 'pending' | 'tasks'>('pending');
 
   const [activeEnumeratorsCount, setActiveEnumeratorsCount] = useState(0);
   const [activeEnumerators, setActiveEnumerators] = useState<EnumeratorEntry[]>([]);
@@ -33,6 +141,57 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [totalEnumeratorsCount, setTotalEnumeratorsCount] = useState(0);
 
   const [enumActionLoadingEmail, setEnumActionLoadingEmail] = useState<string | null>(null);
+  const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
+
+  const wardNameOptions = useMemo(() => {
+    const fc = wardsData as { features?: Array<{ properties?: { WARDNAME?: string } }> };
+    const names = new Set<string>();
+    for (const f of fc.features || []) {
+      const w = f?.properties?.WARDNAME;
+      if (w) names.add(String(w).trim());
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, []);
+
+  /** For each enumerator row: wards already assigned to someone else (normalized ward key -> holder). */
+  const wardLocksByEnumeratorEmail = useMemo(() => {
+    const result = new Map<string, Map<string, { displayName: string; email: string }>>();
+    for (const target of activeEnumerators) {
+      const myKey = target.email.trim().toLowerCase();
+      const m = new Map<string, { displayName: string; email: string }>();
+      for (const e of activeEnumerators) {
+        if (e.email.trim().toLowerCase() === myKey) continue;
+        for (const w of e.assignedWardNames) {
+          m.set(normalizeWardKey(w), { displayName: e.displayName, email: e.email });
+        }
+      }
+      result.set(target.email, m);
+    }
+    return result;
+  }, [activeEnumerators]);
+
+  /** Same ward given to more than one enumerator (legacy or race) — admin should fix. */
+  const duplicateWardAssignments = useMemo(() => {
+    const keyToOwners = new Map<string, Set<string>>();
+    const keyToLabel = new Map<string, string>();
+    for (const e of activeEnumerators) {
+      const nameLabel = (e.displayName || '').trim() || e.email;
+      for (const w of e.assignedWardNames) {
+        const nk = normalizeWardKey(w);
+        keyToLabel.set(nk, w);
+        const set = keyToOwners.get(nk) ?? new Set<string>();
+        set.add(nameLabel);
+        keyToOwners.set(nk, set);
+      }
+    }
+    const dups: { wardLabel: string; owners: string[] }[] = [];
+    for (const [nk, set] of keyToOwners) {
+      if (set.size > 1) {
+        dups.push({ wardLabel: keyToLabel.get(nk) ?? nk, owners: [...set] });
+      }
+    }
+    return dups;
+  }, [activeEnumerators]);
 
   useEffect(() => {
     const q = query(collection(db, 'users'), where('status', '==', 'pending'));
@@ -77,14 +236,22 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
           const uid = data.uid || docSnap.id;
           const existing = byEmail.get(emailKey);
 
+          const wn = wardsFromUserProfile(data);
+
           if (!existing) {
             byEmail.set(emailKey, {
               email: data.email,
               displayName: data.displayName,
-              uids: [uid]
+              uids: [uid],
+              assignedWardNames: wn
             });
-          } else if (uid && !existing.uids.includes(uid)) {
-            existing.uids.push(uid);
+          } else {
+            if (uid && !existing.uids.includes(uid)) {
+              existing.uids.push(uid);
+            }
+            if (existing.assignedWardNames.length === 0 && wn.length > 0) {
+              existing.assignedWardNames = wn;
+            }
           }
         });
 
@@ -181,6 +348,49 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     }
   };
 
+  const saveEnumeratorWardAssignment = async (entry: EnumeratorEntry, wards: string[]) => {
+    try {
+      setTaskSavingEmail(entry.email);
+      setError(null);
+      const normalized = [...new Set(wards.map((w) => String(w).trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      );
+
+      const myKey = entry.email.trim().toLowerCase();
+      for (const w of normalized) {
+        const wk = normalizeWardKey(w);
+        const conflict = activeEnumerators.find(
+          (e) =>
+            e.email.trim().toLowerCase() !== myKey &&
+            e.assignedWardNames.some((x) => normalizeWardKey(x) === wk)
+        );
+        if (conflict) {
+          setError(
+            `Cannot save: "${w}" is already assigned to ${conflict.displayName}. Remove it from that enumerator first.`
+          );
+          setTaskSavingEmail(null);
+          return;
+        }
+      }
+
+      await Promise.all(
+        entry.uids.map((uid) =>
+          updateDoc(doc(db, 'users', uid), {
+            ...(normalized.length
+              ? { assignedWardNames: normalized }
+              : { assignedWardNames: deleteField() }),
+            assignedWardName: deleteField()
+          })
+        )
+      );
+    } catch (e) {
+      console.error('Error saving ward assignment:', e);
+      setError('Failed to save ward assignment');
+    } finally {
+      setTaskSavingEmail(null);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -232,22 +442,34 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-gray-100">
+      <div className="grid grid-cols-3 border-b border-gray-100">
         <button
+          type="button"
           onClick={() => setActiveTab('pending')}
-          className={`flex-1 py-3 px-4 text-sm font-medium transition-colors ${
+          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors ${
             activeTab === 'pending' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Pending Approvals ({pendingUsers.length})
+          Pending ({pendingUsers.length})
         </button>
         <button
+          type="button"
+          onClick={() => setActiveTab('tasks')}
+          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'tasks' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <ClipboardList size={14} className="shrink-0 hidden sm:block" />
+          Tasks
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab('create')}
-          className={`flex-1 py-3 px-4 text-sm font-medium transition-colors ${
+          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors ${
             activeTab === 'create' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Create Account
+          Create
         </button>
       </div>
 
@@ -262,6 +484,8 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
           </div>
         </div>
 
+        {activeTab !== 'tasks' && (
+          <>
         <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
           <h3 className="text-xs font-bold text-gray-700 mb-3">
             Active Enumerators ({activeEnumeratorsCount})
@@ -369,8 +593,67 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             </div>
           )}
         </div>
+          </>
+        )}
 
-        {activeTab === 'pending' ? (
+        {activeTab === 'tasks' && (
+          <div className="space-y-4">
+            {error && (
+              <div className="bg-red-50 text-red-600 p-3 rounded-xl text-xs border border-red-100">{error}</div>
+            )}
+            <div>
+              <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2">
+                <ClipboardList size={18} className="text-blue-600" />
+                Task distribution
+              </h3>
+              <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                Each ward can only be assigned to one enumerator. Select one or more wards per person; they only see
+                features whose <span className="font-semibold text-gray-600">Ward_Name</span> matches a ward they hold.
+                Wards taken by others are greyed out (release a ward by clearing it on the holder first). Clear all to
+                give full access.
+              </p>
+            </div>
+            {duplicateWardAssignments.length > 0 && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1">
+                <p className="font-semibold">Overlapping assignments detected</p>
+                <p className="text-amber-900">
+                  The same ward is assigned to more than one enumerator. Adjust assignments so each ward has a single
+                  holder:
+                </p>
+                <ul className="list-disc list-inside text-amber-900">
+                  {duplicateWardAssignments.map((d) => (
+                    <li key={d.wardLabel}>
+                      <span className="font-medium">{d.wardLabel}</span>: {d.owners.join(', ')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {wardNameOptions.length === 0 && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
+                Could not read ward names from ward boundaries data.
+              </p>
+            )}
+            {activeEnumerators.length === 0 ? (
+              <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
+            ) : (
+              <div className="space-y-3">
+                {activeEnumerators.map((entry) => (
+                  <EnumeratorWardRow
+                    key={entry.email}
+                    entry={entry}
+                    wardOptions={wardNameOptions}
+                    wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
+                    saving={taskSavingEmail === entry.email}
+                    onSave={(wards) => void saveEnumeratorWardAssignment(entry, wards)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'pending' && (
           <div>
             <h3 className="text-sm font-bold text-gray-700 mb-4">Pending Enumerator Sign-ups</h3>
             {pendingUsers.length === 0 ? (
@@ -408,7 +691,9 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
               </div>
             )}
           </div>
-        ) : (
+        )}
+
+        {activeTab === 'create' && (
           <>
             <div>
               <h3 className="text-sm font-bold text-gray-700 mb-2">Create Enumerator Account</h3>
