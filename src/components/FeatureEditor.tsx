@@ -112,23 +112,15 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     return [...new Set([...OWNERSHIP_OPTIONS, ...extra])];
   }, [allFeatures]);
 
-  const mergedWardOptions = useMemo(() => {
-    const fromFeatures = allFeatures
-      .map((f) => f.attributes?.Ward_Name ?? f.attributes?.WARDNAME ?? f.attributes?.WardName)
-      .map((v) => String(v ?? '').trim())
-      .filter(Boolean);
-    const fromProps = wardOptions.map((w) => String(w ?? '').trim()).filter(Boolean);
-    return [...new Set([...fromProps, ...fromFeatures])];
-  }, [allFeatures, wardOptions]);
+  const mergedWardOptions = useMemo(
+    () => [...new Set(wardOptions.map((w) => String(w ?? '').trim()).filter(Boolean))],
+    [wardOptions]
+  );
 
-  const mergedZoneOptions = useMemo(() => {
-    const fromFeatures = allFeatures
-      .map((f) => f.attributes?.Zone)
-      .map((v) => String(v ?? '').trim())
-      .filter(Boolean);
-    const fromProps = zoneOptions.map((z) => String(z ?? '').trim()).filter(Boolean);
-    return [...new Set([...fromProps, ...fromFeatures])];
-  }, [allFeatures, zoneOptions]);
+  const mergedZoneOptions = useMemo(
+    () => [...new Set(zoneOptions.map((z) => String(z ?? '').trim()).filter(Boolean))],
+    [zoneOptions]
+  );
 
   useEffect(() => {
     setAttributes(feature.attributes);

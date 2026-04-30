@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { UserPlus, X, Key, Mail, User as UserIcon, Shield, Check, Clock, Ban, ClipboardList, Phone } from 'lucide-react';
-import wardsData from '../data/ccc_wards.json';
+import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -141,20 +141,16 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [deactivatedEnumeratorsCount, setDeactivatedEnumeratorsCount] = useState(0);
   const [deactivatedEnumerators, setDeactivatedEnumerators] = useState<EnumeratorEntry[]>([]);
   const [totalEnumeratorsCount, setTotalEnumeratorsCount] = useState(0);
+  const [landmarkWardOptions, setLandmarkWardOptions] = useState<string[]>([]);
 
   const [enumActionLoadingEmail, setEnumActionLoadingEmail] = useState<string | null>(null);
   const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
-  const wardNameOptions = useMemo(() => {
-    const fc = wardsData as { features?: Array<{ properties?: { WARDNAME?: string } }> };
-    const names = new Set<string>();
-    for (const f of fc.features || []) {
-      const w = f?.properties?.WARDNAME;
-      if (w) names.add(String(w).trim());
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
-  }, []);
+  const wardNameOptions = useMemo(
+    () => [...landmarkWardOptions].sort((a, b) => a.localeCompare(b)),
+    [landmarkWardOptions]
+  );
 
   /** For each enumerator row: wards already assigned to someone else (normalized ward key -> holder). */
   const wardLocksByEnumeratorEmail = useMemo(() => {
@@ -221,6 +217,32 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     );
 
     return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadWardOptionsFromLandmarks = async () => {
+      try {
+        const resp = await fetch(landmarkGeoJsonUrl);
+        if (!resp.ok) return;
+        const geo = await resp.json();
+        const rows = Array.isArray(geo?.features) ? geo.features : [];
+        const wards = rows
+          .map((f: any) => f?.properties?.Ward_Name ?? f?.properties?.WARDNAME ?? f?.properties?.WardName)
+          .map((v: unknown) => String(v ?? '').trim())
+          .filter(Boolean);
+        if (!mounted) return;
+        setLandmarkWardOptions([...new Set(wards)]);
+      } catch {
+        if (!mounted) return;
+        setLandmarkWardOptions([]);
+      }
+    };
+
+    loadWardOptionsFromLandmarks();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -695,7 +717,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             )}
             {wardNameOptions.length === 0 && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                Could not read ward names from ward boundaries data.
+                Could not read ward names from landmark reference data.
               </p>
             )}
             {activeEnumerators.length === 0 ? (

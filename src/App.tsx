@@ -227,7 +227,8 @@ const AppContent: React.FC = () => {
   const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
   const wardOptionsForEditor = useMemo(() => {
     if (isAdmin) return landmarkWardOptions;
-    return assignedWardsForFilter;
+    const assignedKeys = new Set(assignedWardsForFilter.map((w) => normalizeWardKey(String(w))));
+    return landmarkWardOptions.filter((w) => assignedKeys.has(normalizeWardKey(String(w))));
   }, [isAdmin, landmarkWardOptions, assignedWardsForFilter]);
 
   const enumeratorTaskStats = useMemo(() => {
