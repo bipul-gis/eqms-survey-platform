@@ -1,10 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Polygon, useMapEvents, Circle, CircleMarker, GeoJSON, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { GeoFeature, WardBoundary } from '../types';
 import { useGeoLocation } from './GeoLocationProvider';
 import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
 import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
+
+const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
+
+const readStoredLandmarkIconScale = (): number => {
+  try {
+    const raw = localStorage.getItem(LANDMARK_ICON_SCALE_KEY);
+    if (!raw) return 1;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 1;
+    return Math.min(2.4, Math.max(0.6, Math.round(n * 10) / 10));
+  } catch {
+    return 1;
+  }
+};
 
 // Fix for default marker icons in Leaflet with React
 // @ts-ignore
@@ -70,13 +84,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>('osm');
-  const [landmarkIconScale, setLandmarkIconScale] = useState(1);
+  const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
   const [landmarkPoints, setLandmarkPoints] = useState<Array<{ lat: number; lng: number; properties: Record<string, any> }>>([]);
   const isAddingFeature = !!addFeatureType;
+  const landmarkScaleHydratedRef = useRef(false);
 
   const clampLandmarkRadius = (r: number) => Math.min(24, Math.max(3, Math.round(r)));
   const radiusForLandmark = (base: number, selected: boolean) =>
     clampLandmarkRadius(base * landmarkIconScale * (selected ? 1.35 : 1));
+
+  useEffect(() => {
+    landmarkScaleHydratedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!landmarkScaleHydratedRef.current) return;
+    try {
+      localStorage.setItem(LANDMARK_ICON_SCALE_KEY, String(landmarkIconScale));
+    } catch {
+      /* ignore */
+    }
+  }, [landmarkIconScale]);
 
   useEffect(() => {
     let mounted = true;
