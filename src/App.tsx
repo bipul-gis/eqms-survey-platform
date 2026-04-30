@@ -10,7 +10,7 @@ import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useFirestoreCollection } from './hooks/useFirestoreCollection';
 import { GeoFeature, WardBoundary, Questionnaire } from './types';
 import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle } from 'lucide-react';
-import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs } from 'firebase/firestore';
+import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, limit, startAfter, orderBy, documentId } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
 import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
@@ -108,52 +108,80 @@ const AppContent: React.FC = () => {
       });
 
       let writtenCount = 0;
-      let duplicatesRemoved = 0;
+      let removedCount = 0;
+      const totalSteps = pointRecords.length + 1;
       let processedCount = 0;
-      setImportProgress({ total: pointRecords.length, processed: 0, written: 0, duplicatesRemoved: 0 });
+      setImportProgress({ total: totalSteps, processed: 0, written: 0, duplicatesRemoved: 0 });
 
       const MAX_OPS = 450;
 
-      for (const rec of pointRecords) {
-        let batch = writeBatch(db);
-        let ops = 0;
+      const bumpProgress = () => {
+        processedCount += 1;
+        setImportProgress({
+          total: totalSteps,
+          processed: processedCount,
+          written: writtenCount,
+          duplicatesRemoved: removedCount
+        });
+      };
 
-        const commitIfNeeded = async (nextCost: number) => {
-          if (ops + nextCost > MAX_OPS) {
-            await batch.commit();
-            batch = writeBatch(db);
-            ops = 0;
-          }
-        };
+      // 1) Remove all previously imported CCC landmark documents (batched deletes; no per-FID queries).
+      const landmarkSources = ['ccc_landmark', 'ccc_landmark_geojson', 'ccc_landmark_import', 'landmark_manual'];
+      const pageSize = 450;
 
-        const bumpProgress = () => {
-          processedCount += 1;
-          setImportProgress({
-            total: pointRecords.length,
-            processed: processedCount,
-            written: writtenCount,
-            duplicatesRemoved
-          });
-        };
+      let batch = writeBatch(db);
+      let ops = 0;
+      const commitIfNeeded = async (nextCost: number) => {
+        if (ops + nextCost > MAX_OPS) {
+          await batch.commit();
+          batch = writeBatch(db);
+          ops = 0;
+        }
+      };
 
-        // Remove duplicate landmark docs for the same FID (older random-id records), then write canonical doc.
-        if (rec.fid !== undefined) {
-          const dupSnaps = await Promise.all([
-            getDocs(query(collection(db, 'features'), where('attributes.FID', '==', rec.fid))),
-            getDocs(query(collection(db, 'features'), where('attributes.FID', '==', String(rec.fid))))
-          ]);
-          const seenDupIds = new Set<string>();
-          for (const d of [...dupSnaps[0].docs, ...dupSnaps[1].docs]) {
-            if (seenDupIds.has(d.id)) continue;
-            seenDupIds.add(d.id);
-            if (d.id === rec.id) continue;
+      for (const src of landmarkSources) {
+        let cursor: any = null;
+        while (true) {
+          const base = query(
+            collection(db, 'features'),
+            where('attributes.__source', '==', src),
+            orderBy(documentId()),
+            limit(pageSize)
+          );
+          const q = cursor ? query(base, startAfter(cursor)) : base;
+          const snap = await getDocs(q);
+          if (snap.empty) break;
+
+          for (const d of snap.docs) {
             await commitIfNeeded(1);
             batch.delete(doc(db, 'features', d.id));
             ops += 1;
-            duplicatesRemoved += 1;
+            removedCount += 1;
           }
-        }
 
+          cursor = snap.docs[snap.docs.length - 1];
+          if (snap.docs.length < pageSize) break;
+        }
+      }
+
+      if (ops > 0) {
+        await batch.commit();
+        batch = writeBatch(db);
+        ops = 0;
+      }
+      bumpProgress();
+
+      // 2) Write fresh canonical landmark docs in large batches.
+      const commitBatch = async () => {
+        if (ops > 0) {
+          await batch.commit();
+          batch = writeBatch(db);
+          ops = 0;
+        }
+      };
+
+      let writeChunk = 0;
+      for (const rec of pointRecords) {
         const ref = doc(db, 'features', rec.id);
         const coords = rec.feature?.geometry?.coordinates || [0, 0];
         const attrs = rec.feature?.properties || {};
@@ -176,20 +204,34 @@ const AppContent: React.FC = () => {
         });
         ops += 1;
         writtenCount += 1;
+        writeChunk += 1;
 
-        await batch.commit();
-        bumpProgress();
+        if (ops >= MAX_OPS) {
+          await commitBatch();
+        }
+        // Avoid updating React state on every row for large imports.
+        if (writeChunk >= 100 || writtenCount === pointRecords.length) {
+          processedCount = 1 + writtenCount;
+          setImportProgress({
+            total: totalSteps,
+            processed: processedCount,
+            written: writtenCount,
+            duplicatesRemoved: removedCount
+          });
+          writeChunk = 0;
+        }
       }
+      await commitBatch();
 
       setImportProgress({
-        total: pointRecords.length,
-        processed: pointRecords.length,
+        total: totalSteps,
+        processed: totalSteps,
         written: writtenCount,
-        duplicatesRemoved
+        duplicatesRemoved: removedCount
       });
       setImportNotice({
         type: 'success',
-        message: `Import complete. Landmarks written/replaced: ${writtenCount}. Duplicate landmark docs removed: ${duplicatesRemoved}.`
+        message: `Import complete. Removed prior landmark records: ${removedCount}. Landmarks written: ${writtenCount}.`
       });
     } catch (e) {
       console.error(e);
