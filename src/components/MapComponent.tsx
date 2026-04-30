@@ -4,6 +4,7 @@ import L from 'leaflet';
 import { GeoFeature, WardBoundary } from '../types';
 import { useGeoLocation } from './GeoLocationProvider';
 import { MapPin, Navigation, Info, Layers } from 'lucide-react';
+import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
 
 // Fix for default marker icons in Leaflet with React
 // @ts-ignore
@@ -74,7 +75,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const loadLandmarks = async () => {
       try {
-        const resp = await fetch('/src/data/CCC_all_Landmark.geojson');
+        // Use Vite asset URL so this works in production (e.g., Vercel) and local dev.
+        const resp = await fetch(landmarkGeoJsonUrl);
         if (!resp.ok) return;
         const geo = await resp.json();
         const points = Array.isArray(geo?.features)
