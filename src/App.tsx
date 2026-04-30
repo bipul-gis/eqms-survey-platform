@@ -33,7 +33,7 @@ const AppContent: React.FC = () => {
     total: number;
     processed: number;
     written: number;
-    duplicatesRemoved: number;
+    previousRemoved: number;
   } | null>(null);
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -109,21 +109,11 @@ const AppContent: React.FC = () => {
 
       let writtenCount = 0;
       let removedCount = 0;
-      const totalSteps = pointRecords.length + 1;
+      const totalSteps = pointRecords.length;
       let processedCount = 0;
-      setImportProgress({ total: totalSteps, processed: 0, written: 0, duplicatesRemoved: 0 });
+      setImportProgress({ total: totalSteps, processed: 0, written: 0, previousRemoved: 0 });
 
       const MAX_OPS = 450;
-
-      const bumpProgress = () => {
-        processedCount += 1;
-        setImportProgress({
-          total: totalSteps,
-          processed: processedCount,
-          written: writtenCount,
-          duplicatesRemoved: removedCount
-        });
-      };
 
       // 1) Remove all previously imported CCC landmark documents (batched deletes; no per-FID queries).
       const landmarkSources = ['ccc_landmark', 'ccc_landmark_geojson', 'ccc_landmark_import', 'landmark_manual'];
@@ -169,8 +159,6 @@ const AppContent: React.FC = () => {
         batch = writeBatch(db);
         ops = 0;
       }
-      bumpProgress();
-
       // 2) Write fresh canonical landmark docs in large batches.
       const commitBatch = async () => {
         if (ops > 0) {
@@ -210,13 +198,13 @@ const AppContent: React.FC = () => {
           await commitBatch();
         }
         // Avoid updating React state on every row for large imports.
+        processedCount = writtenCount;
         if (writeChunk >= 100 || writtenCount === pointRecords.length) {
-          processedCount = 1 + writtenCount;
           setImportProgress({
             total: totalSteps,
             processed: processedCount,
             written: writtenCount,
-            duplicatesRemoved: removedCount
+            previousRemoved: removedCount
           });
           writeChunk = 0;
         }
@@ -227,11 +215,11 @@ const AppContent: React.FC = () => {
         total: totalSteps,
         processed: totalSteps,
         written: writtenCount,
-        duplicatesRemoved: removedCount
+        previousRemoved: removedCount
       });
       setImportNotice({
         type: 'success',
-        message: `Import complete. Removed prior landmark records: ${removedCount}. Landmarks written: ${writtenCount}.`
+        message: `Import complete. Previous data removed: ${removedCount}. Landmarks written: ${writtenCount}.`
       });
     } catch (e) {
       console.error(e);
@@ -951,7 +939,7 @@ const AppContent: React.FC = () => {
                       />
                     </div>
                     <p className="text-[10px] text-slate-600">
-                      {importProgress.processed}/{importProgress.total} processed | Written: {importProgress.written} | Duplicates removed: {importProgress.duplicatesRemoved}
+                      {importProgress.processed}/{importProgress.total} processed | Written: {importProgress.written} | Previous data removed: {importProgress.previousRemoved}
                     </p>
                   </div>
                 )}
