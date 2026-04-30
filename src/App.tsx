@@ -10,7 +10,7 @@ import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useFirestoreCollection } from './hooks/useFirestoreCollection';
 import { GeoFeature, WardBoundary, Questionnaire } from './types';
 import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle } from 'lucide-react';
-import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, documentId } from 'firebase/firestore';
+import { collection, addDoc, setDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, deleteField } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
 import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
@@ -29,7 +29,12 @@ const AppContent: React.FC = () => {
   const [questionnaireLocation, setQuestionnaireLocation] = useState<{ lat: number; lng: number; ward?: string } | null>(null);
   const [activeTab, setActiveTab] = useState<'map' | 'list'>('map');
   const [isImportingLandmarks, setIsImportingLandmarks] = useState(false);
-  const [importProgress, setImportProgress] = useState<{ total: number; processed: number; imported: number; skipped: number } | null>(null);
+  const [importProgress, setImportProgress] = useState<{
+    total: number;
+    processed: number;
+    written: number;
+    duplicatesRemoved: number;
+  } | null>(null);
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
@@ -85,78 +90,105 @@ const AppContent: React.FC = () => {
         return;
       }
 
-      const pointRecords = points.map((f: any, idx: number) => ({
-        id: `landmark_${f?.properties?.FID ?? f?.id ?? `${idx}`}`,
-        feature: f
-      }));
+      const confirmed = window.confirm(
+        'This will REPLACE all previously imported landmark data from Firestore with the GeoJSON file.\n\n' +
+          'Any edits, verification status, rejection remarks, or other changes to those landmark records will be lost.\n\n' +
+          'Continue?'
+      );
+      if (!confirmed) {
+        setImportProgress(null);
+        setIsImportingLandmarks(false);
+        return;
+      }
 
-      // Keep original imported data intact: never overwrite existing landmark docs on re-import.
-      let importedCount = 0;
-      let skippedCount = 0;
+      const pointRecords = points.map((f: any, idx: number) => {
+        const fid = normalizeLandmarkFid(f?.properties?.FID ?? f?.id ?? idx);
+        const id = `landmark_${fid !== undefined ? fid : idx}`;
+        return { id, fid, feature: f };
+      });
+
+      let writtenCount = 0;
+      let duplicatesRemoved = 0;
       let processedCount = 0;
-      const readChunkSize = 30; // Firestore "in" query limit
-      const writeChunkSize = 400;
-      setImportProgress({ total: pointRecords.length, processed: 0, imported: 0, skipped: 0 });
+      setImportProgress({ total: pointRecords.length, processed: 0, written: 0, duplicatesRemoved: 0 });
 
-      for (let i = 0; i < pointRecords.length; i += readChunkSize) {
-        const readChunk = pointRecords.slice(i, i + readChunkSize);
-        const ids = readChunk.map((r) => r.id);
-        const existingSnap = await getDocs(
-          query(collection(db, 'features'), where(documentId(), 'in', ids))
-        );
-        const existingIds = new Set(existingSnap.docs.map((d) => d.id));
-        const newRecords = readChunk.filter((r) => !existingIds.has(r.id));
-        skippedCount += readChunk.length - newRecords.length;
+      const MAX_OPS = 450;
 
-        for (let j = 0; j < newRecords.length; j += writeChunkSize) {
-          const writeChunk = newRecords.slice(j, j + writeChunkSize);
-          if (writeChunk.length === 0) continue;
-          const batch = writeBatch(db);
-          writeChunk.forEach(({ id, feature }) => {
-            const ref = doc(db, 'features', id);
-            const coords = feature?.geometry?.coordinates || [0, 0];
-            const attrs = feature?.properties || {};
-            batch.set(ref, {
-              type: 'point',
-              geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
-              attributes: {
-                ...attrs,
-                __source: 'ccc_landmark'
-              },
-              status: 'pending',
-              createdBy: 'ccc_landmark_import',
-              updatedBy: 'ccc_landmark_import',
-              updatedAt: serverTimestamp()
-            });
-          });
-          await batch.commit();
-          importedCount += writeChunk.length;
-          processedCount += writeChunk.length;
+      for (const rec of pointRecords) {
+        let batch = writeBatch(db);
+        let ops = 0;
+
+        const commitIfNeeded = async (nextCost: number) => {
+          if (ops + nextCost > MAX_OPS) {
+            await batch.commit();
+            batch = writeBatch(db);
+            ops = 0;
+          }
+        };
+
+        const bumpProgress = () => {
+          processedCount += 1;
           setImportProgress({
             total: pointRecords.length,
             processed: processedCount,
-            imported: importedCount,
-            skipped: skippedCount
+            written: writtenCount,
+            duplicatesRemoved
           });
+        };
+
+        // Remove duplicate landmark docs for the same FID (older random-id records), then write canonical doc.
+        if (rec.fid !== undefined) {
+          const dupSnap = await getDocs(
+            query(collection(db, 'features'), where('attributes.FID', '==', rec.fid))
+          );
+          for (const d of dupSnap.docs) {
+            if (d.id === rec.id) continue;
+            await commitIfNeeded(1);
+            batch.delete(doc(db, 'features', d.id));
+            ops += 1;
+            duplicatesRemoved += 1;
+          }
         }
-        processedCount += readChunk.length - newRecords.length;
-        setImportProgress({
-          total: pointRecords.length,
-          processed: processedCount,
-          imported: importedCount,
-          skipped: skippedCount
+
+        const ref = doc(db, 'features', rec.id);
+        const coords = rec.feature?.geometry?.coordinates || [0, 0];
+        const attrs = rec.feature?.properties || {};
+        const normalizedAttrs =
+          rec.fid !== undefined ? { ...attrs, FID: rec.fid } : { ...attrs };
+
+        await commitIfNeeded(1);
+        batch.set(ref, {
+          type: 'point',
+          geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
+          attributes: {
+            ...normalizedAttrs,
+            __source: 'ccc_landmark'
+          },
+          status: 'pending',
+          remarks: deleteField(),
+          collectorLocation: deleteField(),
+          createdBy: 'ccc_landmark_import',
+          createdByUid: deleteField(),
+          updatedBy: user?.email || 'ccc_landmark_import',
+          updatedByUid: user?.uid || deleteField(),
+          updatedAt: serverTimestamp()
         });
+        ops += 1;
+        writtenCount += 1;
+
+        await batch.commit();
+        bumpProgress();
       }
 
       setImportProgress({
         total: pointRecords.length,
         processed: pointRecords.length,
-        imported: importedCount,
-        skipped: skippedCount
+        written: writtenCount,
+        duplicatesRemoved
       });
       setImportNotice({
         type: 'success',
-        message: `Import complete. New: ${importedCount}, skipped existing: ${skippedCount}.`
+        message: `Import complete. Landmarks written/replaced: ${writtenCount}. Duplicate landmark docs removed: ${duplicatesRemoved}.`
       });
     } catch (e) {
       console.error(e);
@@ -651,13 +683,6 @@ const AppContent: React.FC = () => {
             {isAdmin && (
               <>
                 <button 
-                  onClick={() => setShowQuestionnaireManager(true)}
-                  className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-all"
-                  title="Manage Questionnaires"
-                >
-                  <FileText size={20} />
-                </button>
-                <button 
                   onClick={() => setShowUserManagement(true)}
                   className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
                   title="Manage Users"
@@ -835,13 +860,6 @@ const AppContent: React.FC = () => {
             </>
           )}
           <div className="w-px h-6 bg-slate-200 mx-2" />
-          <button
-            onClick={() => setShowQuestionnaireManager(true)}
-            className="p-2.5 rounded-xl text-green-600 hover:bg-green-50 hover:text-green-700 transition-all"
-            title="Launch Questionnaire"
-          >
-            <FileText size={20} />
-          </button>
         </div>
 
         {/* Quick Stats Floating (Admin) */}
@@ -890,7 +908,7 @@ const AppContent: React.FC = () => {
                       />
                     </div>
                     <p className="text-[10px] text-slate-600">
-                      {importProgress.processed}/{importProgress.total} processed | New: {importProgress.imported} | Skipped: {importProgress.skipped}
+                      {importProgress.processed}/{importProgress.total} processed | Written: {importProgress.written} | Duplicates removed: {importProgress.duplicatesRemoved}
                     </p>
                   </div>
                 )}
