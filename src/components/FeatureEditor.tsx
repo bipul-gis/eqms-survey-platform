@@ -149,9 +149,28 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     return true;
   };
 
+  const validateRequiredAttributes = () => {
+    const ordered = getOrderedAttributes(attributes);
+    const missing: string[] = [];
+
+    for (const [key, value] of ordered) {
+      if (READ_ONLY_ATTRIBUTES.has(key)) continue;
+      if (key.startsWith('__') || key.startsWith('_')) continue;
+      if (key === 'Ownership' && selectedCategory !== 'Health Facilities') continue;
+      if (!String(value ?? '').trim()) missing.push(key);
+    }
+
+    if (missing.length > 0) {
+      alert(`Please fill all required attribute fields: ${missing.join(', ')}`);
+      return false;
+    }
+    return true;
+  };
+
   const handleSave = async () => {
     if (!user) return;
     if (!validateOtherInputs()) return;
+    if (!validateRequiredAttributes()) return;
     setIsSaving(true);
     try {
       const attributesToSave =
@@ -295,7 +314,9 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 return (
                   <div key={key} className="flex gap-2 items-start">
                     <div className="flex-1 space-y-2">
-                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
                       <select
                         value={stringValue}
                         onChange={(e) => {
@@ -327,7 +348,9 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 return (
                   <div key={key} className="flex gap-2 items-start">
                     <div className="flex-1 space-y-2">
-                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
                       <select
                         value={typeOtherMode || isOther ? 'Other' : stringValue}
                         onChange={(e) => {
@@ -376,7 +399,9 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 return (
                   <div key={key} className="flex gap-2 items-start">
                     <div className="flex-1 space-y-2">
-                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">{key}</p>
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
                       <select
                         value={ownershipOtherMode || isOther ? 'Other' : stringValue}
                         onChange={(e) => {
@@ -424,6 +449,9 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                   <div className="flex-1">
                     <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5 flex items-center gap-1">
                       {key}
+                      {!isReadOnly && !(key === 'Ownership' && selectedCategory !== 'Health Facilities') && (
+                        <span className="text-red-500">*</span>
+                      )}
                       {isReadOnly && <span className="text-gray-300 text-[8px]">🔒</span>}
                     </p>
                     <input
