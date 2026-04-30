@@ -129,6 +129,8 @@ const AppContent: React.FC = () => {
     previousRemoved: number;
   } | null>(null);
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [landmarkWardOptions, setLandmarkWardOptions] = useState<string[]>([]);
+  const [landmarkZoneOptions, setLandmarkZoneOptions] = useState<string[]>([]);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
 
@@ -150,6 +152,38 @@ const AppContent: React.FC = () => {
       featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
   }, [features, assignedWardsForFilter, wardsData]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadLandmarkReferenceOptions = async () => {
+      try {
+        const resp = await fetch(landmarkGeoJsonUrl);
+        if (!resp.ok) return;
+        const geo = await resp.json();
+        const rows = Array.isArray(geo?.features) ? geo.features : [];
+        const wards = rows
+          .map((f: any) => f?.properties?.Ward_Name ?? f?.properties?.WARDNAME ?? f?.properties?.WardName)
+          .map((v: unknown) => String(v ?? '').trim())
+          .filter(Boolean);
+        const zones = rows
+          .map((f: any) => f?.properties?.Zone ?? f?.properties?.ZONE)
+          .map((v: unknown) => String(v ?? '').trim())
+          .filter(Boolean);
+
+        if (!mounted) return;
+        setLandmarkWardOptions([...new Set(wards)]);
+        setLandmarkZoneOptions([...new Set(zones)]);
+      } catch {
+        // Ignore reference-option load failures; editor still allows typed input.
+      }
+    };
+
+    loadLandmarkReferenceOptions();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
 
@@ -1423,6 +1457,8 @@ const AppContent: React.FC = () => {
             <FeatureEditor 
               feature={selectedFeature} 
               allFeatures={features}
+              wardOptions={landmarkWardOptions}
+              zoneOptions={landmarkZoneOptions}
               onClose={() => {
                 setSelectedFeature(null);
                 setMovingFeature(null);

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
-import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { UserProfile } from '../types';
 
 interface AuthContextType {
@@ -67,6 +67,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             void (async () => {
               try {
+                const deletedByUidSnap = await getDoc(doc(db, 'deleted_users', user.uid));
+                const emailKey = user.email ? encodeURIComponent(user.email.trim().toLowerCase()) : null;
+                const deletedByEmailSnap = emailKey
+                  ? await getDoc(doc(db, 'deleted_user_emails', emailKey))
+                  : null;
+
+                if (deletedByUidSnap.exists() || deletedByEmailSnap?.exists()) {
+                  const blockedProfile: UserProfile = {
+                    ...optimisticProfile,
+                    role: 'enumerator',
+                    status: 'rejected'
+                  };
+                  setUserProfile(blockedProfile);
+                  setLoading(false);
+                  await signOut(auth);
+                  return;
+                }
+
                 await setDoc(userDocRef, optimisticProfile);
                 setUserProfile(optimisticProfile);
                 setLoading(false);

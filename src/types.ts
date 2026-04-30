@@ -32,6 +32,7 @@ export interface UserProfile {
   uid: string;
   email: string;
   displayName: string;
+  mobileNumber?: string;
   role: 'enumerator' | 'admin';
   status: 'pending' | 'approved' | 'rejected';
   /** Map UI preference: landmark circle marker scale (client-clamped roughly 0.6–2.4). */

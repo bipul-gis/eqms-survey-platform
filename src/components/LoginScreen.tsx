@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from './AuthProvider';
-import { LogIn, Map as MapIcon, ShieldCheck, Users, Mail, Lock, AlertCircle, User as UserIcon, CheckCircle2 } from 'lucide-react';
+import { LogIn, Map as MapIcon, ShieldCheck, Users, Mail, Lock, AlertCircle, User as UserIcon, CheckCircle2, Phone } from 'lucide-react';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
@@ -13,6 +13,7 @@ export const LoginScreen: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [isSignUp, setIsSignUp] = useState(false);
   const [name, setName] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
   const [signUpSuccess, setSignUpSuccess] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -51,6 +52,7 @@ export const LoginScreen: React.FC = () => {
         uid: userCredential.user.uid,
         email,
         displayName: name,
+        mobileNumber,
         role: 'enumerator',
         status: 'pending'
       });
@@ -59,6 +61,7 @@ export const LoginScreen: React.FC = () => {
       setEmail('');
       setPassword('');
       setName('');
+      setMobileNumber('');
     } catch (err: any) {
       throw err;
     }
@@ -88,6 +91,23 @@ export const LoginScreen: React.FC = () => {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="John Doe"
+                  className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
+                  required
+                />
+              </div>
+            </div>
+          )}
+
+          {isSignUp && (
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">Mobile Number</label>
+              <div className="relative">
+                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                <input
+                  type="tel"
+                  value={mobileNumber}
+                  onChange={(e) => setMobileNumber(e.target.value)}
+                  placeholder="01XXXXXXXXX"
                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
                   required
                 />
@@ -157,6 +177,7 @@ export const LoginScreen: React.FC = () => {
               setEmail('');
               setPassword('');
               setName('');
+              setMobileNumber('');
             }}
             className="text-blue-600 text-sm font-medium hover:underline"
           >

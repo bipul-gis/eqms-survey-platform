@@ -57,6 +57,8 @@ const getOrderedAttributes = (attrs: Record<string, any>): Array<[string, any]> 
 interface FeatureEditorProps {
   feature: GeoFeature;
   allFeatures?: GeoFeature[];
+  wardOptions?: string[];
+  zoneOptions?: string[];
   onClose: () => void;
   isAdmin: boolean;
   isNewFeature?: boolean;
@@ -66,6 +68,8 @@ interface FeatureEditorProps {
 export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   feature,
   allFeatures = [],
+  wardOptions = [],
+  zoneOptions = [],
   onClose,
   isAdmin,
   isNewFeature = false,
@@ -107,6 +111,24 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
       .filter(Boolean);
     return [...new Set([...OWNERSHIP_OPTIONS, ...extra])];
   }, [allFeatures]);
+
+  const mergedWardOptions = useMemo(() => {
+    const fromFeatures = allFeatures
+      .map((f) => f.attributes?.Ward_Name ?? f.attributes?.WARDNAME ?? f.attributes?.WardName)
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean);
+    const fromProps = wardOptions.map((w) => String(w ?? '').trim()).filter(Boolean);
+    return [...new Set([...fromProps, ...fromFeatures])];
+  }, [allFeatures, wardOptions]);
+
+  const mergedZoneOptions = useMemo(() => {
+    const fromFeatures = allFeatures
+      .map((f) => f.attributes?.Zone)
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean);
+    const fromProps = zoneOptions.map((z) => String(z ?? '').trim()).filter(Boolean);
+    return [...new Set([...fromProps, ...fromFeatures])];
+  }, [allFeatures, zoneOptions]);
 
   useEffect(() => {
     setAttributes(feature.attributes);
@@ -439,6 +461,55 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                           className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
                         />
                       )}
+                    </div>
+                  </div>
+                );
+              }
+
+              if (key === 'Ward_Name') {
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
+                      <input
+                        type="text"
+                        value={stringValue}
+                        onChange={(e) => setAttributeValue('Ward_Name', e.target.value)}
+                        list="ward-name-options"
+                        placeholder="Type ward and select"
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      />
+                      <datalist id="ward-name-options">
+                        {mergedWardOptions.map((option) => (
+                          <option key={option} value={option} />
+                        ))}
+                      </datalist>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (key === 'Zone') {
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
+                      <select
+                        value={stringValue}
+                        onChange={(e) => setAttributeValue('Zone', e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      >
+                        <option value="">Select Zone</option>
+                        {mergedZoneOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 );

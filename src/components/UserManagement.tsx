@@ -1,10 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { UserPlus, X, Key, Mail, User as UserIcon, Shield, Check, Clock, Ban, ClipboardList } from 'lucide-react';
+import { UserPlus, X, Key, Mail, User as UserIcon, Shield, Check, Clock, Ban, ClipboardList, Phone } from 'lucide-react';
 import wardsData from '../data/ccc_wards.json';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, deleteField, deleteDoc } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { db } from '../lib/firebase';
 import { UserProfile } from '../types';
@@ -12,6 +12,7 @@ import { UserProfile } from '../types';
 type EnumeratorEntry = {
   email: string;
   displayName: string;
+  mobileNumber?: string;
   // One email can map to multiple Firebase Auth UIDs.
   uids: string[];
   /** Normalized list (legacy single ward folded in when loading). */
@@ -128,6 +129,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -142,6 +144,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
   const [enumActionLoadingEmail, setEnumActionLoadingEmail] = useState<string | null>(null);
   const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
   const wardNameOptions = useMemo(() => {
     const fc = wardsData as { features?: Array<{ properties?: { WARDNAME?: string } }> };
@@ -242,12 +245,16 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             byEmail.set(emailKey, {
               email: data.email,
               displayName: data.displayName,
+              mobileNumber: data.mobileNumber,
               uids: [uid],
               assignedWardNames: wn
             });
           } else {
             if (uid && !existing.uids.includes(uid)) {
               existing.uids.push(uid);
+            }
+            if (!existing.mobileNumber && data.mobileNumber) {
+              existing.mobileNumber = data.mobileNumber;
             }
             if (existing.assignedWardNames.length === 0 && wn.length > 0) {
               existing.assignedWardNames = wn;
@@ -287,10 +294,14 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             byEmail.set(emailKey, {
               email: data.email,
               displayName: data.displayName,
+              mobileNumber: data.mobileNumber,
               uids: [uid]
             });
           } else if (uid && !existing.uids.includes(uid)) {
             existing.uids.push(uid);
+            if (!existing.mobileNumber && data.mobileNumber) {
+              existing.mobileNumber = data.mobileNumber;
+            }
           }
         });
 
@@ -343,6 +354,51 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     } catch (e) {
       console.error('Error updating enumerator status:', e);
       setError(`Failed to update enumerator (${status})`);
+    } finally {
+      setEnumActionLoadingEmail(null);
+    }
+  };
+
+  const permanentlyDeleteEnumerator = async (entry: EnumeratorEntry) => {
+    try {
+      setEnumActionLoadingEmail(entry.email);
+      setError(null);
+      setDeleteNotice(null);
+
+      const emailKey = encodeURIComponent(entry.email.trim().toLowerCase());
+
+      await Promise.all([
+        ...entry.uids.map((uid) =>
+          setDoc(
+            doc(db, 'deleted_users', uid),
+            {
+              uid,
+              email: entry.email,
+              displayName: entry.displayName,
+              deletedAt: new Date().toISOString()
+            },
+            { merge: true }
+          )
+        ),
+        setDoc(
+          doc(db, 'deleted_user_emails', emailKey),
+          {
+            email: entry.email,
+            displayName: entry.displayName,
+            deletedAt: new Date().toISOString()
+          },
+          { merge: true }
+        ),
+        ...entry.uids.map((uid) => deleteDoc(doc(db, 'users', uid)))
+      ]);
+
+      setDeleteNotice(
+        `Deleted ${entry.displayName}. This account is now blocked from auto re-registration requests. ` +
+          `To remove Firebase Authentication login entirely, use Firebase Console or Admin SDK Cloud Function.`
+      );
+    } catch (e) {
+      console.error('Error permanently deleting enumerator:', e);
+      setError('Failed to permanently delete enumerator from Firestore');
     } finally {
       setEnumActionLoadingEmail(null);
     }
@@ -408,6 +464,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
         uid: res.user.uid,
         email,
         displayName: name,
+        mobileNumber,
         role: 'enumerator',
         status: 'approved' // Admin-created accounts are automatically approved
       });
@@ -419,6 +476,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
       setEmail('');
       setPassword('');
       setName('');
+      setMobileNumber('');
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
       setError(err.message || 'Failed to create user');
@@ -486,6 +544,11 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
         {activeTab !== 'tasks' && (
           <>
+        {deleteNotice && (
+          <div className="bg-amber-50 text-amber-800 p-3 rounded-xl text-xs border border-amber-100">
+            {deleteNotice}
+          </div>
+        )}
         <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
           <h3 className="text-xs font-bold text-gray-700 mb-3">
             Active Enumerators ({activeEnumeratorsCount})
@@ -502,6 +565,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                       {u.displayName}
                     </p>
                     <p className="text-[10px] text-gray-500 truncate">{u.email}</p>
+                    <p className="text-[10px] text-gray-500 truncate">{u.mobileNumber || 'No mobile number'}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -519,14 +583,14 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                     <button
                       onClick={() => {
                         const ok = confirm(
-                          `Delete "${u.displayName}" access? (This disables the account.)`
+                          `Permanently delete "${u.displayName}"?\n\nThis removes Firestore user record(s).`
                         );
                         if (!ok) return;
-                        void setEnumeratorStatusByEntry(u, 'rejected');
+                        void permanentlyDeleteEnumerator(u);
                       }}
                       disabled={enumActionLoadingEmail === u.email}
                       className="text-[10px] px-2 py-1 rounded-lg bg-red-100 text-red-800 hover:bg-red-200 transition-colors border border-red-200 disabled:opacity-50"
-                      title="Delete (disable) enumerator access"
+                      title="Delete enumerator record permanently"
                     >
                       Delete
                     </button>
@@ -573,14 +637,14 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                     <button
                       onClick={() => {
                         const ok = confirm(
-                          `Delete "${u.displayName}" access? (This keeps the account disabled.)`
+                          `Permanently delete "${u.displayName}"?\n\nThis removes Firestore user record(s).`
                         );
                         if (!ok) return;
-                        void setEnumeratorStatusByEntry(u, 'rejected');
+                        void permanentlyDeleteEnumerator(u);
                       }}
                       disabled={enumActionLoadingEmail === u.email}
                       className="text-[10px] px-2 py-1 rounded-lg bg-red-100 text-red-800 hover:bg-red-200 transition-colors border border-red-200 disabled:opacity-50"
-                      title="Delete (disable) enumerator access"
+                      title="Delete enumerator record permanently"
                     >
                       Delete
                     </button>
@@ -727,6 +791,21 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="enumerator@ccc.gov.bd"
+                    className="w-full pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1 mb-1 block">Mobile Number</label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                  <input
+                    type="tel"
+                    value={mobileNumber}
+                    onChange={(e) => setMobileNumber(e.target.value)}
+                    placeholder="01XXXXXXXXX"
                     className="w-full pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500"
                     required
                   />
