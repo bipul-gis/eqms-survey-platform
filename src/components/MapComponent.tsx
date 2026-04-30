@@ -8,7 +8,7 @@ import { db } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
 import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
-import { staticLandmarkMatchesAssignedWards } from '../lib/wardGeometry';
+import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../lib/wardGeometry';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
 const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
@@ -306,13 +306,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     });
   };
 
-  const wardStyle = {
-    color: '#ef4444', // Red boundary
-    weight: 2,
-    opacity: 0.8,
-    fillColor: 'transparent', // No fill
-    fillOpacity: 0,
-    dashArray: '5, 5' // Dashed line for better visibility
+  const wardStyleForFeature = (feature: any) => {
+    const wardName = String(
+      feature?.properties?.WARDNAME ??
+      feature?.properties?.Ward_Name ??
+      feature?.properties?.WardName ??
+      ''
+    ).trim();
+    const assigned = enumeratorLandmarkWardFilter ?? [];
+    const isAssignedEnumerator =
+      userProfile?.role === 'enumerator' &&
+      userProfile?.status === 'approved' &&
+      assigned.length > 0;
+    const isAssignedWard = isAssignedEnumerator && wardName && wardMatchesAssignedList(wardName, assigned);
+
+    if (isAssignedWard) {
+      return {
+        color: '#166534', // dark bold green border for assigned wards
+        weight: 4,
+        opacity: 1,
+        fillColor: 'transparent',
+        fillOpacity: 0,
+        dashArray: undefined as string | undefined
+      };
+    }
+
+    return {
+      color: '#ef4444',
+      weight: 2,
+      opacity: 0.8,
+      fillColor: 'transparent',
+      fillOpacity: 0,
+      dashArray: '5, 5'
+    };
   };
 
   return (
@@ -348,7 +374,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {showWards && wards && (
           <GeoJSON 
             data={wards} 
-            style={wardStyle}
+            style={wardStyleForFeature}
             onEachFeature={(feature, layer) => {
               if (feature.properties && feature.properties.WARDNAME) {
                 layer.bindTooltip(feature.properties.WARDNAME, {
