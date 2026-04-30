@@ -20,6 +20,12 @@ type EnumeratorEntry = {
 };
 
 const normalizeWardKey = (s: string) => s.trim().toLowerCase();
+const parseWardNumber = (label: string): number | null => {
+  const m = String(label).trim().match(/\d+/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+};
 
 const wardsFromUserProfile = (data: UserProfile): string[] => {
   const list = data.assignedWardNames;
@@ -148,7 +154,15 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
   const wardNameOptions = useMemo(
-    () => [...landmarkWardOptions].sort((a, b) => a.localeCompare(b)),
+    () =>
+      [...landmarkWardOptions].sort((a, b) => {
+        const an = parseWardNumber(a);
+        const bn = parseWardNumber(b);
+        if (an !== null && bn !== null) return an - bn;
+        if (an !== null) return -1;
+        if (bn !== null) return 1;
+        return a.localeCompare(b);
+      }),
     [landmarkWardOptions]
   );
 
