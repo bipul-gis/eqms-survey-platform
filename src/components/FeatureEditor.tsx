@@ -181,6 +181,20 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     return true;
   };
 
+  const handleStatusClick = (s: FeatureStatus) => {
+    if (!isAdmin && s === 'rejected') return;
+    if (!isAdmin && s === 'verified') {
+      if (
+        !window.confirm(
+          'Have you checked that all attribute information is correct?\n\nSelecting Verified confirms the data is accurate.'
+        )
+      ) {
+        return;
+      }
+    }
+    setStatus(s);
+  };
+
   const handleSave = async () => {
     if (!user) return;
     if (!validateOtherInputs()) return;
@@ -195,9 +209,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
               ChangeAt: new Date().toISOString()
             }
           : attributes;
-      const nextStatus: FeatureStatus = isNewFeature
-        ? 'pending'
-        : (isDirty ? 'verified' : status);
+      const nextStatus: FeatureStatus = isNewFeature ? 'pending' : status;
       if (isNewFeature) {
         if (!onCreateFeature) {
           throw new Error('Create feature handler is missing.');
@@ -292,15 +304,23 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           </div>
         )}
 
-        {/* Status Section */}
+        {/* Status Section — enumerators: Pending / Verified only (Rejected uses the button below); Verified asks for confirmation */}
         <section>
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Status</label>
           <div className="grid grid-cols-3 gap-2">
             {(['pending', 'verified', 'rejected'] as FeatureStatus[]).map((s) => (
               <button
                 key={s}
-                disabled={!isAdmin}
-                onClick={() => setStatus(s)}
+                type="button"
+                disabled={!isAdmin && s === 'rejected'}
+                title={
+                  !isAdmin && s === 'rejected'
+                    ? 'Use Reject below with remarks'
+                    : s === 'verified'
+                      ? 'Mark as verified after confirming attributes'
+                      : undefined
+                }
+                onClick={() => handleStatusClick(s)}
                 className={`text-xs py-2 px-1 rounded-md border capitalize transition-all flex flex-col items-center gap-1 ${
                   status === s 
                     ? s === 'verified' ? 'bg-green-100 border-green-500 text-green-700' :

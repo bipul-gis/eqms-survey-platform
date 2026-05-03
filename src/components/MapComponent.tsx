@@ -365,6 +365,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 }) => {
   const { location } = useGeoLocation();
   const { user, userProfile } = useAuth();
+  const isAdminUser = userProfile?.role === 'admin';
   const [showWards, setShowWards] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -690,8 +691,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             />
           ))}
 
-        {/* Enumerator Live Location */}
-        {location && (
+        {/* Live GPS overlay: admins always; enumerators only while adding a point (10 m rule), so buffers clear after save. */}
+        {location && (isAdminUser || showPointAddBuffer) && (
           <>
             <FocusOnUserForPointAdd enabled={showPointAddBuffer} location={location} />
             <Circle 

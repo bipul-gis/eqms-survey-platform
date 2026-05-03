@@ -13,6 +13,7 @@ export interface GeoFeature {
   /** Auto-generated backend note when a new feature is created. */
   newFeatureRemarks?: string;
   createdBy: string;
+  createdByUid?: string;
   updatedBy: string;
   updatedAt: string;
   collectorLocation?: {

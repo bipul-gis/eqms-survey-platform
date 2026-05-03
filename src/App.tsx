@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
 import { MapComponent } from './components/MapComponent';
@@ -48,6 +48,18 @@ const isImportedLandmarkPoint = (f: GeoFeature) => {
 
 const isNewlyAddedFeature = (f: GeoFeature) =>
   typeof f.newFeatureRemarks === 'string' && f.newFeatureRemarks.trim().length > 0;
+
+/** Landmark points counted in enumerator Quality Control (includes manual map adds, not only GeoJSON imports). */
+const isEnumeratorScopeLandmarkPoint = (f: GeoFeature) => {
+  if (f.type !== 'point') return false;
+  const src = String(f.attributes?.__source || '');
+  return (
+    src === 'ccc_landmark' ||
+    src === 'ccc_landmark_geojson' ||
+    src === 'ccc_landmark_import' ||
+    src === 'landmark_manual'
+  );
+};
 
 const LANDMARK_TABLE_ATTRIBUTE_ORDER = ['FID', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
 
@@ -128,6 +140,7 @@ const AppContent: React.FC = () => {
   const [landmarkZoneOptions, setLandmarkZoneOptions] = useState<string[]>([]);
   const [selfMergedAssignedWards, setSelfMergedAssignedWards] = useState<string[]>([]);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
+  const uploadMergeInputRef = useRef<HTMLInputElement | null>(null);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
 
@@ -187,11 +200,24 @@ const AppContent: React.FC = () => {
 
   const visibleFeatures = useMemo(() => {
     if (isAdmin) return features;
-    if (assignedWardsForFilter.length === 0) return [] as GeoFeature[];
-    return features.filter((f) =>
-      featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
+
+    const myEmail = (user?.email || '').trim().toLowerCase();
+    const myUid = user?.uid || '';
+    const isCreatedByMe = (f: GeoFeature) => {
+      const byEmail = String(f.createdBy || '').trim().toLowerCase();
+      const byUid = String(f.createdByUid || '').trim();
+      return (myEmail && byEmail === myEmail) || (myUid && byUid === myUid);
+    };
+
+    if (assignedWardsForFilter.length === 0) {
+      return features.filter(isCreatedByMe);
+    }
+
+    return features.filter(
+      (f) =>
+        isCreatedByMe(f) || featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
-  }, [isAdmin, features, assignedWardsForFilter, wardsData]);
+  }, [isAdmin, features, assignedWardsForFilter, wardsData, user?.email, user?.uid]);
 
   useEffect(() => {
     let mounted = true;
@@ -232,7 +258,7 @@ const AppContent: React.FC = () => {
   }, [isAdmin, landmarkWardOptions, assignedWardsForFilter]);
 
   const enumeratorTaskStats = useMemo(() => {
-    const lm = visibleFeatures.filter(isImportedLandmarkPoint);
+    const lm = visibleFeatures.filter(isEnumeratorScopeLandmarkPoint);
     let verified = 0;
     let pending = 0;
     let rejected = 0;
@@ -643,29 +669,20 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const mergeUpdateLandmarkGeoJson = async () => {
+  const mergeUpdateLandmarkGeoJson = async (points: any[]) => {
     if (!isAdmin || isImportingLandmarks) return;
     setIsImportingLandmarks(true);
     setImportNotice(null);
     try {
-      const resp = await fetch(landmarkGeoJsonUrl);
-      if (!resp.ok) {
-        throw new Error(`GeoJSON fetch failed (${resp.status})`);
-      }
-      const geo = await resp.json();
-      const points = Array.isArray(geo?.features)
-        ? geo.features.filter((f: any) => f?.geometry?.type === 'Point')
-        : [];
-
       if (points.length === 0) {
-        setImportNotice({ type: 'error', message: 'No Point features found in CCC_all_Landmark.geojson.' });
+        setImportNotice({ type: 'error', message: 'No Point features found in uploaded GeoJSON.' });
         setImportProgress(null);
         setIsImportingLandmarks(false);
         return;
       }
 
       const confirmed = window.confirm(
-        'This will MERGE landmark JSON into existing data.\n\n' +
+        'This will MERGE uploaded landmark GeoJSON into existing data.\n\n' +
           'Enumerator-edited records are preserved.\n' +
           'Untouched landmark baseline records are refreshed from JSON.\n' +
           'No full delete is performed.\n\n' +
@@ -803,14 +820,37 @@ const AppContent: React.FC = () => {
       await commitBatch();
       setImportNotice({
         type: 'success',
-        message: `Merge update complete. Created: ${created}, refreshed: ${refreshed}, preserved edited: ${preserved}.`
+        message: `Upload merge complete. Created: ${created}, refreshed: ${refreshed}, preserved edited: ${preserved}.`
       });
     } catch (e) {
       console.error(e);
-      setImportNotice({ type: 'error', message: 'Landmark merge update failed: ' + e });
+      setImportNotice({ type: 'error', message: 'Uploaded landmark merge failed: ' + e });
     } finally {
       setIsImportingLandmarks(false);
     }
+  };
+
+  const onUploadMergeFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const geo = JSON.parse(text);
+      const points = Array.isArray(geo?.features)
+        ? geo.features.filter((f: any) => f?.geometry?.type === 'Point')
+        : [];
+      await mergeUpdateLandmarkGeoJson(points);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setImportNotice({ type: 'error', message: `Invalid upload file. ${message}` });
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const openUploadMergePicker = () => {
+    if (isImportingLandmarks) return;
+    uploadMergeInputRef.current?.click();
   };
 
   const downloadChangedLandmarkShp = async () => {
@@ -1818,12 +1858,19 @@ const AppContent: React.FC = () => {
                   {isImportingLandmarks ? 'Importing Landmarks...' : 'Import Landmark GeoJSON'}
                 </button>
                 <button
-                  onClick={mergeUpdateLandmarkGeoJson}
+                  onClick={openUploadMergePicker}
                   disabled={isImportingLandmarks}
                   className="w-full py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  Merge Update Landmark GeoJSON
+                  Upload + Merge Landmark GeoJSON
                 </button>
+                <input
+                  ref={uploadMergeInputRef}
+                  type="file"
+                  accept=".geojson,.json,application/geo+json,application/json"
+                  className="hidden"
+                  onChange={onUploadMergeFileSelected}
+                />
                 {importProgress && (
                   <div className="space-y-1">
                     <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
