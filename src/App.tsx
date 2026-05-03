@@ -7,9 +7,9 @@ import { LoginScreen } from './components/LoginScreen';
 import { UserManagement } from './components/UserManagement';
 import { QuestionnaireManager } from './components/QuestionnaireManager';
 import { QuestionnaireForm } from './components/QuestionnaireForm';
-import { useFirestoreCollection } from './hooks/useFirestoreCollection';
+import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
 import { GeoFeature, Questionnaire, UserProfile } from './types';
-import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle, Users } from 'lucide-react';
+import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle, Users, RefreshCw } from 'lucide-react';
 import {
   collection,
   addDoc,
@@ -110,8 +110,7 @@ const normalizedFullName = (displayName: string | undefined, email: string): str
 const AppContent: React.FC = () => {
   const { user, userProfile, loading: authLoading, logout } = useAuth();
   const { location, error: gpsError, requestLocation } = useGeoLocation();
-  const { data: features, loading: featuresLoading } = useFirestoreCollection<GeoFeature>('features');
-  
+
   const [selectedFeature, setSelectedFeature] = useState<GeoFeature | null>(null);
   const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
@@ -141,6 +140,7 @@ const AppContent: React.FC = () => {
   const [selfMergedAssignedWards, setSelfMergedAssignedWards] = useState<string[]>([]);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const uploadMergeInputRef = useRef<HTMLInputElement | null>(null);
+  const [adminFeaturesRefreshKey, setAdminFeaturesRefreshKey] = useState(0);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
 
@@ -198,6 +198,21 @@ const AppContent: React.FC = () => {
     userProfile?.assignedWardName
   ]);
 
+  const featuresMode = useMemo<FeaturesLoadMode>(() => {
+    if (authLoading || !user) return 'idle';
+    if (userProfile?.role === 'admin' && userProfile?.status === 'approved') return 'admin';
+    if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') return 'enumerator';
+    return 'idle';
+  }, [authLoading, user, userProfile?.role, userProfile?.status]);
+
+  const { features, loading: featuresLoading } = useOptimizedFeatures({
+    mode: featuresMode,
+    userUid: user?.uid,
+    userEmail: user?.email ?? undefined,
+    assignedWards: assignedWardsForFilter,
+    adminRefreshKey: adminFeaturesRefreshKey
+  });
+
   const visibleFeatures = useMemo(() => {
     if (isAdmin) return features;
 
@@ -213,9 +228,9 @@ const AppContent: React.FC = () => {
       return features.filter(isCreatedByMe);
     }
 
-    return features.filter(
-      (f) =>
-        isCreatedByMe(f) || featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
+    // Strict task scope: only landmarks that resolve to an assigned ward (not "everything I created").
+    return features.filter((f) =>
+      featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
   }, [isAdmin, features, assignedWardsForFilter, wardsData, user?.email, user?.uid]);
 
@@ -273,8 +288,7 @@ const AppContent: React.FC = () => {
       pending,
       rejected,
       newAdded,
-      landmarkTotal: lm.length,
-      scopeTotal: visibleFeatures.length
+      landmarkTotal: lm.length
     };
   }, [visibleFeatures]);
 
@@ -661,6 +675,7 @@ const AppContent: React.FC = () => {
         type: 'success',
         message: `Import complete. Previous data removed: ${removedCount}. Landmarks written: ${writtenCount}.`
       });
+      setAdminFeaturesRefreshKey((k) => k + 1);
     } catch (e) {
       console.error(e);
       setImportNotice({ type: 'error', message: 'Landmark GeoJSON import failed: ' + e });
@@ -822,6 +837,7 @@ const AppContent: React.FC = () => {
         type: 'success',
         message: `Upload merge complete. Created: ${created}, refreshed: ${refreshed}, preserved edited: ${preserved}.`
       });
+      setAdminFeaturesRefreshKey((k) => k + 1);
     } catch (e) {
       console.error(e);
       setImportNotice({ type: 'error', message: 'Uploaded landmark merge failed: ' + e });
@@ -1850,6 +1866,16 @@ const AppContent: React.FC = () => {
                   <span className="text-slate-500">Total (all)</span>
                   <span className="font-bold">{visibleFeatures.length}</span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setAdminFeaturesRefreshKey((k) => k + 1)}
+                  disabled={featuresLoading}
+                  title="Admin loads features once (no live listener). Refresh after imports or external edits."
+                  className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                >
+                  <RefreshCw size={12} className={featuresLoading ? 'animate-spin' : ''} />
+                  {featuresLoading ? 'Loading…' : 'Refresh map data'}
+                </button>
                 <button 
                   onClick={importLandmarkGeoJson}
                   disabled={isImportingLandmarks}
@@ -2039,10 +2065,6 @@ const AppContent: React.FC = () => {
                     <div className="flex justify-between items-center text-xs border-t border-slate-100 pt-2">
                       <span className="text-slate-500">Landmarks (assigned)</span>
                       <span className="font-bold text-slate-800">{enumeratorTaskStats.landmarkTotal}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-500">Total (all features)</span>
-                      <span className="font-bold text-slate-800">{enumeratorTaskStats.scopeTotal}</span>
                     </div>
                   </div>
                 </>

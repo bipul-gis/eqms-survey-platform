@@ -7,8 +7,9 @@ import { useAuth } from './AuthProvider';
 import { db } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
-import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
 import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../lib/wardGeometry';
+import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
+import { useLandmarkGeoJsonPoints } from '../hooks/useLandmarkGeoJsonPoints';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
 const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
@@ -371,7 +372,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>('osm');
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
-  const [landmarkPoints, setLandmarkPoints] = useState<Array<{ lat: number; lng: number; properties: Record<string, any> }>>([]);
+  const landmarkPoints = useLandmarkGeoJsonPoints();
   const [pulseFeatureId, setPulseFeatureId] = useState<string | null>(null);
   const isAddingFeature = !!addFeatureType;
   const landmarkScaleHydratedRef = useRef(false);
@@ -445,36 +446,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     [syncLandmarkScaleToFirestore]
   );
 
-  useEffect(() => {
-    let mounted = true;
-
-    const loadLandmarks = async () => {
-      try {
-        // Use Vite asset URL so this works in production (e.g., Vercel) and local dev.
-        const resp = await fetch(landmarkGeoJsonUrl);
-        if (!resp.ok) return;
-        const geo = await resp.json();
-        const points = Array.isArray(geo?.features)
-          ? geo.features
-              .filter((f: any) => f?.geometry?.type === 'Point' && Array.isArray(f?.geometry?.coordinates))
-              .map((f: any) => ({
-                lat: f.geometry.coordinates[1],
-                lng: f.geometry.coordinates[0],
-                properties: f.properties || {}
-              }))
-          : [];
-        if (mounted) setLandmarkPoints(points);
-      } catch (e) {
-        console.error('Failed to load CCC_all_Landmark.geojson', e);
-      }
-    };
-
-    loadLandmarks();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'verified': return '#22c55e';
@@ -489,33 +460,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const getFeatureColor = (feature: GeoFeature) =>
     isNewlyAddedFeature(feature) ? '#7c3aed' : getStatusColor(feature.status);
 
-  const normalizeLandmarkFid = (value: unknown): number | undefined => {
-    if (value === null || value === undefined || value === '') return undefined;
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    const n = Number(String(value).trim());
-    return Number.isFinite(n) ? n : undefined;
-  };
-
-  const fidsEqual = (a: unknown, b: unknown) => {
-    if (a === b) return true;
-    const na = normalizeLandmarkFid(a);
-    const nb = normalizeLandmarkFid(b);
-    if (na === undefined || nb === undefined) return false;
-    return na === nb;
-  };
-
-  const findMatchingFirestorePoint = (p: { lat: number; lng: number; properties: Record<string, any> }) => {
-    const fid = normalizeLandmarkFid(p.properties?.FID);
-    return features.find((f) => {
-      if (f.type !== 'point') return false;
-      if (fid !== undefined) return fidsEqual(f.attributes?.FID, fid);
-      if (!Array.isArray(f.geometry?.coordinates)) return false;
-      return (
-        Math.abs((f.geometry.coordinates[1] ?? 0) - p.lat) < 0.0000001 &&
-        Math.abs((f.geometry.coordinates[0] ?? 0) - p.lng) < 0.0000001
-      );
-    });
-  };
+  const findMatchingFirestorePoint = (p: { lat: number; lng: number; properties: Record<string, any> }) =>
+    findMatchingFirestoreLandmark(p, features);
 
   const wardStyleForFeature = (feature: any) => {
     const wardName = String(
