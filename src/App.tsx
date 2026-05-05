@@ -59,6 +59,7 @@ import {
   wardMatchesAssignedList,
   withBaselineTaskWard
 } from './lib/wardGeometry';
+import { isSlumCategory, SLUM_DEMOGRAPHIC_KEY_SET } from './lib/slumFeatureFields';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -153,6 +154,17 @@ const normalizeImportedPropertyValue = (v: unknown): unknown => {
   return String(v);
 };
 
+/** Keep slum-only fields only when Category is slum. */
+const sanitizeSlumOnlyFields = (attrs: Record<string, unknown>): Record<string, unknown> => {
+  const out: Record<string, unknown> = { ...attrs };
+  if (!isSlumCategory(out as Record<string, any>)) {
+    for (const k of SLUM_DEMOGRAPHIC_KEY_SET) {
+      delete out[k];
+    }
+  }
+  return out;
+};
+
 /**
  * All columns from uploaded GeoJSON, normalized for Firestore (aligned with SHP attribute handling).
  * Strips app-internal keys from the file; optional FID override from normalized landmark id.
@@ -174,7 +186,7 @@ const normalizeImportedLandmarkProperties = (
   if (fidOverride !== undefined) {
     out.FID = fidOverride;
   }
-  return out;
+  return sanitizeSlumOnlyFields(out);
 };
 
 const parsePointCoordinates = (coords: unknown): [number, number] => {
@@ -192,7 +204,7 @@ const parsePointCoordinates = (coords: unknown): [number, number] => {
  * plus status, who/when changed, rejection remarks, move/new-feature auto remarks, GPS.
  */
 const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | number | boolean> => {
-  const attrs = feature.attributes || {};
+  const attrs = sanitizeSlumOnlyFields((feature.attributes || {}) as Record<string, unknown>) as Record<string, any>;
   const out: Record<string, string | number | boolean> = {};
 
   for (const [k, v] of Object.entries(attrs)) {
@@ -1104,11 +1116,11 @@ const AppContent: React.FC = () => {
           ops += 1;
         } else if (hasUserEdits) {
           // Merge fresh file columns in; existing values win (enumerator/admin edits kept).
-          const merged = {
+          const merged = sanitizeSlumOnlyFields({
             ...normalizedAttrs,
             ...(existing.attributes || {}),
             __source: source || 'ccc_landmark'
-          };
+          });
           const preservedAttrs = withBaselineTaskWard(merged);
           batch.update(ref, {
             attributes: preservedAttrs,
