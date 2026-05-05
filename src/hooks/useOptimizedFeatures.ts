@@ -5,6 +5,7 @@ import {
   where,
   onSnapshot,
   getDocs,
+  getDocsFromServer,
   type Query
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -84,7 +85,8 @@ export function useOptimizedFeatures(options: {
     setError(null);
     void (async () => {
       try {
-        const snap = await getDocs(collection(db, 'features'));
+        // Always read from server so admin totals match other devices (avoid stale local cache).
+        const snap = await getDocsFromServer(collection(db, 'features'));
         if (cancelled) return;
         setFeatures(snap.docs.map((d) => docToGeoFeature(d)));
       } catch (e) {
