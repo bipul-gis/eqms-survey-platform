@@ -13,7 +13,7 @@ import {
   Phone,
   Search
 } from 'lucide-react';
-import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
+import { fetchLandmarkGeoJson } from '../lib/landmarkGeoJson';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -300,7 +300,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     let mounted = true;
     const loadWardOptionsFromLandmarks = async () => {
       try {
-        const resp = await fetch(landmarkGeoJsonUrl);
+        const resp = await fetchLandmarkGeoJson();
         if (!resp.ok) return;
         const geo = await resp.json();
         const rows = Array.isArray(geo?.features) ? geo.features : [];

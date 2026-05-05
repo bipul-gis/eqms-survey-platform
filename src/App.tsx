@@ -45,7 +45,7 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
-import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
+import { fetchLandmarkGeoJson } from './lib/landmarkGeoJson';
 import shpwrite from '@mapbox/shp-write';
 import {
   assignedWardsFromUserProfile,
@@ -420,7 +420,7 @@ const AppContent: React.FC = () => {
 
     const loadLandmarkReferenceOptions = async () => {
       try {
-        const resp = await fetch(landmarkGeoJsonUrl);
+        const resp = await fetchLandmarkGeoJson();
         if (!resp.ok) return;
         const geo = await resp.json();
         const rows = Array.isArray(geo?.features) ? geo.features : [];
@@ -766,7 +766,7 @@ const AppContent: React.FC = () => {
     setImportNotice(null);
     try {
       // Use Vite asset URL so this works in production (e.g., Vercel) and local dev.
-      const resp = await fetch(landmarkGeoJsonUrl);
+      const resp = await fetchLandmarkGeoJson();
       if (!resp.ok) {
         throw new Error(`GeoJSON fetch failed (${resp.status})`);
       }
@@ -1136,7 +1136,7 @@ const AppContent: React.FC = () => {
 
     let baselineByFid = new Map<string, { geometry: any; properties: Record<string, any> }>();
     try {
-      const baselineResp = await fetch(landmarkGeoJsonUrl);
+      const baselineResp = await fetchLandmarkGeoJson();
       if (!baselineResp.ok) {
         throw new Error(`Failed to load baseline GeoJSON (${baselineResp.status})`);
       }
@@ -1767,6 +1767,7 @@ const AppContent: React.FC = () => {
               onMapClick={handleMapClick}
               addFeatureType={isAddingFeature}
               showPointAddBuffer={!isAdmin && isAddingFeature === 'point'}
+              landmarkGeoJsonRefreshKey={isAdmin ? adminFeaturesRefreshKey : 0}
             />
           ) : (
             <div className="p-6 overflow-y-auto w-full">
@@ -2033,7 +2034,7 @@ const AppContent: React.FC = () => {
                   type="button"
                   onClick={() => setAdminFeaturesRefreshKey((k) => k + 1)}
                   disabled={featuresLoading}
-                  title="Admin loads features once (no live listener). Refresh after imports or external edits."
+                  title="Reloads Firestore features and re-fetches landmark reference GeoJSON (no stale browser cache)."
                   className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                 >
                   <RefreshCw size={12} className={featuresLoading ? 'animate-spin' : ''} />

@@ -99,6 +99,8 @@ interface MapComponentProps {
   onMapClick?: (lat: number, lng: number) => void;
   addFeatureType: 'point' | 'line' | 'polygon' | null;
   showPointAddBuffer?: boolean;
+  /** Bump (e.g. admin refresh) to reload bundled landmark GeoJSON overlay from the network. */
+  landmarkGeoJsonRefreshKey?: number;
 }
 
 const MapEvents = ({ onClick }: { onClick: (lat: number, lng: number) => void }) => {
@@ -389,7 +391,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   movingFeatureId,
   onMapClick,
   addFeatureType,
-  showPointAddBuffer = false
+  showPointAddBuffer = false,
+  landmarkGeoJsonRefreshKey = 0
 }) => {
   const { location } = useGeoLocation();
   const { user, userProfile } = useAuth();
@@ -399,7 +402,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>('osm');
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
-  const landmarkPoints = useLandmarkGeoJsonPoints();
+  const landmarkPoints = useLandmarkGeoJsonPoints(landmarkGeoJsonRefreshKey);
   const [pulseFeatureId, setPulseFeatureId] = useState<string | null>(null);
   const isAddingFeature = !!addFeatureType;
   const landmarkScaleHydratedRef = useRef(false);
