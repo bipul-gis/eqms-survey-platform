@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isSelf(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Allow an enumerator to create their own initial profile as "pending".
+    // This enables: enumerator sign-up -> show pending screen -> admin approval -> approved.
+    function isEnumeratorPendingProfile(data, userId) {
+      return data.uid == userId
+        && data.role == 'enumerator'
+        && data.status == 'pending';
+    }
+
+    // Allow a signed-in user to update only lightweight UI preferences on their own user doc
+    // without changing role/status/uid/email (admins can still change profiles freely via isAdmin()).
+    function isSelfUiPrefsOnly(userId) {
+      let prior = get(/databases/$(database)/documents/users/$(userId)).data;
+      return isSelf(userId)
+        && request.resource.data.uid == prior.uid
+        && request.resource.data.email == prior.email
+        && request.resource.data.displayName == prior.displayName
+        && request.resource.data.role == prior.role
+        && request.resource.data.status == prior.status
+        // Ward assignment is admin-only; enumerator UI prefs may not change it.
+        && request.resource.data.get('assignedWardName', null) == prior.get('assignedWardName', null)
+        && request.resource.data.get('assignedWardNames', []) == prior.get('assignedWardNames', []);
+    }
+
+    function isValidFeature(data) {
+      return data.type is string && 
+             data.status in ['pending', 'verified', 'rejected'] &&
+             data.geometry is map &&
+             data.attributes is map;
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin()
+        || isSelf(userId) && isEnumeratorPendingProfile(request.resource.data, userId)
+        || isSelfUiPrefsOnly(userId);
+    }
+
+    match /features/{featureId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidFeature(request.resource.data);
+      allow update: if isSignedIn() && isValidFeature(request.resource.data);
+      allow delete: if isAdmin(); // Enumerators can't delete, only admin
+    }
+
+    match /wards/{wardId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+  }
+}

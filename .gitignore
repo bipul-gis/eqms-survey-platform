@@ -1,0 +1,14 @@
+node_modules/
+.vite/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Local GIS sidecars / locks / scratch exports (should not be committed)
+*.sr.lock
+src/data/v2/
+src/data/v3/

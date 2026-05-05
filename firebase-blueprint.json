@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "feature": {
+      "title": "Geospatial Feature",
+      "description": "A feature on the map with geometry and attributes.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "type": { "type": "string", "enum": ["point", "line", "polygon"] },
+        "geometry": { "type": "object", "description": "GeoJSON geometry object" },
+        "attributes": { "type": "object", "description": "Key-value pairs of attributes" },
+        "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "createdBy": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "collectorLocation": { "type": "object", "description": "GPS coordinates of the enumerator at time of edit" }
+      },
+      "required": ["type", "geometry", "attributes", "status"]
+    },
+    "ward": {
+      "title": "Ward Boundary",
+      "description": "Static ward boundary data.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "geometry": { "type": "object" }
+      }
+    },
+    "user": {
+      "title": "User Profile",
+      "description": "Role-based access control for app users.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["enumerator", "admin"] }
+      },
+      "required": ["uid", "email", "role"]
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "user",
+      "description": "User profiles and roles."
+    },
+    "features": {
+      "schema": "feature",
+      "description": "Collection of landmarks, roads, and slums."
+    },
+    "wards": {
+      "schema": "ward",
+      "description": "Administrative ward boundaries (read-only for enumerators)."
+    }
+  }
+}

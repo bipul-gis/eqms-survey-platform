@@ -1,0 +1,6 @@
+{
+  "name": "Spatial Enumerator Pro",
+  "description": "Real-time GIS platform for spatial data collection and attribute editing with multi-user sync.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["gis", "realtime_collaboration"]
+}
