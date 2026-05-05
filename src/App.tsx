@@ -321,8 +321,13 @@ const AppContent: React.FC = () => {
   const uploadMergeInputRef = useRef<HTMLInputElement | null>(null);
   const [adminFeaturesRefreshKey, setAdminFeaturesRefreshKey] = useState(0);
   const [enumeratorFeaturesRefreshKey, setEnumeratorFeaturesRefreshKey] = useState(0);
+  const backPressArmedUntilRef = useRef(0);
+  const [showBackExitWarning, setShowBackExitWarning] = useState(false);
+  const backWarningTimerRef = useRef<number | null>(null);
+  const allowNextPopToLeaveRef = useRef(false);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
+  const isApprovedEnumerator = userProfile?.role === 'enumerator' && userProfile?.status === 'approved';
 
   useEffect(() => {
     if (
@@ -358,6 +363,78 @@ const AppContent: React.FC = () => {
     );
     return () => unsub();
   }, [isAdmin, userProfile?.role, userProfile?.status, userProfile?.email]);
+
+  useEffect(() => {
+    const isLikelyMobile =
+      /Android|iPhone|iPad|iPod|Mobile|Opera Mini|IEMobile/i.test(navigator.userAgent) ||
+      window.innerWidth <= 900;
+    const shouldGuardBack = isApprovedEnumerator && isLikelyMobile;
+    if (!shouldGuardBack) return;
+
+    // Keep one synthetic history entry so first browser-back is consumed inside app.
+    const pushGuardState = () =>
+      window.history.pushState(
+        { ...(window.history.state || {}), __guardBack: true },
+        document.title,
+        window.location.href
+      );
+    pushGuardState();
+
+    const onPopState = () => {
+      if (allowNextPopToLeaveRef.current) {
+        allowNextPopToLeaveRef.current = false;
+        return;
+      }
+
+      const now = Date.now();
+      if (now <= backPressArmedUntilRef.current) {
+        // Second back press within window: allow the browser to leave.
+        backPressArmedUntilRef.current = 0;
+        if (backWarningTimerRef.current !== null) {
+          window.clearTimeout(backWarningTimerRef.current);
+          backWarningTimerRef.current = null;
+        }
+        setShowBackExitWarning(false);
+        allowNextPopToLeaveRef.current = true;
+        window.history.back();
+        return;
+      }
+
+      // First back press: show warning and remain in app by re-pushing guard state.
+      backPressArmedUntilRef.current = now + 4000;
+      setShowBackExitWarning(true);
+      if (backWarningTimerRef.current !== null) {
+        window.clearTimeout(backWarningTimerRef.current);
+      }
+      backWarningTimerRef.current = window.setTimeout(() => {
+        setShowBackExitWarning(false);
+        backWarningTimerRef.current = null;
+      }, 4000);
+      window.history.pushState({ ...(window.history.state || {}), __guardBack: true }, document.title, window.location.href);
+    };
+
+    const onPageShow = () => {
+      // Re-entered tab/page (including BFCache restore): always re-arm guard cycle.
+      allowNextPopToLeaveRef.current = false;
+      backPressArmedUntilRef.current = 0;
+      setShowBackExitWarning(false);
+      pushGuardState();
+    };
+
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('pageshow', onPageShow);
+      if (backWarningTimerRef.current !== null) {
+        window.clearTimeout(backWarningTimerRef.current);
+        backWarningTimerRef.current = null;
+      }
+      setShowBackExitWarning(false);
+      backPressArmedUntilRef.current = 0;
+      allowNextPopToLeaveRef.current = false;
+    };
+  }, [isApprovedEnumerator]);
 
   const assignedWardsForFilter = useMemo(() => {
     if (isAdmin) return [] as string[];
@@ -2286,6 +2363,11 @@ const AppContent: React.FC = () => {
           >
             Dismiss
           </button>
+        </div>
+      )}
+      {showBackExitWarning && (
+        <div className="bg-rose-600 text-white text-center py-1.5 text-xs font-bold">
+          Press back again within 4 seconds to leave this page.
         </div>
       )}
     </div>

@@ -180,6 +180,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
   const [enumActionLoadingEmail, setEnumActionLoadingEmail] = useState<string | null>(null);
   const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
+  const [clearingAllAssignments, setClearingAllAssignments] = useState(false);
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
   const [manageTabSearch, setManageTabSearch] = useState('');
   const [tasksTabSearch, setTasksTabSearch] = useState('');
@@ -546,6 +547,30 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     }
   };
 
+  const clearAllEnumeratorWardAssignments = async () => {
+    if (activeEnumerators.length === 0) return;
+
+    try {
+      setClearingAllAssignments(true);
+      setError(null);
+
+      const allUids = [...new Set(activeEnumerators.flatMap((entry) => entry.uids).filter(Boolean))];
+      await Promise.all(
+        allUids.map((uid) =>
+          updateDoc(doc(db, 'users', uid), {
+            assignedWardNames: deleteField(),
+            assignedWardName: deleteField()
+          })
+        )
+      );
+    } catch (e) {
+      console.error('Error clearing all ward assignments:', e);
+      setError('Failed to clear all ward assignments');
+    } finally {
+      setClearingAllAssignments(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -788,6 +813,23 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                 Wards taken by others are greyed out (release a ward by clearing it on the holder first). Clear all to
                 give full access.
               </p>
+              <div className="mt-3">
+                <button
+                  type="button"
+                  disabled={clearingAllAssignments || activeEnumerators.length === 0}
+                  onClick={() => {
+                    const ok = confirm(
+                      'Clear ward assignments for all active enumerators?\n\nThis removes all task ward restrictions until you assign wards again.'
+                    );
+                    if (!ok) return;
+                    void clearAllEnumeratorWardAssignments();
+                  }}
+                  className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
+                  title="Clear ward assignments for all enumerators"
+                >
+                  {clearingAllAssignments ? 'Clearing all wards…' : 'Clear all wards (all enumerators)'}
+                </button>
+              </div>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -837,7 +879,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                     entry={entry}
                     wardOptions={wardNameOptions}
                     wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
-                    saving={taskSavingEmail === entry.email}
+                    saving={taskSavingEmail === entry.email || clearingAllAssignments}
                     onSave={(wards) => void saveEnumeratorWardAssignment(entry, wards)}
                   />
                 ))}

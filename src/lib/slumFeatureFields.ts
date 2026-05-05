@@ -1,7 +1,14 @@
 import type { FeatureType } from '../types';
 
-/** Slum-related demographic / id fields (landmark GeoJSON / slum polygons). */
-export const SLUM_DEMOGRAPHIC_KEYS = ['Female_Num', 'Household_', 'Pop_Num', 'Slum_ID'] as const;
+/** Slum-only fields from landmark GeoJSON / attribute editor. */
+export const SLUM_DEMOGRAPHIC_KEYS = [
+  'Avg_Sc_eco',
+  'Avg_Strc_T',
+  'Female_Pop',
+  'HH_No_',
+  'Total_Pop_',
+  'Slum_ID'
+] as const;
 
 export const SLUM_DEMOGRAPHIC_KEY_SET = new Set<string>([...SLUM_DEMOGRAPHIC_KEYS]);
 

@@ -45,6 +45,8 @@ const CATEGORY_TYPE_OPTIONS: Record<string, string[]> = {
 };
 
 const OWNERSHIP_OPTIONS = ['CCC', 'Government', 'Informal', 'NGO/Institutional', 'Private'] as const;
+const SLUM_STRUCTURE_TYPE_OPTIONS = ['Katcha', 'Semi Pucca', 'Pucca'] as const;
+const SLUM_SOCIO_ECONOMIC_OPTIONS = ['Lower Income', 'Lower Middle Income', 'Middle Income'] as const;
 
 const HIDDEN_EDITOR_KEYS = new Set([
   'FID',
@@ -560,6 +562,56 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                       >
                         <option value="">Select Ward</option>
                         {mergedWardOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (key === 'Avg_Strc_T') {
+                if (!isSlumCategory(attributes)) return null;
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
+                      <select
+                        value={stringValue}
+                        onChange={(e) => setAttributeValue(key, e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      >
+                        <option value="">Select Avg_Strc_T</option>
+                        {SLUM_STRUCTURE_TYPE_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (key === 'Avg_Sc_eco') {
+                if (!isSlumCategory(attributes)) return null;
+                return (
+                  <div key={key} className="flex gap-2 items-start">
+                    <div className="flex-1 space-y-2">
+                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
+                        {key} <span className="text-red-500">*</span>
+                      </p>
+                      <select
+                        value={stringValue}
+                        onChange={(e) => setAttributeValue(key, e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      >
+                        <option value="">Select Avg_Sc_eco</option>
+                        {SLUM_SOCIO_ECONOMIC_OPTIONS.map((option) => (
                           <option key={option} value={option}>
                             {option}
                           </option>
