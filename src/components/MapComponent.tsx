@@ -47,13 +47,17 @@ const normalizeLandmarkAttributesForDisplay = (
   featureType: FeatureType = 'point'
 ) => {
   const a = attrs || {};
+  const selectedCategory = String(a.Category ?? a.category ?? '').trim();
+  const showOwnership = selectedCategory === 'Health Facilities';
   const normalized: Record<string, any> = {
     name: a.name ?? a.Name ?? '',
     Category: a.Category ?? '',
     Type: a.Type ?? '',
-    Ownership: a.Ownership ?? '',
     Ward_Name: a.Ward_Name ?? a.WARDNAME ?? a.WardName ?? ''
   };
+  if (showOwnership) {
+    normalized.Ownership = a.Ownership ?? '';
+  }
 
   const slum = shouldShowSlumNumericFields(a, featureType);
   if (slum) {
@@ -66,11 +70,15 @@ const normalizeLandmarkAttributesForDisplay = (
   const extra = Object.entries(a)
     .filter(([k]) => {
       if (SLUM_DEMOGRAPHIC_KEY_SET.has(k) && !slum) return false;
+      if (!showOwnership && k.toLowerCase() === 'ownership') return false;
       return !seen.has(k) && !k.startsWith('__') && !HIDDEN_LANDMARK_POPUP_KEYS.has(k);
     })
     .sort((a, b) => a[0].localeCompare(b[0]));
 
-  const order = [...LANDMARK_ATTRIBUTE_ORDER, ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])];
+  const order = [
+    ...LANDMARK_ATTRIBUTE_ORDER.filter((k) => (k === 'Ownership' ? showOwnership : true)),
+    ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])
+  ];
   const ordered = order.map((k) => [k, normalized[k] ?? a[k] ?? '']);
   return [...ordered, ...extra] as Array<[string, any]>;
 };
@@ -134,6 +142,28 @@ const FocusOnUserForPointAdd = ({
     });
     hasFocusedRef.current = true;
   }, [enabled, location, map]);
+
+  return null;
+};
+
+const FocusOnEnumeratorLocation = ({
+  enabled,
+  location,
+  focusRequestKey
+}: {
+  enabled: boolean;
+  location: { lat: number; lng: number; accuracy: number } | null;
+  focusRequestKey: number;
+}) => {
+  const map = useMap();
+  const lastFocusRequestKeyRef = useRef<number>(-1);
+
+  useEffect(() => {
+    if (!enabled || !location) return;
+    if (lastFocusRequestKeyRef.current === focusRequestKey) return;
+    map.flyTo([location.lat, location.lng], Math.max(map.getZoom(), 18), { duration: 0.6 });
+    lastFocusRequestKeyRef.current = focusRequestKey;
+  }, [enabled, location, focusRequestKey, map]);
 
   return null;
 };
@@ -394,11 +424,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   showPointAddBuffer = false,
   landmarkGeoJsonRefreshKey = 0
 }) => {
-  const { location } = useGeoLocation();
+  const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
   const isAdminUser = userProfile?.role === 'admin';
+  const isEnumeratorUser = userProfile?.role === 'enumerator';
   const [showWards, setShowWards] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(true);
+  const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(false);
+  const [enumeratorLocationFocusKey, setEnumeratorLocationFocusKey] = useState(0);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>('osm');
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
@@ -668,10 +701,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             />
           ))}
 
-        {/* Live GPS overlay: admins always; enumerators only while adding a point (10 m rule), so buffers clear after save. */}
+        {/* Live GPS overlay:
+            - Admins / point-add mode: accuracy circle + icon
+            - Enumerator "My Current Location" toggle: icon only */}
         {location && (isAdminUser || showPointAddBuffer) && (
           <>
             <FocusOnUserForPointAdd enabled={showPointAddBuffer} location={location} />
+            <FocusOnEnumeratorLocation
+              enabled={isEnumeratorUser && showEnumeratorLocation}
+              location={location}
+              focusRequestKey={enumeratorLocationFocusKey}
+            />
             <Circle 
               center={[location.lat, location.lng]} 
               radius={location.accuracy} 
@@ -691,6 +731,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               />
             )}
             <Marker 
+              position={[location.lat, location.lng]}
+              icon={L.divIcon({
+                html: `<div class="bg-blue-600 p-2 rounded-full border-2 border-white shadow-lg shadow-blue-500/50 animate-pulse"><svg viewBox="0 0 24 24" width="20" height="20" stroke="white" stroke-width="2" fill="none" class="lucide lucide-navigation"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg></div>`,
+                className: '',
+                iconSize: [36, 36],
+                iconAnchor: [18, 18]
+              })}
+            />
+          </>
+        )}
+        {location && isEnumeratorUser && showEnumeratorLocation && !showPointAddBuffer && !isAdminUser && (
+          <>
+            <FocusOnEnumeratorLocation
+              enabled={true}
+              location={location}
+              focusRequestKey={enumeratorLocationFocusKey}
+            />
+            <Marker
               position={[location.lat, location.lng]}
               icon={L.divIcon({
                 html: `<div class="bg-blue-600 p-2 rounded-full border-2 border-white shadow-lg shadow-blue-500/50 animate-pulse"><svg viewBox="0 0 24 24" width="20" height="20" stroke="white" stroke-width="2" fill="none" class="lucide lucide-navigation"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg></div>`,
@@ -764,6 +822,23 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <input type="checkbox" checked={showWards} onChange={(e) => setShowWards(e.target.checked)} />
                 <span>Ward Boundaries</span>
               </label>
+              {!isAdminUser && isEnumeratorUser && (
+                <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={showEnumeratorLocation}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setShowEnumeratorLocation(checked);
+                      if (checked) {
+                        requestLocation();
+                        setEnumeratorLocationFocusKey((k) => k + 1);
+                      }
+                    }}
+                  />
+                  <span>My Current Location</span>
+                </label>
+              )}
             </div>
           </div>
         )}

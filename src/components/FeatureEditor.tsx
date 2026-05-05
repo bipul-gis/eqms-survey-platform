@@ -63,13 +63,17 @@ const getOrderedAttributes = (
   featureType: FeatureType
 ): Array<[string, any]> => {
   const a = attrs || {};
+  const selectedCategory = String(a.Category ?? '').trim();
+  const showOwnership = selectedCategory === 'Health Facilities';
   const normalized: Record<string, any> = {
     name: a.name ?? a.Name ?? '',
     Category: a.Category ?? '',
     Type: a.Type ?? '',
-    Ownership: a.Ownership ?? '',
     Ward_Name: a.Ward_Name ?? a.WARDNAME ?? a.WardName ?? ''
   };
+  if (showOwnership) {
+    normalized.Ownership = a.Ownership ?? '';
+  }
 
   const slum = shouldShowSlumNumericFields(a, featureType);
   if (slum) {
@@ -86,7 +90,10 @@ const getOrderedAttributes = (
     })
     .sort((a, b) => a[0].localeCompare(b[0]));
 
-  const order = [...LANDMARK_ATTRIBUTE_ORDER, ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])];
+  const order = [
+    ...LANDMARK_ATTRIBUTE_ORDER.filter((k) => (k === 'Ownership' ? showOwnership : true)),
+    ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])
+  ];
   const ordered = order.map((k) => [k, normalized[k] ?? a[k] ?? '']);
   return [...ordered, ...extra] as Array<[string, any]>;
 };
