@@ -1,5 +1,18 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { UserPlus, X, Key, Mail, User as UserIcon, Shield, Check, Clock, Ban, ClipboardList, Phone } from 'lucide-react';
+import {
+  UserPlus,
+  X,
+  Key,
+  Mail,
+  User as UserIcon,
+  Shield,
+  Check,
+  Clock,
+  Ban,
+  ClipboardList,
+  Phone,
+  Search
+} from 'lucide-react';
 import landmarkGeoJsonUrl from '../data/CCC_all_Landmark.geojson?url';
 
 import { initializeApp } from 'firebase/app';
@@ -17,6 +30,22 @@ type EnumeratorEntry = {
   uids: string[];
   /** Normalized list (legacy single ward folded in when loading). */
   assignedWardNames: string[];
+};
+
+const normalizeUserSearch = (q: string) => q.trim().toLowerCase();
+
+const enumeratorMatchesSearch = (e: EnumeratorEntry, q: string): boolean => {
+  const n = normalizeUserSearch(q);
+  if (!n) return true;
+  const hay = [e.displayName, e.email, e.mobileNumber ?? ''].join(' ').toLowerCase();
+  return hay.includes(n);
+};
+
+const pendingUserMatchesSearch = (u: UserProfile, q: string): boolean => {
+  const n = normalizeUserSearch(q);
+  if (!n) return true;
+  const hay = [u.displayName ?? '', u.email ?? ''].join(' ').toLowerCase();
+  return hay.includes(n);
 };
 
 const normalizeWardKey = (s: string) => s.trim().toLowerCase();
@@ -152,6 +181,8 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [enumActionLoadingEmail, setEnumActionLoadingEmail] = useState<string | null>(null);
   const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
+  const [manageTabSearch, setManageTabSearch] = useState('');
+  const [tasksTabSearch, setTasksTabSearch] = useState('');
 
   const wardNameOptions = useMemo(
     () =>
@@ -205,6 +236,38 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     }
     return dups;
   }, [activeEnumerators]);
+
+  const filteredActiveForManage = useMemo(
+    () =>
+      manageTabSearch.trim()
+        ? activeEnumerators.filter((e) => enumeratorMatchesSearch(e, manageTabSearch))
+        : activeEnumerators,
+    [activeEnumerators, manageTabSearch]
+  );
+
+  const filteredDeactivatedForManage = useMemo(
+    () =>
+      manageTabSearch.trim()
+        ? deactivatedEnumerators.filter((e) => enumeratorMatchesSearch(e, manageTabSearch))
+        : deactivatedEnumerators,
+    [deactivatedEnumerators, manageTabSearch]
+  );
+
+  const filteredPendingForManage = useMemo(
+    () =>
+      manageTabSearch.trim()
+        ? pendingUsers.filter((u) => pendingUserMatchesSearch(u, manageTabSearch))
+        : pendingUsers,
+    [pendingUsers, manageTabSearch]
+  );
+
+  const filteredEnumeratorsForTasks = useMemo(
+    () =>
+      tasksTabSearch.trim()
+        ? activeEnumerators.filter((e) => enumeratorMatchesSearch(e, tasksTabSearch))
+        : activeEnumerators,
+    [activeEnumerators, tasksTabSearch]
+  );
 
   useEffect(() => {
     const q = query(collection(db, 'users'), where('status', '==', 'pending'));
@@ -544,7 +607,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             activeTab === 'pending' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Pending ({pendingUsers.length})
+          Manage
         </button>
         <button
           type="button"
@@ -568,6 +631,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
       </div>
 
       <div className="p-6 space-y-6 flex-1 overflow-y-auto">
+        {activeTab !== 'create' && (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs">
             <span className="text-gray-500 font-medium">Total Enumerators</span>
@@ -577,24 +641,39 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             Active: {activeEnumeratorsCount} • Deactivated: {deactivatedEnumeratorsCount}
           </div>
         </div>
+        )}
 
-        {activeTab !== 'tasks' && (
+        {activeTab === 'pending' && (
           <>
         {deleteNotice && (
           <div className="bg-amber-50 text-amber-800 p-3 rounded-xl text-xs border border-amber-100">
             {deleteNotice}
           </div>
         )}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <input
+            type="search"
+            value={manageTabSearch}
+            onChange={(e) => setManageTabSearch(e.target.value)}
+            placeholder="Search users (name, email, mobile)…"
+            className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-9 pr-3 text-sm text-gray-800 placeholder:text-gray-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            aria-label="Search enumerators"
+          />
+        </div>
         <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
           <h3 className="text-xs font-bold text-gray-700 mb-3">
-            Active Enumerators ({activeEnumeratorsCount})
+            Active Enumerators ({filteredActiveForManage.length}
+            {manageTabSearch.trim() ? ` / ${activeEnumeratorsCount}` : ''})
           </h3>
 
           {activeEnumerators.length === 0 ? (
             <p className="text-[11px] text-gray-400">No approved enumerators yet.</p>
+          ) : filteredActiveForManage.length === 0 ? (
+            <p className="text-[11px] text-gray-500">No users match your search.</p>
           ) : (
-            <div className="space-y-2">
-              {activeEnumerators.slice(0, 5).map((u) => (
+            <div className="max-h-72 overflow-y-auto overscroll-contain space-y-2 pr-1">
+              {filteredActiveForManage.map((u) => (
                 <div key={u.email} className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-[11px] font-semibold text-gray-700 truncate">
@@ -633,23 +712,23 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                   </div>
                 </div>
               ))}
-              {activeEnumerators.length > 5 && (
-                <p className="text-[10px] text-gray-400">+ {activeEnumerators.length - 5} more</p>
-              )}
             </div>
           )}
         </div>
 
         <div className="bg-white border border-gray-100 rounded-xl p-4">
           <h3 className="text-xs font-bold text-gray-700 mb-3">
-            Deactivated Enumerators ({deactivatedEnumeratorsCount})
+            Deactivated Enumerators ({filteredDeactivatedForManage.length}
+            {manageTabSearch.trim() ? ` / ${deactivatedEnumeratorsCount}` : ''})
           </h3>
 
           {deactivatedEnumerators.length === 0 ? (
             <p className="text-[11px] text-gray-400">No deactivated enumerators yet.</p>
+          ) : filteredDeactivatedForManage.length === 0 ? (
+            <p className="text-[11px] text-gray-500">No users match your search.</p>
           ) : (
-            <div className="space-y-2">
-              {deactivatedEnumerators.slice(0, 5).map((u) => (
+            <div className="max-h-72 overflow-y-auto overscroll-contain space-y-2 pr-1">
+              {filteredDeactivatedForManage.map((u) => (
                 <div key={u.email} className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-[11px] font-semibold text-gray-700 truncate">
@@ -687,9 +766,6 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                   </div>
                 </div>
               ))}
-              {deactivatedEnumerators.length > 5 && (
-                <p className="text-[10px] text-gray-400">+ {deactivatedEnumerators.length - 5} more</p>
-              )}
             </div>
           )}
         </div>
@@ -712,6 +788,17 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                 Wards taken by others are greyed out (release a ward by clearing it on the holder first). Clear all to
                 give full access.
               </p>
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                value={tasksTabSearch}
+                onChange={(e) => setTasksTabSearch(e.target.value)}
+                placeholder="Search users (name, email, mobile)…"
+                className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-9 pr-3 text-sm text-gray-800 placeholder:text-gray-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                aria-label="Search enumerators for tasks"
+              />
             </div>
             {duplicateWardAssignments.length > 0 && (
               <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1">
@@ -736,9 +823,15 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             )}
             {activeEnumerators.length === 0 ? (
               <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
+            ) : filteredEnumeratorsForTasks.length === 0 ? (
+              <p className="text-sm text-gray-500">No users match your search.</p>
             ) : (
               <div className="space-y-3">
-                {activeEnumerators.map((entry) => (
+                <p className="text-[11px] text-gray-500">
+                  Showing {filteredEnumeratorsForTasks.length}
+                  {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
+                </p>
+                {filteredEnumeratorsForTasks.map((entry) => (
                   <EnumeratorWardRow
                     key={entry.email}
                     entry={entry}
@@ -755,12 +848,17 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
         {activeTab === 'pending' && (
           <div>
-            <h3 className="text-sm font-bold text-gray-700 mb-4">Pending Enumerator Sign-ups</h3>
+            <h3 className="text-sm font-bold text-gray-700 mb-4">
+              Pending Enumerator Sign-ups ({filteredPendingForManage.length}
+              {manageTabSearch.trim() && pendingUsers.length > 0 ? ` / ${pendingUsers.length}` : ''})
+            </h3>
             {pendingUsers.length === 0 ? (
               <p className="text-gray-500 text-sm">{error ? error : 'No pending approvals'}</p>
+            ) : filteredPendingForManage.length === 0 ? (
+              <p className="text-gray-500 text-sm">No users match your search.</p>
             ) : (
               <div className="space-y-3">
-                {pendingUsers.map(user => (
+                {filteredPendingForManage.map(user => (
                   <div key={user.uid} className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                     <div className="flex items-center justify-between mb-3">
                       <div>

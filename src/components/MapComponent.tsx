@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Polygon, useMapEvents, Circle, CircleMarker, GeoJSON, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { GeoFeature } from '../types';
+import { GeoFeature, type FeatureType } from '../types';
+import {
+  shouldShowSlumNumericFields,
+  SLUM_DEMOGRAPHIC_KEYS,
+  SLUM_DEMOGRAPHIC_KEY_SET
+} from '../lib/slumFeatureFields';
 import { useGeoLocation } from './GeoLocationProvider';
 import { useAuth } from './AuthProvider';
 import { db } from '../lib/firebase';
@@ -12,7 +17,16 @@ import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
 import { useLandmarkGeoJsonPoints } from '../hooks/useLandmarkGeoJsonPoints';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
-const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
+const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
+const HIDDEN_LANDMARK_POPUP_KEYS = new Set([
+  'FID',
+  'Zone',
+  'ZONE',
+  'WardName',
+  'WARDNAME',
+  'ChangeAt',
+  'ChangeBy'
+]);
 
 const clampScale = (n: number) => Math.min(2.4, Math.max(0.6, Math.round(n * 10) / 10));
 
@@ -28,23 +42,36 @@ const readStoredLandmarkIconScale = (): number => {
   }
 };
 
-const normalizeLandmarkAttributesForDisplay = (attrs: Record<string, any>) => {
+const normalizeLandmarkAttributesForDisplay = (
+  attrs: Record<string, any>,
+  featureType: FeatureType = 'point'
+) => {
+  const a = attrs || {};
   const normalized: Record<string, any> = {
-    FID: attrs?.FID ?? '',
-    name: attrs?.name ?? attrs?.Name ?? '',
-    Category: attrs?.Category ?? '',
-    Type: attrs?.Type ?? '',
-    Ownership: attrs?.Ownership ?? '',
-    Ward_Name: attrs?.Ward_Name ?? attrs?.WARDNAME ?? attrs?.WardName ?? '',
-    Zone: attrs?.Zone ?? ''
+    name: a.name ?? a.Name ?? '',
+    Category: a.Category ?? '',
+    Type: a.Type ?? '',
+    Ownership: a.Ownership ?? '',
+    Ward_Name: a.Ward_Name ?? a.WARDNAME ?? a.WardName ?? ''
   };
 
+  const slum = shouldShowSlumNumericFields(a, featureType);
+  if (slum) {
+    for (const k of SLUM_DEMOGRAPHIC_KEYS) {
+      normalized[k] = a[k] ?? '';
+    }
+  }
+
   const seen = new Set<string>(Object.keys(normalized));
-  const extra = Object.entries(attrs || {})
-    .filter(([k]) => !seen.has(k) && !k.startsWith('__'))
+  const extra = Object.entries(a)
+    .filter(([k]) => {
+      if (SLUM_DEMOGRAPHIC_KEY_SET.has(k) && !slum) return false;
+      return !seen.has(k) && !k.startsWith('__') && !HIDDEN_LANDMARK_POPUP_KEYS.has(k);
+    })
     .sort((a, b) => a[0].localeCompare(b[0]));
 
-  const ordered = LANDMARK_ATTRIBUTE_ORDER.map((k) => [k, normalized[k]]);
+  const order = [...LANDMARK_ATTRIBUTE_ORDER, ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])];
+  const ordered = order.map((k) => [k, normalized[k] ?? a[k] ?? '']);
   return [...ordered, ...extra] as Array<[string, any]>;
 };
 
@@ -209,7 +236,7 @@ const PointMarker = React.memo(({
         <div className="max-h-48 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
             <tbody>
-              {normalizeLandmarkAttributesForDisplay(feature.attributes || {}).map(([k, v]) => (
+              {normalizeLandmarkAttributesForDisplay(feature.attributes || {}, feature.type).map(([k, v]) => (
                 <tr key={k} className="border-b border-gray-100 last:border-b-0">
                   <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                   <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -327,7 +354,7 @@ const LandmarkGeoJsonPoint = React.memo(({
         <div className="max-h-44 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
             <tbody>
-              {normalizeLandmarkAttributesForDisplay(p.properties || {}).map(([k, v]) => (
+              {normalizeLandmarkAttributesForDisplay(p.properties || {}, 'point').map(([k, v]) => (
                 <tr key={k} className="border-b border-gray-100 last:border-b-0">
                   <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                   <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -510,6 +537,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         center={[22.3569, 91.7832]} // Chattogram, Bangladesh
         zoom={13}
         zoomControl={false}
+        attributionControl={false}
         maxZoom={22}
         className="w-full h-full"
       >
@@ -568,7 +596,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             if (!showLandmarks) return null;
             return (
               <PointMarker
-                key={feature.id}
+                key={`${feature.id}:${feature.status ?? 'pending'}`}
                 feature={feature}
                 isSelected={isSelected}
                 isMoveTarget={isMoveTarget}
@@ -585,7 +613,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (feature.type === 'line') {
             return (
               <LineMarker
-                key={feature.id}
+                key={`${feature.id}:${feature.status ?? 'pending'}`}
                 feature={feature}
                 isSelected={isSelected}
                 color={color}
@@ -597,7 +625,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (feature.type === 'polygon') {
             return (
               <PolygonMarker
-                key={feature.id}
+                key={`${feature.id}:${feature.status ?? 'pending'}`}
                 feature={feature}
                 isSelected={isSelected}
                 color={color}

@@ -1,14 +1,26 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { GeoFeature, FeatureStatus } from '../types';
+import { GeoFeature, FeatureStatus, type FeatureType } from '../types';
 import { X, Save, MapPin, User, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { doc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  isTrivialWardValue,
+  landmarkWardFromProperties,
+  TASK_WARD_ATTR,
+  withBaselineTaskWard
+} from '../lib/wardGeometry';
+import {
+  isSlumCategory,
+  shouldShowSlumNumericFields,
+  SLUM_DEMOGRAPHIC_KEYS,
+  SLUM_DEMOGRAPHIC_KEY_SET
+} from '../lib/slumFeatureFields';
 import { useAuth } from './AuthProvider';
 import { useGeoLocation } from './GeoLocationProvider';
 
-// Match the attribute order in MapComponent popup
-const LANDMARK_ATTRIBUTE_ORDER = ['FID', 'name', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
-const READ_ONLY_ATTRIBUTES = new Set(['FID', '_source']); // Fields that cannot be edited
+// Match the attribute order in MapComponent popup (FID / Zone hidden but still stored on save)
+const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
+const READ_ONLY_ATTRIBUTES = new Set(['_source']); // Fields that cannot be edited
 
 const CATEGORY_OPTIONS = [
   'Commercial',
@@ -34,23 +46,46 @@ const CATEGORY_TYPE_OPTIONS: Record<string, string[]> = {
 
 const OWNERSHIP_OPTIONS = ['CCC', 'Government', 'Informal', 'NGO/Institutional', 'Private'] as const;
 
-const getOrderedAttributes = (attrs: Record<string, any>): Array<[string, any]> => {
+const HIDDEN_EDITOR_KEYS = new Set([
+  'FID',
+  'Zone',
+  'ZONE',
+  'WardName',
+  'WARDNAME',
+  'ChangeAt',
+  'ChangeBy'
+]);
+
+const getOrderedAttributes = (
+  attrs: Record<string, any>,
+  featureType: FeatureType
+): Array<[string, any]> => {
+  const a = attrs || {};
   const normalized: Record<string, any> = {
-    FID: attrs?.FID ?? '',
-    name: attrs?.name ?? attrs?.Name ?? '',
-    Category: attrs?.Category ?? '',
-    Type: attrs?.Type ?? '',
-    Ownership: attrs?.Ownership ?? '',
-    Ward_Name: attrs?.Ward_Name ?? attrs?.WARDNAME ?? attrs?.WardName ?? '',
-    Zone: attrs?.Zone ?? ''
+    name: a.name ?? a.Name ?? '',
+    Category: a.Category ?? '',
+    Type: a.Type ?? '',
+    Ownership: a.Ownership ?? '',
+    Ward_Name: a.Ward_Name ?? a.WARDNAME ?? a.WardName ?? ''
   };
 
+  const slum = shouldShowSlumNumericFields(a, featureType);
+  if (slum) {
+    for (const k of SLUM_DEMOGRAPHIC_KEYS) {
+      normalized[k] = a[k] ?? '';
+    }
+  }
+
   const seen = new Set<string>(Object.keys(normalized));
-  const extra = Object.entries(attrs || {})
-    .filter(([k]) => !seen.has(k) && !k.startsWith('__') && !k.startsWith('_'))
+  const extra = Object.entries(a)
+    .filter(([k]) => {
+      if (SLUM_DEMOGRAPHIC_KEY_SET.has(k) && !slum) return false;
+      return !seen.has(k) && !k.startsWith('__') && !k.startsWith('_') && !HIDDEN_EDITOR_KEYS.has(k);
+    })
     .sort((a, b) => a[0].localeCompare(b[0]));
 
-  const ordered = LANDMARK_ATTRIBUTE_ORDER.map((k) => [k, normalized[k]]);
+  const order = [...LANDMARK_ATTRIBUTE_ORDER, ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])];
+  const ordered = order.map((k) => [k, normalized[k] ?? a[k] ?? '']);
   return [...ordered, ...extra] as Array<[string, any]>;
 };
 
@@ -58,22 +93,29 @@ interface FeatureEditorProps {
   feature: GeoFeature;
   allFeatures?: GeoFeature[];
   wardOptions?: string[];
-  zoneOptions?: string[];
+  /** Distinct `Category` values from landmark GeoJSON (merged with built-in categories). */
+  categoryOptions?: string[];
+  /** Baseline task ward when `attributes.__taskWard` is missing (set once on save; unchanged while editor is open). */
+  taskWardFreeze?: string | number;
   onClose: () => void;
   isAdmin: boolean;
   isNewFeature?: boolean;
   onCreateFeature?: (payload: { attributes: Record<string, any>; status: FeatureStatus }) => Promise<void>;
+  /** Called after Firestore persist succeeds (e.g. admin client refetches features — admin mode has no realtime listener). */
+  onPersistSuccess?: () => void;
 }
 
 export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   feature,
   allFeatures = [],
   wardOptions = [],
-  zoneOptions = [],
+  categoryOptions = [],
+  taskWardFreeze = '',
   onClose,
   isAdmin,
   isNewFeature = false,
-  onCreateFeature
+  onCreateFeature,
+  onPersistSuccess
 }) => {
   const { user } = useAuth();
   const { location } = useGeoLocation();
@@ -87,9 +129,16 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   const [typeOtherMode, setTypeOtherMode] = useState(false);
   const [ownershipOtherMode, setOwnershipOtherMode] = useState(false);
 
+  const mergedCategoryOptions = useMemo(() => {
+    const fromGeo = categoryOptions.map((c) => String(c ?? '').trim()).filter(Boolean);
+    return [...new Set([...(CATEGORY_OPTIONS as readonly string[]), ...fromGeo])].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' })
+    );
+  }, [categoryOptions]);
+
   const dynamicTypeOptionsByCategory = useMemo(() => {
     const byCategory: Record<string, Set<string>> = {};
-    for (const category of CATEGORY_OPTIONS) {
+    for (const category of mergedCategoryOptions) {
       byCategory[category] = new Set(CATEGORY_TYPE_OPTIONS[category] || []);
     }
     for (const f of allFeatures) {
@@ -102,7 +151,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     const out: Record<string, string[]> = {};
     for (const [k, v] of Object.entries(byCategory)) out[k] = Array.from(v);
     return out;
-  }, [allFeatures]);
+  }, [allFeatures, mergedCategoryOptions]);
 
   const dynamicOwnershipOptions = useMemo(() => {
     const extra = allFeatures
@@ -117,11 +166,6 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     [wardOptions]
   );
 
-  const mergedZoneOptions = useMemo(
-    () => [...new Set(zoneOptions.map((z) => String(z ?? '').trim()).filter(Boolean))],
-    [zoneOptions]
-  );
-
   useEffect(() => {
     setAttributes(feature.attributes);
     setStatus(feature.status);
@@ -133,26 +177,29 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     const ownership = String(feature.attributes?.Ownership ?? '').trim();
     const knownTypes = dynamicTypeOptionsByCategory[category] || [];
 
-    const isKnownCategory = CATEGORY_OPTIONS.includes(category as any);
+    const isKnownCategory = mergedCategoryOptions.includes(category);
     if (category && !isKnownCategory) {
-      setAttributeValue('Category', '');
+      setAttributes((prev) => ({ ...prev, Category: '' }));
     }
     setTypeOtherMode(Boolean(type) && !knownTypes.includes(type));
     setOwnershipOtherMode(Boolean(ownership) && !dynamicOwnershipOptions.includes(ownership));
     setCustomType(type && !knownTypes.includes(type) ? type : '');
     setCustomOwnership(ownership && !dynamicOwnershipOptions.includes(ownership) ? ownership : '');
-  }, [feature, dynamicOwnershipOptions, dynamicTypeOptionsByCategory]);
+  }, [feature, dynamicOwnershipOptions, dynamicTypeOptionsByCategory, mergedCategoryOptions]);
 
   const setAttributeValue = (key: string, value: string) => {
     setAttributes((prev) => ({ ...prev, [key]: value }));
     setIsDirty(true);
+    if (!isNewFeature) {
+      setStatus('verified');
+    }
   };
 
   const selectedCategory = String(attributes?.Category ?? '').trim();
   const typeOptions = dynamicTypeOptionsByCategory[selectedCategory] || [];
 
   const validateOtherInputs = () => {
-    if (typeOtherMode && !String(attributes?.Type ?? '').trim()) {
+    if (!isSlumCategory(attributes) && typeOtherMode && !String(attributes?.Type ?? '').trim()) {
       alert('Please write a custom Type value for "Other".');
       return false;
     }
@@ -164,13 +211,14 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   };
 
   const validateRequiredAttributes = () => {
-    const ordered = getOrderedAttributes(attributes);
+    const ordered = getOrderedAttributes(attributes, feature.type);
     const missing: string[] = [];
 
     for (const [key, value] of ordered) {
       if (READ_ONLY_ATTRIBUTES.has(key)) continue;
       if (key.startsWith('__') || key.startsWith('_')) continue;
       if (key === 'Ownership' && selectedCategory !== 'Health Facilities') continue;
+      if (key === 'Type' && isSlumCategory(attributes)) continue;
       if (!String(value ?? '').trim()) missing.push(key);
     }
 
@@ -201,15 +249,27 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     if (!validateRequiredAttributes()) return;
     setIsSaving(true);
     try {
-      const attributesToSave =
+      const baseAttrs =
         isDirty && !isNewFeature
           ? {
               ...attributes,
               ChangeBy: user.email || '',
               ChangeAt: new Date().toISOString()
             }
-          : attributes;
-      const nextStatus: FeatureStatus = isNewFeature ? 'pending' : status;
+          : { ...attributes };
+      const nextTaskWard =
+        feature.attributes?.[TASK_WARD_ATTR] != null && !isTrivialWardValue(feature.attributes[TASK_WARD_ATTR])
+          ? feature.attributes[TASK_WARD_ATTR]
+          : taskWardFreeze !== '' && taskWardFreeze !== undefined && taskWardFreeze !== null
+            ? taskWardFreeze
+            : landmarkWardFromProperties(baseAttrs);
+      const attributesToSave = isNewFeature
+        ? withBaselineTaskWard(baseAttrs)
+        : {
+            ...baseAttrs,
+            ...(!isTrivialWardValue(nextTaskWard) ? { [TASK_WARD_ATTR]: nextTaskWard } : {})
+          };
+      const nextStatus: FeatureStatus = isNewFeature ? 'pending' : isDirty ? 'verified' : status;
       if (isNewFeature) {
         if (!onCreateFeature) {
           throw new Error('Create feature handler is missing.');
@@ -233,6 +293,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           })
         });
       }
+      onPersistSuccess?.();
       setIsSaving(false);
       onClose();
     } catch (error) {
@@ -264,6 +325,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         updatedByUid: user.uid,
         updatedAt: serverTimestamp()
       });
+      onPersistSuccess?.();
       onClose();
     } catch (error) {
       try {
@@ -304,9 +366,14 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           </div>
         )}
 
-        {/* Status Section — enumerators: Pending / Verified only (Rejected uses the button below); Verified asks for confirmation */}
+        {/* Status — auto-switches to Verified when attributes below are edited (existing features). */}
         <section>
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Status</label>
+          {!isNewFeature && (
+            <p className="text-[10px] text-gray-500 mb-2 leading-snug">
+              Any change to attributes below switches to <span className="font-semibold text-green-700">Verified</span>. Saving after an attribute edit always stores Verified. Use Pending only when you did not change attributes, or use Reject for rejection.
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-2">
             {(['pending', 'verified', 'rejected'] as FeatureStatus[]).map((s) => (
               <button
@@ -340,7 +407,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         <section>
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Attributes</label>
           <div className="space-y-3">
-            {getOrderedAttributes(attributes).map(([key, value]) => {
+            {getOrderedAttributes(attributes, feature.type).map(([key, value]) => {
               const isReadOnly = READ_ONLY_ATTRIBUTES.has(key);
               const stringValue = String(value ?? '');
 
@@ -366,7 +433,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                         className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
                       >
                         <option value="">Select Category</option>
-                        {CATEGORY_OPTIONS.map((option) => (
+                        {mergedCategoryOptions.map((option) => (
                           <option key={option} value={option}>
                             {option}
                           </option>
@@ -378,6 +445,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
               }
 
               if (key === 'Type') {
+                if (isSlumCategory(attributes)) return null;
                 const isOther = stringValue && !typeOptions.includes(stringValue);
                 return (
                   <div key={key} className="flex gap-2 items-start">
@@ -492,30 +560,6 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                       >
                         <option value="">Select Ward</option>
                         {mergedWardOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                );
-              }
-
-              if (key === 'Zone') {
-                return (
-                  <div key={key} className="flex gap-2 items-start">
-                    <div className="flex-1 space-y-2">
-                      <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5">
-                        {key} <span className="text-red-500">*</span>
-                      </p>
-                      <select
-                        value={stringValue}
-                        onChange={(e) => setAttributeValue('Zone', e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                      >
-                        <option value="">Select Zone</option>
-                        {mergedZoneOptions.map((option) => (
                           <option key={option} value={option}>
                             {option}
                           </option>

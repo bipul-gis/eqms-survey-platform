@@ -9,7 +9,23 @@ import { QuestionnaireManager } from './components/QuestionnaireManager';
 import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
 import { GeoFeature, Questionnaire, UserProfile } from './types';
-import { MapPin, Plus, List, LogOut, Shield, Compass, Activity, CheckCircle2, UserPlus, FileText, Database, Clock, AlertCircle, Users, RefreshCw } from 'lucide-react';
+import {
+  MapPin,
+  Map as MapIcon,
+  List,
+  LogOut,
+  Shield,
+  Compass,
+  Activity,
+  CheckCircle2,
+  UserPlus,
+  FileText,
+  Database,
+  Clock,
+  AlertCircle,
+  Users,
+  RefreshCw
+} from 'lucide-react';
 import {
   collection,
   addDoc,
@@ -33,11 +49,15 @@ import landmarkGeoJsonUrl from './data/CCC_all_Landmark.geojson?url';
 import shpwrite from '@mapbox/shp-write';
 import {
   assignedWardsFromUserProfile,
-  effectiveWardLabelForFeature,
   featureMatchesAssignedWardsResolved,
+  isTrivialWardValue,
   normalizeWardKey,
   parseWardNumber,
-  wardMatchesAssignedList
+  TASK_WARD_ATTR,
+  taskScopeWardLabel,
+  wardLabelFromAttributes,
+  wardMatchesAssignedList,
+  withBaselineTaskWard
 } from './lib/wardGeometry';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
@@ -79,6 +99,165 @@ const landmarkAttributesForTable = (attrs: Record<string, any>) => {
 
   // Table list should follow landmark JSON schema only (no extra/custom keys).
   return ordered.slice(0, 2);
+};
+
+/** DBF (shapefile) only records string/number/boolean; normalize Firestore values. */
+const toShpPrimitive = (v: unknown): string | number | boolean => {
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') {
+    const o = v as { toDate?: () => Date; seconds?: number; nanoseconds?: number };
+    if (typeof o.toDate === 'function') {
+      try {
+        return o.toDate().toISOString();
+      } catch {
+        return '';
+      }
+    }
+    if (typeof o.seconds === 'number') {
+      return new Date(o.seconds * 1000).toISOString();
+    }
+    return JSON.stringify(v);
+  }
+  return String(v);
+};
+
+const formatRootUpdatedAt = (v: unknown): string => {
+  const p = toShpPrimitive(v);
+  return typeof p === 'string' ? p : String(p);
+};
+
+/** GeoJSON/Firestore-safe value for imported landmark properties (full replace + merge upload). */
+const normalizeImportedPropertyValue = (v: unknown): unknown => {
+  if (v === null) return null;
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+  if (v === undefined) return undefined;
+  if (typeof v === 'object') {
+    const o = v as { toDate?: () => Date; seconds?: number };
+    if (typeof o.toDate === 'function') {
+      try {
+        return o.toDate().toISOString();
+      } catch {
+        return '';
+      }
+    }
+    if (typeof o.seconds === 'number') {
+      return new Date(o.seconds * 1000).toISOString();
+    }
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+  return String(v);
+};
+
+/**
+ * All columns from uploaded GeoJSON, normalized for Firestore (aligned with SHP attribute handling).
+ * Strips app-internal keys from the file; optional FID override from normalized landmark id.
+ */
+const normalizeImportedLandmarkProperties = (
+  raw: Record<string, unknown> | null | undefined,
+  fidOverride?: number
+): Record<string, unknown> => {
+  const src = raw && typeof raw === 'object' ? { ...(raw as Record<string, unknown>) } : {};
+  delete src.__source;
+  delete src.__taskWard;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (k.startsWith('__')) continue;
+    if (v === undefined) continue;
+    const n = normalizeImportedPropertyValue(v);
+    if (n !== undefined) out[k] = n;
+  }
+  if (fidOverride !== undefined) {
+    out.FID = fidOverride;
+  }
+  return out;
+};
+
+const parsePointCoordinates = (coords: unknown): [number, number] => {
+  const a = Array.isArray(coords) ? coords : [0, 0];
+  const lng = typeof a[0] === 'number' ? a[0] : Number(a[0]);
+  const lat = typeof a[1] === 'number' ? a[1] : Number(a[1]);
+  return [
+    Number.isFinite(lng) ? lng : 0,
+    Number.isFinite(lat) ? lat : 0
+  ];
+};
+
+/**
+ * Shapefile row properties: all stored landmark attributes (no internal `__*` keys; `__taskWard` → TaskWard)
+ * plus status, who/when changed, rejection remarks, move/new-feature auto remarks, GPS.
+ */
+const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | number | boolean> => {
+  const attrs = feature.attributes || {};
+  const out: Record<string, string | number | boolean> = {};
+
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith('__')) continue;
+    out[k] = toShpPrimitive(v);
+  }
+
+  const taskWard = attrs.__taskWard;
+  if (taskWard !== undefined && taskWard !== null && !('TaskWard' in out)) {
+    out.TaskWard = toShpPrimitive(taskWard);
+  }
+
+  const updatedBy =
+    String(feature.updatedBy ?? '').trim() || String(attrs.ChangeBy ?? '').trim() || String(feature.createdBy ?? '').trim();
+  const changedAt =
+    formatRootUpdatedAt(feature.updatedAt).trim() || String(attrs.ChangeAt ?? '').trim();
+
+  return {
+    ...out,
+    ChangeStatus: feature.status,
+    QC_Status: feature.status,
+    ChangeRemarks: String(feature.remarks ?? ''),
+    RejectRmrks: String(feature.remarks ?? ''),
+    MoveRemarks: String(feature.moveRemarks ?? ''),
+    NewFeatureRemarks: String(feature.newFeatureRemarks ?? ''),
+    ChangeBy: updatedBy,
+    ChangeAt: changedAt,
+    UpdatedBy: updatedBy,
+    ChangedAt: changedAt,
+    GPS_Lat: feature.collectorLocation?.lat ?? '',
+    GPS_Lng: feature.collectorLocation?.lng ?? '',
+    GPS_Acc: feature.collectorLocation?.accuracy ?? ''
+  };
+};
+
+const mapLandmarkFeaturesToShpGeoJsonFeatures = (featureList: GeoFeature[]) => {
+  const toNumber = (v: unknown): number | null => {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return featureList
+    .map((feature) => {
+      const coords = Array.isArray(feature.geometry?.coordinates) ? feature.geometry.coordinates : [];
+      const lng = toNumber(coords[0]);
+      const lat = toNumber(coords[1]);
+      if (lng === null || lat === null) return null;
+      return {
+        type: 'Feature' as const,
+        id: feature.attributes?.FID ?? feature.id,
+        geometry: { type: 'Point' as const, coordinates: [lng, lat] },
+        properties: landmarkShpRowProperties(feature)
+      };
+    })
+    .filter(Boolean);
+};
+
+/** Table search: substring match, or every whitespace token present (handles "ward 4" vs stored "4"). */
+const haystackMatchesTableQuery = (haystack: string, q: string): boolean => {
+  const trimmed = q.trim().toLowerCase();
+  if (!trimmed) return true;
+  const h = haystack.toLowerCase();
+  if (h.includes(trimmed)) return true;
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length <= 1) return false;
+  return tokens.every((t) => h.includes(t));
 };
 
 const toTitleCaseWords = (input: string): string =>
@@ -136,11 +315,12 @@ const AppContent: React.FC = () => {
   } | null>(null);
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [landmarkWardOptions, setLandmarkWardOptions] = useState<string[]>([]);
-  const [landmarkZoneOptions, setLandmarkZoneOptions] = useState<string[]>([]);
+  const [landmarkCategoryOptions, setLandmarkCategoryOptions] = useState<string[]>([]);
   const [selfMergedAssignedWards, setSelfMergedAssignedWards] = useState<string[]>([]);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const uploadMergeInputRef = useRef<HTMLInputElement | null>(null);
   const [adminFeaturesRefreshKey, setAdminFeaturesRefreshKey] = useState(0);
+  const [enumeratorFeaturesRefreshKey, setEnumeratorFeaturesRefreshKey] = useState(0);
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
 
@@ -210,7 +390,8 @@ const AppContent: React.FC = () => {
     userUid: user?.uid,
     userEmail: user?.email ?? undefined,
     assignedWards: assignedWardsForFilter,
-    adminRefreshKey: adminFeaturesRefreshKey
+    adminRefreshKey: adminFeaturesRefreshKey,
+    enumeratorPersistRefreshKey: enumeratorFeaturesRefreshKey
   });
 
   const visibleFeatures = useMemo(() => {
@@ -247,14 +428,13 @@ const AppContent: React.FC = () => {
           .map((f: any) => f?.properties?.Ward_Name ?? f?.properties?.WARDNAME ?? f?.properties?.WardName)
           .map((v: unknown) => String(v ?? '').trim())
           .filter(Boolean);
-        const zones = rows
-          .map((f: any) => f?.properties?.Zone ?? f?.properties?.ZONE)
+        const categories = rows
+          .map((f: any) => f?.properties?.Category ?? f?.properties?.category)
           .map((v: unknown) => String(v ?? '').trim())
           .filter(Boolean);
-
         if (!mounted) return;
         setLandmarkWardOptions([...new Set(wards)]);
-        setLandmarkZoneOptions([...new Set(zones)]);
+        setLandmarkCategoryOptions([...new Set(categories)]);
       } catch {
         // Ignore reference-option load failures; editor still allows typed input.
       }
@@ -267,10 +447,34 @@ const AppContent: React.FC = () => {
   }, []);
 
   const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
+  /** All ward labels from landmark GeoJSON, sorted ascending (numeric ward order when possible). */
   const wardOptionsForEditor = useMemo(() => {
-    if (isAdmin) return landmarkWardOptions;
-    return landmarkWardOptions.filter((w) => wardMatchesAssignedList(String(w), assignedWardsForFilter));
-  }, [isAdmin, landmarkWardOptions, assignedWardsForFilter]);
+    const unique = [...new Set(landmarkWardOptions.map((w) => String(w ?? '').trim()).filter(Boolean))];
+    return unique.sort((a, b) => {
+      const an = parseWardNumber(a);
+      const bn = parseWardNumber(b);
+      if (an !== null && bn !== null && an !== bn) return an - bn;
+      if (an !== null && bn === null) return -1;
+      if (an === null && bn !== null) return 1;
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }, [landmarkWardOptions]);
+
+  /** Distinct Category values from landmark GeoJSON (e.g. Slum), sorted A–Z. */
+  const categoryOptionsForEditor = useMemo(() => {
+    const unique = [...new Set(landmarkCategoryOptions.map((c) => String(c ?? '').trim()).filter(Boolean))];
+    return unique.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [landmarkCategoryOptions]);
+
+  /** Ward frozen for `attributes.__taskWard` on first save (does not change while the editor is open). */
+  const editorTaskWardFreeze = useMemo(() => {
+    if (!selectedFeature) return '' as string | number;
+    const a = selectedFeature.attributes || {};
+    if (a[TASK_WARD_ATTR] != null && !isTrivialWardValue(a[TASK_WARD_ATTR])) return a[TASK_WARD_ATTR];
+    const wl = wardLabelFromAttributes(a);
+    if (wl) return wl;
+    return taskScopeWardLabel(selectedFeature, wardsData) || '';
+  }, [selectedFeature]);
 
   const enumeratorTaskStats = useMemo(() => {
     const lm = visibleFeatures.filter(isEnumeratorScopeLandmarkPoint);
@@ -388,7 +592,7 @@ const AppContent: React.FC = () => {
 
     for (const f of features) {
       if (!isImportedLandmarkPoint(f)) continue;
-      const wardLabel = effectiveWardLabelForFeature(f, wardsData);
+      const wardLabel = taskScopeWardLabel(f, wardsData);
       let matchKey: string | null = null;
       if (wardLabel) {
         for (const e of approvedEnumeratorsAdmin) {
@@ -419,7 +623,7 @@ const AppContent: React.FC = () => {
   const groupedWardRows = useMemo(() => {
     const byWard = new Map<string, GeoFeature[]>();
     for (const f of visibleFeatures) {
-      const ward = effectiveWardLabelForFeature(f, wardsData) || 'Unassigned';
+      const ward = taskScopeWardLabel(f, wardsData) || 'Unassigned';
       const arr = byWard.get(ward) ?? [];
       arr.push(f);
       byWard.set(ward, arr);
@@ -429,8 +633,8 @@ const AppContent: React.FC = () => {
       wardLabel,
       wardKey: normalizeWardKey(wardLabel),
       features: wardFeatures.sort((a, b) => {
-        const an = String(a.attributes?.name || '');
-        const bn = String(b.attributes?.name || '');
+        const an = String(a.attributes?.name ?? a.attributes?.Name ?? '');
+        const bn = String(b.attributes?.name ?? b.attributes?.Name ?? '');
         return an.localeCompare(bn);
       })
     }));
@@ -444,7 +648,7 @@ const AppContent: React.FC = () => {
       return a.wardLabel.localeCompare(b.wardLabel);
     });
     return rows;
-  }, [visibleFeatures]);
+  }, [visibleFeatures, wardsData]);
 
   const filteredGroupedWardRows = useMemo(() => {
     const q = tableSearchQuery.trim().toLowerCase();
@@ -452,36 +656,62 @@ const AppContent: React.FC = () => {
 
     const matchesFeature = (f: GeoFeature) => {
       const attrs = f.attributes || {};
+      const scopeWard = taskScopeWardLabel(f, wardsData);
+      const scopeWardStr = scopeWard != null && !isTrivialWardValue(scopeWard) ? String(scopeWard).trim() : '';
+      const scopeWardNum = scopeWardStr ? parseWardNumber(scopeWardStr) : null;
       const attrText = Object.entries(attrs)
         .filter(([k]) => !k.startsWith('__'))
         .map(([k, v]) => `${k} ${String(v ?? '')}`)
         .join(' ');
+      const displayName = String(attrs.name ?? attrs.Name ?? '').trim();
       const text = [
         f.id,
         f.type,
         f.status,
-        String(attrs.name ?? ''),
+        displayName,
         String(attrs.FID ?? ''),
         String(attrs.Category ?? ''),
         String(attrs.Type ?? ''),
         String(attrs.Ownership ?? ''),
         String(attrs.Ward_Name ?? attrs.WARDNAME ?? attrs.WardName ?? ''),
         String(attrs.Zone ?? ''),
+        scopeWardStr,
+        scopeWardNum !== null ? `ward ${scopeWardNum}` : '',
+        String(f.createdBy ?? ''),
+        String(f.updatedBy ?? ''),
         attrText
-      ]
-        .join(' ')
-        .toLowerCase();
-      return text.includes(q);
+      ].join(' ');
+      return haystackMatchesTableQuery(text, q);
     };
 
     return groupedWardRows
       .map((row) => {
-        const wardHit = row.wardLabel.toLowerCase().includes(q);
+        const wardHit = haystackMatchesTableQuery(row.wardLabel, q);
         const nextFeatures = wardHit ? row.features : row.features.filter(matchesFeature);
         return { ...row, features: nextFeatures };
       })
       .filter((row) => row.features.length > 0);
-  }, [groupedWardRows, tableSearchQuery]);
+  }, [groupedWardRows, tableSearchQuery, wardsData]);
+
+  const tableListSearchExpandSig = useMemo(() => {
+    const q = tableSearchQuery.trim();
+    if (!q) return '';
+    return filteredGroupedWardRows.map((r) => `${r.wardKey}:${r.features.length}`).join('|');
+  }, [tableSearchQuery, filteredGroupedWardRows]);
+
+  useEffect(() => {
+    const q = tableSearchQuery.trim();
+    if (!q) return;
+    setExpandedWardKeys((prev) => {
+      const next = new Set(prev);
+      for (const row of filteredGroupedWardRows) {
+        if (row.features.length > 0) next.add(row.wardKey);
+      }
+      return [...next];
+    });
+    // Expand from latest filtered rows when the query or filtered set changes; omit `filteredGroupedWardRows`
+    // from deps so collapsing a ward while searching is not immediately undone on unrelated renders.
+  }, [tableSearchQuery, tableListSearchExpandSig]);
 
   const wardOwnerByKey = useMemo(() => {
     const m = new Map<string, string>();
@@ -625,19 +855,21 @@ const AppContent: React.FC = () => {
       let writeChunk = 0;
       for (const rec of pointRecords) {
         const ref = doc(db, 'features', rec.id);
-        const coords = rec.feature?.geometry?.coordinates || [0, 0];
-        const attrs = rec.feature?.properties || {};
-        const normalizedAttrs =
-          rec.fid !== undefined ? { ...attrs, FID: rec.fid } : { ...attrs };
+        const [lng, lat] = parsePointCoordinates(rec.feature?.geometry?.coordinates);
+        const rawProps =
+          rec.feature?.properties != null && typeof rec.feature.properties === 'object'
+            ? (rec.feature.properties as Record<string, unknown>)
+            : {};
+        const normalizedAttrs = normalizeImportedLandmarkProperties(rawProps, rec.fid);
 
         await commitIfNeeded(1);
         batch.set(ref, {
           type: 'point',
-          geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
-          attributes: {
+          geometry: { type: 'Point', coordinates: [lng, lat] },
+          attributes: withBaselineTaskWard({
             ...normalizedAttrs,
             __source: 'ccc_landmark'
-          },
+          }),
           status: 'pending',
           createdBy: 'ccc_landmark_import',
           updatedBy: user?.email || 'ccc_landmark_import',
@@ -750,10 +982,12 @@ const AppContent: React.FC = () => {
       setImportProgress({ total: pointRecords.length, processed: 0, written: 0, previousRemoved: 0 });
 
       for (const rec of pointRecords) {
-        const coords = rec.feature?.geometry?.coordinates || [0, 0];
-        const attrs = rec.feature?.properties || {};
-        const normalizedAttrs =
-          rec.fid !== undefined ? { ...attrs, FID: rec.fid } : { ...attrs };
+        const [lng, lat] = parsePointCoordinates(rec.feature?.geometry?.coordinates);
+        const rawProps =
+          rec.feature?.properties != null && typeof rec.feature.properties === 'object'
+            ? (rec.feature.properties as Record<string, unknown>)
+            : {};
+        const normalizedAttrs = normalizeImportedLandmarkProperties(rawProps, rec.fid);
 
         const existingById = featureById.get(rec.id);
         const existingByFid = rec.fid !== undefined ? landmarkByFid.get(String(rec.fid)) : undefined;
@@ -777,11 +1011,11 @@ const AppContent: React.FC = () => {
         if (!existing) {
           batch.set(ref, {
             type: 'point',
-            geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
-            attributes: {
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            attributes: withBaselineTaskWard({
               ...normalizedAttrs,
               __source: 'ccc_landmark'
-            },
+            }),
             status: 'pending',
             createdBy: 'ccc_landmark_import',
             updatedBy: user?.email || 'ccc_landmark_import',
@@ -792,11 +1026,13 @@ const AppContent: React.FC = () => {
           written += 1;
           ops += 1;
         } else if (hasUserEdits) {
-          // Preserve enumerator-updated records; only ensure source tag remains landmark-related.
-          const preservedAttrs = {
+          // Merge fresh file columns in; existing values win (enumerator/admin edits kept).
+          const merged = {
+            ...normalizedAttrs,
             ...(existing.attributes || {}),
             __source: source || 'ccc_landmark'
           };
+          const preservedAttrs = withBaselineTaskWard(merged);
           batch.update(ref, {
             attributes: preservedAttrs,
             updatedAt: serverTimestamp()
@@ -807,11 +1043,11 @@ const AppContent: React.FC = () => {
         } else {
           // Refresh untouched landmark baseline with latest JSON values.
           batch.update(ref, {
-            geometry: { type: 'Point', coordinates: [coords[0], coords[1]] },
-            attributes: {
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            attributes: withBaselineTaskWard({
               ...normalizedAttrs,
               __source: 'ccc_landmark'
-            },
+            }),
             updatedBy: user?.email || 'ccc_landmark_import',
             updatedByUid: user?.uid || null,
             updatedAt: serverTimestamp()
@@ -958,50 +1194,10 @@ const AppContent: React.FC = () => {
       return;
     }
 
-    const toNumber = (v: unknown): number | null => {
-      const n = typeof v === 'number' ? v : Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
-    const toPrimitive = (v: unknown): string | number | boolean => {
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
-      if (v === null || v === undefined) return '';
-      return JSON.stringify(v);
-    };
-    const toNonEmptyString = (v: unknown) => String(v ?? '').trim();
-
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'changed_landmarks',
-      features: changedFeatures
-        .map((feature) => {
-          const coords = Array.isArray(feature.geometry?.coordinates) ? feature.geometry.coordinates : [];
-          const lng = toNumber(coords[0]);
-          const lat = toNumber(coords[1]);
-          if (lng === null || lat === null) return null;
-
-          const sanitizedAttributes = Object.fromEntries(
-            Object.entries(feature.attributes || {}).map(([k, v]) => [k, toPrimitive(v)])
-          );
-
-          return {
-            type: 'Feature',
-            id: feature.attributes?.FID ?? feature.id,
-            geometry: { type: 'Point', coordinates: [lng, lat] },
-            properties: {
-              ...sanitizedAttributes,
-              ChangeStatus: feature.status,
-              ChangeRemarks: feature.remarks ?? '',
-              MoveRemarks: feature.moveRemarks ?? '',
-              NewFeatureRemarks: feature.newFeatureRemarks ?? '',
-              ChangeBy: toNonEmptyString(feature.attributes?.ChangeBy),
-              ChangeAt: toNonEmptyString(feature.attributes?.ChangeAt),
-              GPS_Lat: feature.collectorLocation?.lat ?? '',
-              GPS_Lng: feature.collectorLocation?.lng ?? '',
-              GPS_Acc: feature.collectorLocation?.accuracy ?? ''
-            }
-          };
-        })
-        .filter(Boolean)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(changedFeatures)
     };
     // EPSG:4326 WGS84 projection for shapefile .prj
     const wgs84Prj =
@@ -1044,17 +1240,6 @@ const AppContent: React.FC = () => {
     if (!isAdmin) return;
     setImportNotice(null);
 
-    const toNumber = (v: unknown): number | null => {
-      const n = typeof v === 'number' ? v : Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
-    const toPrimitive = (v: unknown): string | number | boolean => {
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
-      if (v === null || v === undefined) return '';
-      return JSON.stringify(v);
-    };
-    const toNonEmptyString = (v: unknown) => String(v ?? '').trim();
-
     const allLandmarkFeatures = visibleFeatures.filter((feature) => {
       if (feature.geometry?.type !== 'Point') return false;
       const source = String(feature.attributes?.__source || '');
@@ -1069,36 +1254,7 @@ const AppContent: React.FC = () => {
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'all_landmarks',
-      features: allLandmarkFeatures
-        .map((feature) => {
-          const coords = Array.isArray(feature.geometry?.coordinates) ? feature.geometry.coordinates : [];
-          const lng = toNumber(coords[0]);
-          const lat = toNumber(coords[1]);
-          if (lng === null || lat === null) return null;
-
-          const sanitizedAttributes = Object.fromEntries(
-            Object.entries(feature.attributes || {}).map(([k, v]) => [k, toPrimitive(v)])
-          );
-
-          return {
-            type: 'Feature',
-            id: feature.attributes?.FID ?? feature.id,
-            geometry: { type: 'Point', coordinates: [lng, lat] },
-            properties: {
-              ...sanitizedAttributes,
-              ChangeStatus: feature.status,
-              ChangeRemarks: feature.remarks ?? '',
-              MoveRemarks: feature.moveRemarks ?? '',
-              NewFeatureRemarks: feature.newFeatureRemarks ?? '',
-              ChangeBy: toNonEmptyString(feature.attributes?.ChangeBy),
-              ChangeAt: toNonEmptyString(feature.attributes?.ChangeAt),
-              GPS_Lat: feature.collectorLocation?.lat ?? '',
-              GPS_Lng: feature.collectorLocation?.lng ?? '',
-              GPS_Acc: feature.collectorLocation?.accuracy ?? ''
-            }
-          };
-        })
-        .filter(Boolean)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(allLandmarkFeatures)
     };
 
     // EPSG:4326 WGS84 projection for shapefile .prj
@@ -1283,7 +1439,7 @@ const AppContent: React.FC = () => {
     await addDoc(collection(db, 'features'), {
       type: selectedFeature.type,
       geometry: selectedFeature.geometry,
-      attributes: payload.attributes,
+      attributes: withBaselineTaskWard(payload.attributes),
       status: payload.status,
       newFeatureRemarks: 'New added feature remarks.',
       createdBy: user.email,
@@ -1305,11 +1461,11 @@ const AppContent: React.FC = () => {
     if (!user) return;
 
     const fid = normalizeLandmarkFid(point.properties?.FID);
-    const attributes = {
+    const attributes = withBaselineTaskWard({
       ...point.properties,
       ...(fid !== undefined ? { FID: fid } : {}),
       __source: 'ccc_landmark_geojson'
-    };
+    });
 
     const existing = features.find((f) => {
       if (f.type !== 'point') return false;
@@ -1531,7 +1687,7 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div className="h-screen flex flex-col font-sans text-slate-800 bg-slate-50">
+    <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col bg-slate-50 font-sans text-slate-800">
       {/* Header */}
       <header className="h-16 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-sm z-[1001]">
         <div className="flex items-center gap-3">
@@ -1552,7 +1708,7 @@ const AppContent: React.FC = () => {
           {assignedWardsForFilter.length > 0 && !isAdmin && (
             <div
               className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-full border border-indigo-100 max-w-[min(100vw-12rem,320px)]"
-              title={`You only see features whose Ward_Name matches one of: ${assignedWardsForFilter.join(', ')}`}
+              title={`You only see features whose task ward (landmark import / map) matches one of: ${assignedWardsForFilter.join(', ')}. Edits to Ward_Name in attributes do not move tasks.`}
             >
               <MapPin size={14} className="text-indigo-600 shrink-0" />
               <span className="text-xs font-semibold text-indigo-800 truncate">
@@ -1685,7 +1841,9 @@ const AppContent: React.FC = () => {
                               row.features.map((f) => (
                                 <tr key={f.id} className="hover:bg-slate-50/50 transition-colors">
                                   <td className="px-4 py-3">
-                                    <span className="text-sm font-semibold">{f.attributes.name || 'Unnamed Feature'}</span>
+                                    <span className="text-sm font-semibold">
+                                      {f.attributes?.name ?? f.attributes?.Name ?? 'Unnamed Feature'}
+                                    </span>
                                     <div className="flex gap-1 mt-1 flex-wrap">
                                       {landmarkAttributesForTable(f.attributes || {}).map(([k, v]) => (
                                         <span key={k} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{k}: {v}</span>
@@ -1774,11 +1932,12 @@ const AppContent: React.FC = () => {
         {/* Feature Editor Overlay */}
         {selectedFeature && (
           <div className="absolute top-0 right-0 h-full z-[1002] flex animate-in slide-in-from-right duration-300">
-            <FeatureEditor 
-              feature={selectedFeature} 
+            <FeatureEditor
+              feature={selectedFeature}
               allFeatures={features}
               wardOptions={wardOptionsForEditor}
-              zoneOptions={landmarkZoneOptions}
+              categoryOptions={categoryOptionsForEditor}
+              taskWardFreeze={editorTaskWardFreeze}
               onClose={() => {
                 setSelectedFeature(null);
                 setMovingFeature(null);
@@ -1786,47 +1945,51 @@ const AppContent: React.FC = () => {
               isAdmin={isAdmin}
               isNewFeature={selectedFeature.id.startsWith('draft_')}
               onCreateFeature={handleCreateFeatureFromEditor}
+              onPersistSuccess={() => {
+                if (isAdmin) setAdminFeaturesRefreshKey((k) => k + 1);
+                else setEnumeratorFeaturesRefreshKey((k) => k + 1);
+              }}
             />
           </div>
         )}
 
-        {/* Toolbar Floating */}
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[1001] flex items-center bg-white/80 backdrop-blur-md rounded-2xl shadow-2xl border border-white/50 p-1.5 ring-1 ring-slate-200">
+        {/* Toolbar Floating — bottom offset includes safe area so bar stays above mobile browser / home indicator */}
+        <div
+          className="absolute left-1/2 z-[1001] flex max-w-[calc(100vw-1rem)] items-center bg-white/80 backdrop-blur-md rounded-2xl shadow-2xl border border-white/50 p-1.5 ring-1 ring-slate-200 -translate-x-1/2 bottom-[calc(1.25rem+env(safe-area-inset-bottom,0px))]"
+        >
           <button 
             onClick={() => setActiveTab('map')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'map' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-500 hover:bg-slate-50'}`}
+            className={`flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'map' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-500 hover:bg-slate-50'}`}
           >
-            <MapPin size={18} /> Map View
+            <MapIcon size={18} className="shrink-0" aria-hidden /> Map View
           </button>
           <button 
             onClick={() => setActiveTab('list')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'list' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-500 hover:bg-slate-50'}`}
+            className={`flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'list' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-500 hover:bg-slate-50'}`}
           >
-            <List size={18} /> Table List
+            <List size={18} className="shrink-0" aria-hidden /> Table List
           </button>
           {!isAdmin && (
             <>
               <div className="w-px h-6 bg-slate-200 mx-2" />
               <div className="flex gap-1">
-                {(['point', 'line', 'polygon'] as const).map(type => (
-                  <button
-                    key={type}
-                    onClick={() => {
-                      const next = isAddingFeature === type ? null : type;
-                      setIsAddingFeature(next);
-                      if (type === 'point' && next === 'point') {
-                        requestLocation();
-                        if (gpsError) {
-                          alert(`Location access issue: ${gpsError}. Please allow location permission in your browser.`);
-                        }
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = isAddingFeature === 'point' ? null : 'point';
+                    setIsAddingFeature(next);
+                    if (next === 'point') {
+                      requestLocation();
+                      if (gpsError) {
+                        alert(`Location access issue: ${gpsError}. Please allow location permission in your browser.`);
                       }
-                    }}
-                    className={`p-2.5 rounded-xl transition-all ${isAddingFeature === type ? 'bg-blue-100 text-blue-600 ring-2 ring-blue-500 ring-inset' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}
-                    title={`Add ${type}`}
-                  >
-                    {type === 'point' ? <MapPin size={20} /> : <Plus size={20} />}
-                  </button>
-                ))}
+                    }
+                  }}
+                  className={`p-2.5 rounded-xl transition-all ${isAddingFeature === 'point' ? 'bg-blue-100 text-blue-600 ring-2 ring-blue-500 ring-inset' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}
+                  title="Add point"
+                >
+                  <MapPin size={20} />
+                </button>
               </div>
             </>
           )}
@@ -1965,11 +2128,11 @@ const AppContent: React.FC = () => {
                           <th className="text-center px-0.5 py-1 w-6 font-semibold text-red-600" title="Rejected">
                             R
                           </th>
-                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-slate-600" title="Total">
-                            Σ
-                          </th>
                           <th className="text-center px-0.5 py-1 w-7 font-semibold text-violet-700" title="New Added">
                             N
+                          </th>
+                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-slate-600" title="Total">
+                            Σ
                           </th>
                         </tr>
                       </thead>
@@ -1982,8 +2145,8 @@ const AppContent: React.FC = () => {
                             <td className="text-center py-1 font-semibold text-amber-600">{r.pending}</td>
                             <td className="text-center py-1 font-semibold text-green-600">{r.verified}</td>
                             <td className="text-center py-1 font-semibold text-red-600">{r.rejected}</td>
-                            <td className="text-center py-1 font-semibold text-slate-700">{r.total}</td>
                             <td className="text-center py-1 font-semibold text-violet-700">{r.newAdded}</td>
+                            <td className="text-center py-1 font-semibold text-slate-700">{r.total}</td>
                           </tr>
                         ))}
                         {adminLandmarksByEnumerator.unassigned && (
@@ -2000,11 +2163,11 @@ const AppContent: React.FC = () => {
                             <td className="text-center py-1 font-bold text-red-800">
                               {adminLandmarksByEnumerator.unassigned.rejected}
                             </td>
-                            <td className="text-center py-1 font-bold text-slate-800">
-                              {adminLandmarksByEnumerator.unassigned.total}
-                            </td>
                             <td className="text-center py-1 font-bold text-violet-800">
                               {adminLandmarksByEnumerator.unassigned.newAdded}
+                            </td>
+                            <td className="text-center py-1 font-bold text-slate-800">
+                              {adminLandmarksByEnumerator.unassigned.total}
                             </td>
                           </tr>
                         )}
@@ -2017,20 +2180,29 @@ const AppContent: React.FC = () => {
           </div>
         )}
 
-        {/* Quality Control — enumerator (assigned wards scope, map tab) */}
-        {showEnumeratorQualityPanel && (
+        {/* Quality Control — enumerator (assigned wards scope); map tab only, hidden on Table List */}
+        {showEnumeratorQualityPanel && activeTab === 'map' && (
           <div className="absolute top-4 left-4 z-[1000] flex flex-col gap-2">
-            <div className="bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-lg border border-white/50 w-52">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Activity size={16} className="text-indigo-600" />
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-800">Quality Control</span>
+            <div
+              className={`bg-white/90 backdrop-blur-md rounded-2xl shadow-lg border border-white/50 ${
+                enumeratorQcExpanded ? 'p-3 w-52' : 'p-1.5 pl-2 pr-2 w-auto'
+              }`}
+            >
+              <div
+                className={`flex items-center justify-between gap-1.5 ${enumeratorQcExpanded ? 'mb-2' : ''}`}
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Activity size={16} className="text-indigo-600 shrink-0" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                    {enumeratorQcExpanded ? 'Quality Control' : 'QC'}
+                  </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setEnumeratorQcExpanded((v) => !v)}
-                  className="h-6 w-6 shrink-0 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 text-xs font-bold"
-                  title={enumeratorQcExpanded ? 'Hide quality summary' : 'Expand quality summary'}
+                  className="h-6 w-6 shrink-0 rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 text-sm font-bold leading-none flex items-center justify-center"
+                  title={enumeratorQcExpanded ? 'Collapse' : 'Expand'}
+                  aria-expanded={enumeratorQcExpanded}
                 >
                   {enumeratorQcExpanded ? '−' : '+'}
                 </button>
@@ -2068,11 +2240,6 @@ const AppContent: React.FC = () => {
                     </div>
                   </div>
                 </>
-              )}
-              {!enumeratorQcExpanded && (
-                <div className="text-[10px] text-slate-500">
-                  Hidden. Click <span className="font-semibold">+</span> to expand.
-                </div>
               )}
             </div>
           </div>

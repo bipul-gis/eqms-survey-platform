@@ -8,10 +8,20 @@ import {
   type Query
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import type { GeoFeature } from '../types';
+import type { GeoFeature, FeatureStatus } from '../types';
 import { parseWardNumber } from '../lib/wardGeometry';
 
 export type FeaturesLoadMode = 'idle' | 'admin' | 'enumerator';
+
+function normalizeFeatureStatus(raw: unknown): FeatureStatus {
+  if (raw === 'verified' || raw === 'rejected' || raw === 'pending') return raw;
+  return 'pending';
+}
+
+function docToGeoFeature(docSnap: { id: string; data: () => Record<string, unknown> }): GeoFeature {
+  const data = docSnap.data();
+  return { id: docSnap.id, ...data, status: normalizeFeatureStatus(data.status) } as GeoFeature;
+}
 
 function chunkArray<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -42,8 +52,8 @@ function expandAssignedWardsForInQuery(wards: string[]): (string | number)[] {
 /**
  * Admin: one `getDocs` per mount / refresh — no realtime listener (fewer reads).
  *
- * Enumerator with assigned wards: realtime only on `attributes.Ward_Name` in those wards
- * (chunked `in`, max 10 values per query). No full-collection listener.
+ * Enumerator with assigned wards: realtime on `attributes.__taskWard` (immutable task ward from landmark import)
+ * and legacy `attributes.Ward_Name` (chunked `in`, max 10 values per query). Merged by document id.
  *
  * Enumerator without wards yet: `createdByUid` / `createdBy` only until admin assigns wards.
  */
@@ -53,6 +63,8 @@ export function useOptimizedFeatures(options: {
   userEmail: string | undefined;
   assignedWards: string[];
   adminRefreshKey: number;
+  /** Bump after a feature is saved so enumerator listeners re-sync (admin uses adminRefreshKey). */
+  enumeratorPersistRefreshKey: number;
 }) {
   const [features, setFeatures] = useState<GeoFeature[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,9 +86,7 @@ export function useOptimizedFeatures(options: {
       try {
         const snap = await getDocs(collection(db, 'features'));
         if (cancelled) return;
-        setFeatures(
-          snap.docs.map((d) => ({ id: d.id, ...d.data() }) as GeoFeature)
-        );
+        setFeatures(snap.docs.map((d) => docToGeoFeature(d)));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e : new Error(String(e)));
       } finally {
@@ -118,7 +128,7 @@ export function useOptimizedFeatures(options: {
         (snap) => {
           const m = new Map<string, GeoFeature>();
           snap.forEach((docSnap) => {
-            m.set(docSnap.id, { id: docSnap.id, ...docSnap.data() } as GeoFeature);
+            m.set(docSnap.id, docToGeoFeature(docSnap));
           });
           maps.set(key, m);
           recompute();
@@ -156,7 +166,13 @@ export function useOptimizedFeatures(options: {
         if (chunk.length === 0) return;
         unsubs.push(
           subscribe(
-            `wardIn_${idx}`,
+            `wardTask_${idx}`,
+            query(collection(db, 'features'), where('attributes.__taskWard', 'in', chunk))
+          )
+        );
+        unsubs.push(
+          subscribe(
+            `wardLegacy_${idx}`,
             query(collection(db, 'features'), where('attributes.Ward_Name', 'in', chunk))
           )
         );
@@ -167,7 +183,7 @@ export function useOptimizedFeatures(options: {
       unsubs.forEach((u) => u());
       maps.clear();
     };
-  }, [options.mode, options.userUid, options.userEmail, wardsKey]);
+  }, [options.mode, options.userUid, options.userEmail, wardsKey, options.enumeratorPersistRefreshKey]);
 
   return { features, loading, error };
 }

@@ -5,6 +5,7 @@ export interface GeoFeature {
   id: string;
   type: FeatureType;
   geometry: any; // GeoJSON geometry
+  /** Landmark fields + `__source`, `__taskWard` (immutable task ward from import; enumerator scope). Editable `Ward_Name` can differ for reporting/SHP. */
   attributes: Record<string, any>;
   status: FeatureStatus;
   remarks?: string;

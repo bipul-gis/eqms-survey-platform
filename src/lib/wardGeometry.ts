@@ -56,6 +56,54 @@ export const wardLabelFromAttributes = (attrs: Record<string, any> | undefined):
   return String(v).trim();
 };
 
+/** Immutable ward for enumerator tasking / Firestore `in` queries; set from landmark GeoJSON at import. */
+export const TASK_WARD_ATTR = '__taskWard' as const;
+
+/** Ward value from landmark-style properties (GeoJSON or feature attributes). */
+export function landmarkWardFromProperties(props: Record<string, any> | undefined | null): string | number | null {
+  if (!props) return null;
+  const v = props.Ward_Name ?? props.WARDNAME ?? props.WardName;
+  if (isTrivialWardValue(v)) return null;
+  return typeof v === 'number' && Number.isFinite(v) ? v : String(v).trim();
+}
+
+function wardLabelFromGeometryOnly(
+  f: GeoFeature,
+  wards: { features?: unknown[] } | null | undefined
+): string | null {
+  if (!wards?.features?.length) return null;
+  const ll = representativeLngLat(f.geometry);
+  if (!ll) return null;
+  const w = getWardNameForLngLat(ll[0], ll[1], wards as Parameters<typeof getWardNameForLngLat>[2]);
+  return w ? w.trim() : null;
+}
+
+/**
+ * Ward label for enumerator assignment, map filtering, and table grouping.
+ * Does not follow edits to `Ward_Name` once `attributes.__taskWard` is set; legacy docs fall back to geometry then attributes.
+ */
+export function taskScopeWardLabel(
+  f: GeoFeature,
+  wards: { features?: unknown[] } | null | undefined
+): string | null {
+  const frozen = f.attributes?.[TASK_WARD_ATTR];
+  if (!isTrivialWardValue(frozen)) return String(frozen).trim();
+  const geom = wardLabelFromGeometryOnly(f, wards);
+  if (geom) return geom;
+  const fromAttr = wardLabelFromAttributes(f.attributes);
+  return fromAttr || null;
+}
+
+/** Stamp baseline task ward from landmark Ward_* fields (idempotent if `__taskWard` already set). */
+export function withBaselineTaskWard(input: Record<string, any>): Record<string, any> {
+  if (input[TASK_WARD_ATTR] != null && !isTrivialWardValue(input[TASK_WARD_ATTR])) {
+    return { ...input };
+  }
+  const w = landmarkWardFromProperties(input);
+  if (w == null || isTrivialWardValue(w)) return { ...input };
+  return { ...input, [TASK_WARD_ATTR]: w };
+}
+
 function pointInRing(lng: number, lat: number, ring: number[][]): boolean {
   if (!ring || ring.length < 3) return false;
   let inside = false;
@@ -155,7 +203,7 @@ export function featureMatchesAssignedWardsResolved(
   wards: { features?: unknown[] } | null | undefined
 ): boolean {
   if (assigned.length === 0) return true;
-  const label = effectiveWardLabelForFeature(f, wards);
+  const label = taskScopeWardLabel(f, wards);
   if (!label) return false;
   return wardMatchesAssignedList(label, assigned);
 }
