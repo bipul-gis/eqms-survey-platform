@@ -48,6 +48,7 @@ const CATEGORY_TYPE_OPTIONS: Record<string, string[]> = {
 const OWNERSHIP_OPTIONS = ['CCC', 'Government', 'Informal', 'NGO/Institutional', 'Private'] as const;
 const SLUM_STRUCTURE_TYPE_OPTIONS = ['Katcha', 'Semi Pucca', 'Pucca'] as const;
 const SLUM_SOCIO_ECONOMIC_OPTIONS = ['Lower Income', 'Lower Middle Income', 'Middle Income'] as const;
+const POSITIVE_INTEGER_ONLY_FIELDS = new Set(['Female_Pop', 'HH_No_', 'Total_Pop_', 'Slum_ID']);
 
 const HIDDEN_EDITOR_KEYS = new Set([
   'FID',
@@ -58,6 +59,11 @@ const HIDDEN_EDITOR_KEYS = new Set([
   'ChangeAt',
   'ChangeBy'
 ]);
+
+const isPositiveIntegerString = (value: unknown): boolean => {
+  const s = String(value ?? '').trim();
+  return /^[1-9]\d*$/.test(s);
+};
 
 const getOrderedAttributes = (
   attrs: Record<string, any>,
@@ -198,7 +204,10 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   }, [feature, dynamicOwnershipOptions, dynamicTypeOptionsByCategory, mergedCategoryOptions]);
 
   const setAttributeValue = (key: string, value: string) => {
-    setAttributes((prev) => ({ ...prev, [key]: value }));
+    const nextValue = POSITIVE_INTEGER_ONLY_FIELDS.has(key)
+      ? value.replace(/[^\d]/g, '')
+      : value;
+    setAttributes((prev) => ({ ...prev, [key]: nextValue }));
     setIsDirty(true);
     if (!isNewFeature) {
       setStatus('verified');
@@ -223,6 +232,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   const validateRequiredAttributes = () => {
     const ordered = getOrderedAttributes(attributes, feature.type);
     const missing: string[] = [];
+    const invalidPositiveIntegers: string[] = [];
 
     for (const [key, value] of ordered) {
       if (READ_ONLY_ATTRIBUTES.has(key)) continue;
@@ -230,10 +240,17 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
       if (key === 'Ownership' && selectedCategory !== 'Health Facilities') continue;
       if (key === 'Type' && isSlumCategory(attributes)) continue;
       if (!String(value ?? '').trim()) missing.push(key);
+      if (POSITIVE_INTEGER_ONLY_FIELDS.has(key) && String(value ?? '').trim() && !isPositiveIntegerString(value)) {
+        invalidPositiveIntegers.push(key);
+      }
     }
 
     if (missing.length > 0) {
       alert(`Please fill all required attribute fields: ${missing.join(', ')}`);
+      return false;
+    }
+    if (invalidPositiveIntegers.length > 0) {
+      alert(`These fields must be valid integers greater than 0: ${invalidPositiveIntegers.join(', ')}`);
       return false;
     }
     return true;
@@ -651,7 +668,15 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                     </p>
                     <input
                       type="text"
+                      inputMode={POSITIVE_INTEGER_ONLY_FIELDS.has(key) ? 'numeric' : undefined}
+                      pattern={POSITIVE_INTEGER_ONLY_FIELDS.has(key) ? '[1-9][0-9]*' : undefined}
                       value={stringValue}
+                      onKeyDown={(e) => {
+                        if (!POSITIVE_INTEGER_ONLY_FIELDS.has(key)) return;
+                        if (['-', '+', '.', ',', 'e', 'E'].includes(e.key)) {
+                          e.preventDefault();
+                        }
+                      }}
                       onChange={(e) => {
                         setAttributeValue(key, e.target.value);
                       }}
