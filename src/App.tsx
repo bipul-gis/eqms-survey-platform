@@ -720,7 +720,8 @@ const AppContent: React.FC = () => {
     };
 
     for (const f of features) {
-      if (!isImportedLandmarkPoint(f)) continue;
+      // Enumerators table should include imported + manually added landmark points.
+      if (!isEnumeratorScopeLandmarkPoint(f)) continue;
       const wardLabel = taskScopeWardLabel(f, wardsData);
       let matchKey: string | null = null;
       if (wardLabel) {
@@ -2333,7 +2334,7 @@ const AppContent: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-[9px] text-slate-400 mb-2 leading-snug">
-                    Imported landmark points: pending / verified / rejected by task ward (same rules as map).
+                    Imported + new added landmark points: pending / verified / rejected by task ward (same rules as map).
                   </p>
                   <div className="max-h-56 overflow-y-auto rounded-lg border border-slate-100">
                     <table className="w-full text-[10px]">
