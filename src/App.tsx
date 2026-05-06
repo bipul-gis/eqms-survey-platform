@@ -2211,7 +2211,9 @@ const AppContent: React.FC = () => {
         {/* Quick Stats Floating (Admin) */}
         {isAdmin && (
           <div className="absolute top-4 left-4 z-[1000] flex flex-col gap-2">
-            <div className="bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-lg border border-white/50 w-64 max-w-[calc(100vw-2rem)]">
+            <div
+              className="qc-panel-scroll bg-white/90 backdrop-blur-md p-3 pr-2 rounded-2xl shadow-lg border border-white/50 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] overflow-y-scroll overscroll-contain"
+            >
               <div className="flex items-center gap-2 mb-3">
                 <Shield size={16} className="text-blue-600" />
                 <span className="text-xs font-bold uppercase tracking-wider">Quality Control</span>
@@ -2304,16 +2306,6 @@ const AppContent: React.FC = () => {
                 >
                   Download Full SHP
                 </button>
-                <p className="text-[9px] text-slate-500 leading-snug">
-                  Changed SHP count ≠ QC totals: it only includes rows that differ from the bundled reference GeoJSON or
-                  have enumerator/QC activity (not every pending landmark).{' '}
-                  <span className="font-semibold">TaskWard</span> is the assigned task ward (
-                  <span className="font-semibold">__taskWard</span>); <span className="font-semibold">Ward_Name</span>{' '}
-                  reflects enumerator edits. <span className="font-semibold">UpdatedBy</span> is the enumerator assigned
-                  to that task ward. <span className="font-semibold">ChangedAt</span> is the single timestamp column.
-                  Attribute text uses UTF-8 (Bangla etc.) in values; DBF column titles must stay short ASCII (auto-renamed).
-                  A <span className="font-semibold">.cpg</span> file marks UTF-8 for GIS apps.
-                </p>
                 {importNotice && (
                   <div
                     className={`text-[10px] font-semibold rounded-lg px-2 py-1 ${

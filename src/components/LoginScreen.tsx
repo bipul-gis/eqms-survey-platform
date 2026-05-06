@@ -245,11 +245,11 @@ export const LoginScreen: React.FC = () => {
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
             <MapIcon size={32} className="text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-800">Spatial Enumerator Pro</h1>
+          <h1 className="text-2xl font-bold text-slate-800">EQMS Geosurvey</h1>
           <p className="text-slate-400 text-center mt-2 text-sm">
             {mode === 'forgot'
               ? 'Confirm your registered email and mobile to get a password reset link.'
-              : 'City Corporation Internal GIS Portal'}
+              : 'Collect and validate geospatial data from ground level'}
           </p>
         </div>
 
