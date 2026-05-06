@@ -37,14 +37,30 @@ const normalizeUserSearch = (q: string) => q.trim().toLowerCase();
 const enumeratorMatchesSearch = (e: EnumeratorEntry, q: string): boolean => {
   const n = normalizeUserSearch(q);
   if (!n) return true;
-  const hay = [e.displayName, e.email, e.mobileNumber ?? ''].join(' ').toLowerCase();
+  const hay = [e.displayName, e.email, e.mobileNumber ?? '', e.uids.join(' ')].join(' ').toLowerCase();
   return hay.includes(n);
+};
+
+/** Admin-only: Firebase Auth UIDs (one line each if merged by email). */
+const EnumeratorUidLines: React.FC<{ uids: string[] }> = ({ uids }) => {
+  const list = uids.filter(Boolean);
+  if (list.length === 0) return null;
+  return (
+    <div className="text-[9px] text-gray-400 font-mono leading-snug space-y-0.5 mt-0.5">
+      {list.map((id, i) => (
+        <p key={id} className="truncate" title={id}>
+          {list.length > 1 ? `UID ${i + 1}: ` : 'UID: '}
+          {id}
+        </p>
+      ))}
+    </div>
+  );
 };
 
 const pendingUserMatchesSearch = (u: UserProfile, q: string): boolean => {
   const n = normalizeUserSearch(q);
   if (!n) return true;
-  const hay = [u.displayName ?? '', u.email ?? ''].join(' ').toLowerCase();
+  const hay = [u.displayName ?? '', u.email ?? '', u.mobileNumber ?? '', u.uid ?? ''].join(' ').toLowerCase();
   return hay.includes(n);
 };
 
@@ -92,6 +108,8 @@ const EnumeratorWardRow: React.FC<{
       <div className="min-w-0">
         <p className="text-xs font-semibold text-gray-800 truncate">{entry.displayName}</p>
         <p className="text-[10px] text-gray-500 truncate">{entry.email}</p>
+        <p className="text-[10px] text-gray-500 truncate">{entry.mobileNumber || 'No mobile number'}</p>
+        <EnumeratorUidLines uids={entry.uids} />
       </div>
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
@@ -681,7 +699,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             type="search"
             value={manageTabSearch}
             onChange={(e) => setManageTabSearch(e.target.value)}
-            placeholder="Search users (name, email, mobile)…"
+            placeholder="Search users (name, email, mobile, UID)…"
             className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-9 pr-3 text-sm text-gray-800 placeholder:text-gray-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             aria-label="Search enumerators"
           />
@@ -706,6 +724,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                     </p>
                     <p className="text-[10px] text-gray-500 truncate">{u.email}</p>
                     <p className="text-[10px] text-gray-500 truncate">{u.mobileNumber || 'No mobile number'}</p>
+                    <EnumeratorUidLines uids={u.uids} />
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -760,6 +779,8 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                       {u.displayName}
                     </p>
                     <p className="text-[10px] text-gray-500 truncate">{u.email}</p>
+                    <p className="text-[10px] text-gray-500 truncate">{u.mobileNumber || 'No mobile number'}</p>
+                    <EnumeratorUidLines uids={u.uids} />
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -837,7 +858,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                 type="search"
                 value={tasksTabSearch}
                 onChange={(e) => setTasksTabSearch(e.target.value)}
-                placeholder="Search users (name, email, mobile)…"
+                placeholder="Search users (name, email, mobile, UID)…"
                 className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-9 pr-3 text-sm text-gray-800 placeholder:text-gray-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 aria-label="Search enumerators for tasks"
               />
@@ -906,6 +927,8 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                       <div>
                         <p className="font-semibold text-gray-800">{user.displayName}</p>
                         <p className="text-xs text-gray-500">{user.email}</p>
+                        <p className="text-xs text-gray-500">{user.mobileNumber || 'No mobile number'}</p>
+                        <EnumeratorUidLines uids={user.uid ? [user.uid] : []} />
                       </div>
                       <div className="flex items-center gap-1 text-amber-600">
                         <Clock size={14} />
