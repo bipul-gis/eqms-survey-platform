@@ -15,6 +15,7 @@ import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
 import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../lib/wardGeometry';
 import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
 import { useLandmarkGeoJsonPoints } from '../hooks/useLandmarkGeoJsonPoints';
+import { NEW_POINT_ADD_PROXIMITY_METERS } from '../lib/newPointProximity';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
@@ -720,7 +721,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             {showPointAddBuffer && (
               <Circle
                 center={[location.lat, location.lng]}
-                radius={10}
+                radius={NEW_POINT_ADD_PROXIMITY_METERS}
                 pathOptions={{
                   color: '#16a34a',
                   fillColor: '#22c55e',

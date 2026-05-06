@@ -60,6 +60,7 @@ import {
   withBaselineTaskWard
 } from './lib/wardGeometry';
 import { isSlumCategory, SLUM_DEMOGRAPHIC_KEY_SET } from './lib/slumFeatureFields';
+import { NEW_POINT_ADD_PROXIMITY_METERS } from './lib/newPointProximity';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -1436,7 +1437,7 @@ const AppContent: React.FC = () => {
     try {
       let geometry: any;
       if (isAddingFeature === 'point') {
-        // Enumerator can add landmark points only when standing within 30m of clicked point.
+        // Enumerator can add landmark points only when standing within NEW_POINT_ADD_PROXIMITY_METERS of clicked point.
         if (!isAdmin) {
           if (!location) {
             requestLocation();
@@ -1444,8 +1445,10 @@ const AppContent: React.FC = () => {
             return;
           }
           const d = distanceMeters(location.lat, location.lng, lat, lng);
-          if (d > 30) {
-            alert(`You are ${d.toFixed(1)}m away from the selected point. Move within 30m to add a landmark point.`);
+          if (d > NEW_POINT_ADD_PROXIMITY_METERS) {
+            alert(
+              `You are ${d.toFixed(1)}m away from the selected point. Move within ${NEW_POINT_ADD_PROXIMITY_METERS}m to add a landmark point.`
+            );
             return;
           }
         }
@@ -1575,7 +1578,7 @@ const AppContent: React.FC = () => {
 
     try {
       // If landmark does not exist in Firestore yet, create it so it can be edited.
-      // No GPS-distance restriction here: user requested 30m rule only for
+      // No GPS-distance restriction here: proximity rule only for
       // explicit "add feature" mode (map click), not edit/delete/attribute edit flow.
 
       const featureId = fid !== undefined ? `landmark_${fid}` : null;
