@@ -8,7 +8,7 @@ import { UserManagement } from './components/UserManagement';
 import { QuestionnaireManager } from './components/QuestionnaireManager';
 import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
-import { GeoFeature, Questionnaire, UserProfile } from './types';
+import { FeatureStatus, GeoFeature, Questionnaire, UserProfile } from './types';
 import {
   MapPin,
   Map as MapIcon,
@@ -84,6 +84,31 @@ const isEnumeratorScopeLandmarkPoint = (f: GeoFeature) => {
     src === 'ccc_landmark_import' ||
     src === 'landmark_manual'
   );
+};
+
+const FEATURE_STATUS_SET = new Set<FeatureStatus>(['pending', 'verified', 'rejected']);
+
+const getFeatureStatusFromQc = (f: GeoFeature): FeatureStatus => {
+  const attrs = (f.attributes || {}) as Record<string, unknown>;
+  const normalizedKeyMap = new Map<string, unknown>();
+  for (const [k, v] of Object.entries(attrs)) {
+    const nk = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (nk) normalizedKeyMap.set(nk, v);
+  }
+
+  const rawQcStatus =
+    attrs.QC_Status ??
+    attrs.qc_status ??
+    attrs.qcStatus ??
+    attrs.ChangeStatus ??
+    normalizedKeyMap.get('qcstatus') ??
+    normalizedKeyMap.get('changestatus');
+
+  const normalizedStatus = String(rawQcStatus ?? '').trim().toLowerCase();
+  if (FEATURE_STATUS_SET.has(normalizedStatus as FeatureStatus)) {
+    return normalizedStatus as FeatureStatus;
+  }
+  return f.status;
 };
 
 const LANDMARK_TABLE_ATTRIBUTE_ORDER = ['FID', 'Category', 'Type', 'Ownership', 'Ward_Name', 'Zone'] as const;
@@ -611,8 +636,9 @@ const AppContent: React.FC = () => {
     let pending = 0;
     let rejected = 0;
     for (const f of lm) {
-      if (f.status === 'verified') verified += 1;
-      else if (f.status === 'rejected') rejected += 1;
+      const s = getFeatureStatusFromQc(f);
+      if (s === 'verified') verified += 1;
+      else if (s === 'rejected') rejected += 1;
       else pending += 1;
     }
     const newAdded = visibleFeatures.filter(isNewlyAddedFeature).length;
@@ -738,8 +764,9 @@ const AppContent: React.FC = () => {
       const agg = matchKey ? byEmail.get(matchKey) : null;
       const t = agg ?? unassigned;
       t.total += 1;
-      if (f.status === 'verified') t.verified += 1;
-      else if (f.status === 'rejected') t.rejected += 1;
+      const s = getFeatureStatusFromQc(f);
+      if (s === 'verified') t.verified += 1;
+      else if (s === 'rejected') t.rejected += 1;
       else t.pending += 1;
       if (isNewlyAddedFeature(f)) t.newAdded += 1;
     }
@@ -797,7 +824,7 @@ const AppContent: React.FC = () => {
       const text = [
         f.id,
         f.type,
-        f.status,
+        getFeatureStatusFromQc(f),
         displayName,
         String(attrs.FID ?? ''),
         String(attrs.Category ?? ''),
@@ -2040,9 +2067,9 @@ const AppContent: React.FC = () => {
                                 )}
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-500">
-                                {row.features.filter((f) => f.status === 'pending').length} P /{' '}
-                                {row.features.filter((f) => f.status === 'verified').length} V /{' '}
-                                {row.features.filter((f) => f.status === 'rejected').length} R
+                                {row.features.filter((f) => getFeatureStatusFromQc(f) === 'pending').length} P /{' '}
+                                {row.features.filter((f) => getFeatureStatusFromQc(f) === 'verified').length} V /{' '}
+                                {row.features.filter((f) => getFeatureStatusFromQc(f) === 'rejected').length} R
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-400">
                                 {expanded ? 'Expanded' : 'Collapsed'}
@@ -2050,7 +2077,9 @@ const AppContent: React.FC = () => {
                             </tr>
 
                             {expanded &&
-                              row.features.map((f) => (
+                              row.features.map((f) => {
+                                const effectiveStatus = getFeatureStatusFromQc(f);
+                                return (
                                 <tr key={f.id} className="hover:bg-slate-50/50 transition-colors">
                                   <td className="px-4 py-3">
                                     <span className="text-sm font-semibold">
@@ -2065,10 +2094,10 @@ const AppContent: React.FC = () => {
                                   <td className="px-4 py-3 capitalize font-medium text-slate-600 text-sm">{f.type}</td>
                                   <td className="px-4 py-3">
                                     <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
-                                      f.status === 'verified' ? 'bg-green-100 text-green-700' :
-                                      f.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                                      effectiveStatus === 'verified' ? 'bg-green-100 text-green-700' :
+                                      effectiveStatus === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                                     }`}>
-                                      {f.status}
+                                      {effectiveStatus}
                                     </span>
                                   </td>
                                   <td className="px-4 py-3">
@@ -2098,7 +2127,8 @@ const AppContent: React.FC = () => {
                                     )}
                                   </td>
                                 </tr>
-                              ))}
+                              );
+                            })}
                           </React.Fragment>
                         );
                       })}
