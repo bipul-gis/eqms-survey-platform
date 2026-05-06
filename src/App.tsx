@@ -342,6 +342,10 @@ const AppContent: React.FC = () => {
   const [questionnaireLocation, setQuestionnaireLocation] = useState<{ lat: number; lng: number; ward?: string } | null>(null);
   const [activeTab, setActiveTab] = useState<'map' | 'list'>('map');
   const [movingFeature, setMovingFeature] = useState<GeoFeature | null>(null);
+  const movingFeatureRef = useRef<GeoFeature | null>(null);
+  useEffect(() => {
+    movingFeatureRef.current = movingFeature;
+  }, [movingFeature]);
   const [lastMovedPoint, setLastMovedPoint] = useState<{
     featureId: string;
     featureName: string;
@@ -1528,11 +1532,7 @@ const AppContent: React.FC = () => {
           })
         });
 
-        setSelectedFeature((prev) =>
-          prev && prev.id === movingFeature.id
-            ? ({ ...prev, geometry: nextGeometry } as GeoFeature)
-            : prev
-        );
+        setSelectedFeature(null);
         setLastMovedPoint({
           featureId: movingFeature.id,
           featureName: String(movingFeature.attributes?.name || 'Selected Landmark'),
@@ -1634,6 +1634,7 @@ const AppContent: React.FC = () => {
   };
 
   const handleMapFeatureSelect = useCallback((feature: GeoFeature) => {
+    if (movingFeatureRef.current) return;
     setSelectedFeature(feature);
     setFeatureFocusRequestKey((k) => k + 1);
     setActiveTab('map');
@@ -1778,7 +1779,7 @@ const AppContent: React.FC = () => {
     }
     setMovingFeature(feature);
     setIsAddingFeature(null);
-    setSelectedFeature(feature);
+    setSelectedFeature(null);
     setActiveTab('map');
   };
 
@@ -1970,7 +1971,7 @@ const AppContent: React.FC = () => {
               onRequestMoveFeature={startMoveFeature}
               onCancelMoveFeature={cancelMoveFeature}
               onLandmarkPointSelect={handleLandmarkPointSelect}
-              selectedFeatureId={selectedFeature?.id}
+              selectedFeatureId={movingFeature?.id ?? selectedFeature?.id}
               featureFocusRequestKey={featureFocusRequestKey}
               movingFeatureId={movingFeature?.id || null}
               onMapClick={handleMapClick}
@@ -2139,8 +2140,8 @@ const AppContent: React.FC = () => {
           </div>
         )}
 
-        {/* Feature Editor Overlay */}
-        {selectedFeature && (
+        {/* Feature Editor — only when a feature is explicitly selected for edit, not during move mode */}
+        {selectedFeature && !movingFeature && (
           <div className="absolute top-0 right-0 h-full z-[1002] flex animate-in slide-in-from-right duration-300">
             <FeatureEditor
               feature={selectedFeature}

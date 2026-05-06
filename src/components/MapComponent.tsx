@@ -278,22 +278,36 @@ const PointMarker = React.memo(({
             </tbody>
           </table>
         </div>
+        {!isMoveTarget && (
+          <button
+            type="button"
+            className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
+            onClick={(e) => {
+              e.stopPropagation();
+              onFeatureSelect(feature);
+            }}
+          >
+            Edit Attributes
+          </button>
+        )}
         <button
-          className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
-          onClick={() => onFeatureSelect(feature)}
-        >
-          Edit Attributes
-        </button>
-        <button
+          type="button"
           className="mt-2 w-full bg-indigo-600 text-white text-xs font-medium py-1.5 rounded hover:bg-indigo-700"
-          onClick={() => onRequestMoveFeature?.(feature)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRequestMoveFeature?.(feature);
+          }}
         >
           {isMoveTarget ? 'Move Mode Active' : 'Move Point'}
         </button>
         {isMoveTarget && (
           <button
+            type="button"
             className="mt-2 w-full bg-slate-100 text-slate-700 text-xs font-medium py-1.5 rounded hover:bg-slate-200"
-            onClick={() => onCancelMoveFeature?.()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancelMoveFeature?.();
+            }}
           >
             Cancel Move
           </button>
