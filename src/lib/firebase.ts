@@ -10,10 +10,13 @@ import {
   signOut
 } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, setDoc, getDoc } from 'firebase/firestore';
+import { getFunctions } from 'firebase/functions';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
+/** Callable Cloud Functions — must match `region` in `functions/src/index.ts` (`us-central1`). */
+export const functions = getFunctions(app, 'us-central1');
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { GeoFeature, FeatureStatus, type FeatureType } from '../types';
 import { X, Save, MapPin, User, Clock, CheckCircle, AlertCircle } from 'lucide-react';
-import { doc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, deleteDoc, deleteField, serverTimestamp } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   isTrivialWardValue,
@@ -17,6 +17,7 @@ import {
 } from '../lib/slumFeatureFields';
 import { useAuth } from './AuthProvider';
 import { useGeoLocation } from './GeoLocationProvider';
+import { formatChangeAtReadable } from '../lib/formatChangeAt';
 
 // Match the attribute order in MapComponent popup (FID / Zone hidden but still stored on save)
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
@@ -258,14 +259,17 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     if (!validateRequiredAttributes()) return;
     setIsSaving(true);
     try {
-      const baseAttrs =
-        isDirty && !isNewFeature
-          ? {
-              ...attributes,
-              ChangeBy: user.email || '',
-              ChangeAt: new Date().toISOString()
-            }
-          : { ...attributes };
+      const nextStatus: FeatureStatus = isNewFeature ? 'pending' : isDirty ? 'verified' : status;
+      const verificationJustApplied =
+        !isNewFeature && nextStatus === 'verified' && feature.status !== 'verified';
+      const shouldStampChangeMeta = !isNewFeature && (isDirty || verificationJustApplied);
+      const baseAttrs = shouldStampChangeMeta
+        ? {
+            ...attributes,
+            ChangeBy: user.email || '',
+            ChangeAt: formatChangeAtReadable(new Date())
+          }
+        : { ...attributes };
       const nextTaskWard =
         feature.attributes?.[TASK_WARD_ATTR] != null && !isTrivialWardValue(feature.attributes[TASK_WARD_ATTR])
           ? feature.attributes[TASK_WARD_ATTR]
@@ -278,7 +282,6 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
             ...baseAttrs,
             ...(!isTrivialWardValue(nextTaskWard) ? { [TASK_WARD_ATTR]: nextTaskWard } : {})
           };
-      const nextStatus: FeatureStatus = isNewFeature ? 'pending' : isDirty ? 'verified' : status;
       if (isNewFeature) {
         if (!onCreateFeature) {
           throw new Error('Create feature handler is missing.');
@@ -292,6 +295,10 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           updatedBy: user.email,
           updatedByUid: user.uid,
           updatedAt: serverTimestamp(),
+          ...(verificationJustApplied && {
+            verifiedAt: serverTimestamp(),
+            verifiedBy: user.email || ''
+          }),
           // Store current location for verification
           ...(location && {
             collectorLocation: {
@@ -332,7 +339,10 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         status: 'rejected',
         updatedBy: user.email,
         updatedByUid: user.uid,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        ...(feature.status === 'verified'
+          ? { verifiedAt: deleteField(), verifiedBy: deleteField() }
+          : {})
       });
       onPersistSuccess?.();
       onClose();

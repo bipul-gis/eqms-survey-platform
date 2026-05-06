@@ -62,6 +62,8 @@ import {
 import { isSlumCategory, SLUM_DEMOGRAPHIC_KEY_SET } from './lib/slumFeatureFields';
 import { NEW_POINT_ADD_PROXIMITY_METERS } from './lib/newPointProximity';
 import { isLandmarkPointFormComplete, landmarkHasEnumeratorActivity } from './lib/landmarkQcCompleteness';
+import { formatChangeAtReadable } from './lib/formatChangeAt';
+import { patchShapefileZipUtf8Dbf } from './lib/dbfUtf8';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -123,11 +125,6 @@ const toShpPrimitive = (v: unknown): string | number | boolean => {
     return JSON.stringify(v);
   }
   return String(v);
-};
-
-const formatRootUpdatedAt = (v: unknown): string => {
-  const p = toShpPrimitive(v);
-  return typeof p === 'string' ? p : String(p);
 };
 
 /** GeoJSON/Firestore-safe value for imported landmark properties (full replace + merge upload). */
@@ -201,28 +198,59 @@ const parsePointCoordinates = (coords: unknown): [number, number] => {
   ];
 };
 
+/** Approved enumerators with ward assignment — used for SHP `UpdatedBy` (task ward → enumerator email). */
+type ShpEnumeratorAssignee = { email: string; assignedWardNames: string[] };
+
+function assignedEnumeratorEmailForLandmark(
+  feature: GeoFeature,
+  enumerators: ShpEnumeratorAssignee[] | undefined
+): string {
+  if (!enumerators?.length) return '';
+  const wardLabel = taskScopeWardLabel(feature, wardsData);
+  if (!wardLabel) return '';
+  for (const e of enumerators) {
+    if (
+      e.assignedWardNames.length > 0 &&
+      wardMatchesAssignedList(wardLabel, e.assignedWardNames)
+    ) {
+      return e.email;
+    }
+  }
+  return '';
+}
+
+/** Omit from generic attribute copy — folded into `ChangedAt` or omitted from SHP entirely. */
+const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt']);
+
 /**
- * Shapefile row properties: all stored landmark attributes (no internal `__*` keys; `__taskWard` → TaskWard)
- * plus status, who/when changed, rejection remarks, move/new-feature auto remarks, GPS.
+ * Shapefile row properties: landmark attributes (no `__*` keys).
+ * - **TaskWard**: immutable assigned ward (`__taskWard` only). Enumerator edits to `Ward_Name` do not change TaskWard.
+ * - **Ward_Name** / etc.: from attributes (includes enumerator corrections).
+ * - **ChangedAt**: single QC/edit timestamp (verification → attribute edit → last save).
  */
-const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | number | boolean> => {
+const landmarkShpRowProperties = (
+  feature: GeoFeature,
+  enumeratorAssignees?: ShpEnumeratorAssignee[]
+): Record<string, string | number | boolean> => {
   const attrs = sanitizeSlumOnlyFields((feature.attributes || {}) as Record<string, unknown>) as Record<string, any>;
   const out: Record<string, string | number | boolean> = {};
 
   for (const [k, v] of Object.entries(attrs)) {
     if (k.startsWith('__')) continue;
+    if (SHP_ATTR_OMIT.has(k)) continue;
     out[k] = toShpPrimitive(v);
   }
 
-  const taskWard = attrs.__taskWard;
-  if (taskWard !== undefined && taskWard !== null && !('TaskWard' in out)) {
-    out.TaskWard = toShpPrimitive(taskWard);
-  }
+  const fieldChangeAt = formatChangeAtReadable(attrs.ChangeAt).trim();
+  const qcVerifiedAt = formatChangeAtReadable(feature.verifiedAt).trim();
+  const updatedByFromWard = assignedEnumeratorEmailForLandmark(feature, enumeratorAssignees).trim();
 
-  const updatedBy =
-    String(feature.updatedBy ?? '').trim() || String(attrs.ChangeBy ?? '').trim() || String(feature.createdBy ?? '').trim();
-  const changedAt =
-    formatRootUpdatedAt(feature.updatedAt).trim() || String(attrs.ChangeAt ?? '').trim();
+  const tw = attrs[TASK_WARD_ATTR];
+  out.TaskWard =
+    tw != null && !isTrivialWardValue(tw) ? String(toShpPrimitive(tw)).trim() : '';
+
+  const changedAtOnly =
+    qcVerifiedAt || fieldChangeAt || formatChangeAtReadable(feature.updatedAt).trim();
 
   return {
     ...out,
@@ -232,17 +260,18 @@ const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | 
     RejectRmrks: String(feature.remarks ?? ''),
     MoveRemarks: String(feature.moveRemarks ?? ''),
     NewFeatureRemarks: String(feature.newFeatureRemarks ?? ''),
-    ChangeBy: updatedBy,
-    ChangeAt: changedAt,
-    UpdatedBy: updatedBy,
-    ChangedAt: changedAt,
+    UpdatedBy: updatedByFromWard,
+    ChangedAt: changedAtOnly,
     GPS_Lat: feature.collectorLocation?.lat ?? '',
     GPS_Lng: feature.collectorLocation?.lng ?? '',
     GPS_Acc: feature.collectorLocation?.accuracy ?? ''
   };
 };
 
-const mapLandmarkFeaturesToShpGeoJsonFeatures = (featureList: GeoFeature[]) => {
+const mapLandmarkFeaturesToShpGeoJsonFeatures = (
+  featureList: GeoFeature[],
+  enumeratorAssignees?: ShpEnumeratorAssignee[]
+) => {
   const toNumber = (v: unknown): number | null => {
     const n = typeof v === 'number' ? v : Number(v);
     return Number.isFinite(n) ? n : null;
@@ -257,7 +286,7 @@ const mapLandmarkFeaturesToShpGeoJsonFeatures = (featureList: GeoFeature[]) => {
         type: 'Feature' as const,
         id: feature.attributes?.FID ?? feature.id,
         geometry: { type: 'Point' as const, coordinates: [lng, lat] },
-        properties: landmarkShpRowProperties(feature)
+        properties: landmarkShpRowProperties(feature, enumeratorAssignees)
       };
     })
     .filter(Boolean);
@@ -537,7 +566,6 @@ const AppContent: React.FC = () => {
     };
   }, []);
 
-  const importedLandmarkFeatures = visibleFeatures.filter(isImportedLandmarkPoint);
   /** All ward labels from landmark GeoJSON, sorted ascending (numeric ward order when possible). */
   const wardOptionsForEditor = useMemo(() => {
     const unique = [...new Set(landmarkWardOptions.map((w) => String(w ?? '').trim()).filter(Boolean))];
@@ -566,6 +594,12 @@ const AppContent: React.FC = () => {
     if (wl) return wl;
     return taskScopeWardLabel(selectedFeature, wardsData) || '';
   }, [selectedFeature]);
+
+  /** Strict imported landmark rows (`ccc_landmark*` sources only — excludes manual map adds). */
+  const importedLandmarkFeatures = useMemo(
+    () => visibleFeatures.filter(isImportedLandmarkPoint),
+    [visibleFeatures]
+  );
 
   const enumeratorTaskStats = useMemo(() => {
     const lm = visibleFeatures.filter(isEnumeratorScopeLandmarkPoint);
@@ -1299,11 +1333,16 @@ const AppContent: React.FC = () => {
       .filter((f) => f.status === 'pending' && isLandmarkPointFormComplete(f))
       .map((f) => f.id);
 
+    let bulkVerifyTime: Date | null = null;
+    let bulkVerifyBy = '';
+
     if (idsPendingComplete.length > 0) {
       if (!user) {
         setImportNotice({ type: 'error', message: 'You must be signed in to finalize verification.' });
         return;
       }
+      bulkVerifyTime = new Date();
+      bulkVerifyBy = user.email || '';
       const chunkSize = 400;
       try {
         for (let i = 0; i < idsPendingComplete.length; i += chunkSize) {
@@ -1312,6 +1351,8 @@ const AppContent: React.FC = () => {
           for (const id of chunk) {
             batch.update(doc(db, 'features', id), {
               status: 'verified',
+              verifiedAt: serverTimestamp(),
+              verifiedBy: bulkVerifyBy,
               updatedBy: user.email,
               updatedByUid: user.uid,
               updatedAt: serverTimestamp()
@@ -1331,14 +1372,22 @@ const AppContent: React.FC = () => {
     }
 
     const verifiedIdSet = new Set(idsPendingComplete);
-    const featuresForShp = exportList.map((f) =>
-      verifiedIdSet.has(f.id) ? ({ ...f, status: 'verified' as const } as GeoFeature) : f
-    );
+    const featuresForShp = exportList.map((f) => {
+      if (!verifiedIdSet.has(f.id)) return f;
+      return {
+        ...f,
+        status: 'verified' as const,
+        ...(bulkVerifyTime && {
+          verifiedAt: bulkVerifyTime,
+          verifiedBy: bulkVerifyBy
+        })
+      } as GeoFeature;
+    });
 
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'changed_landmarks',
-      features: mapLandmarkFeaturesToShpGeoJsonFeatures(featuresForShp)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(featuresForShp, approvedEnumeratorsAdmin)
     };
     // EPSG:4326 WGS84 projection for shapefile .prj
     const wgs84Prj =
@@ -1355,9 +1404,13 @@ const AppContent: React.FC = () => {
         compression: 'STORE'
       });
 
-      const blob = zipResult instanceof Blob
+      let blob = zipResult instanceof Blob
         ? zipResult
         : new Blob([zipResult as BlobPart], { type: 'application/zip' });
+      const propRowsChanged = (exportPayload.features as Array<{ properties?: Record<string, unknown> }>).map(
+        (f) => (f.properties ?? {}) as Record<string, unknown>
+      );
+      blob = await patchShapefileZipUtf8Dbf(blob, 'changed_landmarks', 'changed_landmarks', propRowsChanged);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -1400,7 +1453,7 @@ const AppContent: React.FC = () => {
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'all_landmarks',
-      features: mapLandmarkFeaturesToShpGeoJsonFeatures(allLandmarkFeatures)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(allLandmarkFeatures, approvedEnumeratorsAdmin)
     };
 
     // EPSG:4326 WGS84 projection for shapefile .prj
@@ -1418,9 +1471,13 @@ const AppContent: React.FC = () => {
         compression: 'STORE'
       });
 
-      const blob = zipResult instanceof Blob
+      let blob = zipResult instanceof Blob
         ? zipResult
         : new Blob([zipResult as BlobPart], { type: 'application/zip' });
+      const propRowsAll = (exportPayload.features as Array<{ properties?: Record<string, unknown> }>).map(
+        (f) => (f.properties ?? {}) as Record<string, unknown>
+      );
+      blob = await patchShapefileZipUtf8Dbf(blob, 'all_landmarks', 'all_landmarks', propRowsAll);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -1595,6 +1652,10 @@ const AppContent: React.FC = () => {
       updatedBy: user.email,
       updatedByUid: user.uid,
       updatedAt: serverTimestamp(),
+      ...(payload.status === 'verified' && {
+        verifiedAt: serverTimestamp(),
+        verifiedBy: user.email || ''
+      }),
       ...(location && {
         collectorLocation: {
           lat: location.lat,
@@ -2156,19 +2217,19 @@ const AppContent: React.FC = () => {
               <div className="space-y-3">
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Verified</span>
-                  <span className="font-bold text-green-600">{importedLandmarkFeatures.filter(f => f.status === 'verified').length}</span>
+                  <span className="font-bold text-green-600">{enumeratorTaskStats.verified}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Pending</span>
-                  <span className="font-bold text-amber-600">{importedLandmarkFeatures.filter(f => f.status === 'pending').length}</span>
+                  <span className="font-bold text-amber-600">{enumeratorTaskStats.pending}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Rejected</span>
-                  <span className="font-bold text-red-600">{importedLandmarkFeatures.filter(f => f.status === 'rejected').length}</span>
+                  <span className="font-bold text-red-600">{enumeratorTaskStats.rejected}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">New Added</span>
-                  <span className="font-bold text-violet-700">{visibleFeatures.filter(isNewlyAddedFeature).length}</span>
+                  <span className="font-bold text-violet-700">{enumeratorTaskStats.newAdded}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Landmarks (imported)</span>
@@ -2241,6 +2302,16 @@ const AppContent: React.FC = () => {
                 >
                   Download Full SHP
                 </button>
+                <p className="text-[9px] text-slate-500 leading-snug">
+                  Changed SHP count ≠ QC totals: it only includes rows that differ from the bundled reference GeoJSON or
+                  have enumerator/QC activity (not every pending landmark).{' '}
+                  <span className="font-semibold">TaskWard</span> is the assigned task ward (
+                  <span className="font-semibold">__taskWard</span>); <span className="font-semibold">Ward_Name</span>{' '}
+                  reflects enumerator edits. <span className="font-semibold">UpdatedBy</span> is the enumerator assigned
+                  to that task ward. <span className="font-semibold">ChangedAt</span> is the single timestamp column.
+                  Attribute text uses UTF-8 (Bangla etc.) in values; DBF column titles must stay short ASCII (auto-renamed).
+                  A <span className="font-semibold">.cpg</span> file marks UTF-8 for GIS apps.
+                </p>
                 {importNotice && (
                   <div
                     className={`text-[10px] font-semibold rounded-lg px-2 py-1 ${

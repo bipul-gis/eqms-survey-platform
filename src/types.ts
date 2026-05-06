@@ -17,6 +17,10 @@ export interface GeoFeature {
   createdByUid?: string;
   updatedBy: string;
   updatedAt: string;
+  /** Set when status becomes `verified` (verification time — not upload/merge time). */
+  verifiedAt?: unknown;
+  /** Email of user who verified (paired with `verifiedAt`). */
+  verifiedBy?: string;
   collectorLocation?: {
     lat: number;
     lng: number;

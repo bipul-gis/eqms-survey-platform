@@ -1,0 +1,4 @@
+node_modules/
+lib/
+.env
+applet-config.runtime.json
