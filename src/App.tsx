@@ -61,6 +61,7 @@ import {
 } from './lib/wardGeometry';
 import { isSlumCategory, SLUM_DEMOGRAPHIC_KEY_SET } from './lib/slumFeatureFields';
 import { NEW_POINT_ADD_PROXIMITY_METERS } from './lib/newPointProximity';
+import { isLandmarkPointFormComplete, landmarkHasEnumeratorActivity } from './lib/landmarkQcCompleteness';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -1284,10 +1285,60 @@ const AppContent: React.FC = () => {
       return;
     }
 
+    const exportList = changedFeatures.filter(landmarkHasEnumeratorActivity);
+    if (exportList.length === 0) {
+      setImportNotice({
+        type: 'error',
+        message:
+          'No enumerator-changed landmark points to export. (Automated import-only updates are excluded from Changed SHP.)'
+      });
+      return;
+    }
+
+    const idsPendingComplete = exportList
+      .filter((f) => f.status === 'pending' && isLandmarkPointFormComplete(f))
+      .map((f) => f.id);
+
+    if (idsPendingComplete.length > 0) {
+      if (!user) {
+        setImportNotice({ type: 'error', message: 'You must be signed in to finalize verification.' });
+        return;
+      }
+      const chunkSize = 400;
+      try {
+        for (let i = 0; i < idsPendingComplete.length; i += chunkSize) {
+          const chunk = idsPendingComplete.slice(i, i + chunkSize);
+          const batch = writeBatch(db);
+          for (const id of chunk) {
+            batch.update(doc(db, 'features', id), {
+              status: 'verified',
+              updatedBy: user.email,
+              updatedByUid: user.uid,
+              updatedAt: serverTimestamp()
+            });
+          }
+          await batch.commit();
+        }
+      } catch (error) {
+        console.error(error);
+        setImportNotice({
+          type: 'error',
+          message: `Could not mark pending records as verified: ${error instanceof Error ? error.message : String(error)}`
+        });
+        return;
+      }
+      setAdminFeaturesRefreshKey((k) => k + 1);
+    }
+
+    const verifiedIdSet = new Set(idsPendingComplete);
+    const featuresForShp = exportList.map((f) =>
+      verifiedIdSet.has(f.id) ? ({ ...f, status: 'verified' as const } as GeoFeature) : f
+    );
+
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'changed_landmarks',
-      features: mapLandmarkFeaturesToShpGeoJsonFeatures(changedFeatures)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(featuresForShp)
     };
     // EPSG:4326 WGS84 projection for shapefile .prj
     const wgs84Prj =
@@ -1315,9 +1366,14 @@ const AppContent: React.FC = () => {
       anchor.click();
       document.body.removeChild(anchor);
       URL.revokeObjectURL(url);
+      const exported = (exportPayload.features as any[]).length;
+      const verifiedCount = idsPendingComplete.length;
       setImportNotice({
         type: 'success',
-        message: `SHP download ready. Exported ${(exportPayload.features as any[]).length} changed point feature(s) as ZIP.`
+        message:
+          verifiedCount > 0
+            ? `SHP ready: ${exported} point(s). Marked ${verifiedCount} complete pending record(s) as verified.`
+            : `SHP download ready. Exported ${exported} enumerator-changed point feature(s) as ZIP.`
       });
     } catch (error) {
       console.error(error);
