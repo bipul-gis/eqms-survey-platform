@@ -1436,7 +1436,7 @@ const AppContent: React.FC = () => {
     try {
       let geometry: any;
       if (isAddingFeature === 'point') {
-        // Enumerator can add landmark points only when standing within 10m of clicked point.
+        // Enumerator can add landmark points only when standing within 30m of clicked point.
         if (!isAdmin) {
           if (!location) {
             requestLocation();
@@ -1444,8 +1444,8 @@ const AppContent: React.FC = () => {
             return;
           }
           const d = distanceMeters(location.lat, location.lng, lat, lng);
-          if (d > 10) {
-            alert(`You are ${d.toFixed(1)}m away from the selected point. Move within 10m to add a landmark point.`);
+          if (d > 30) {
+            alert(`You are ${d.toFixed(1)}m away from the selected point. Move within 30m to add a landmark point.`);
             return;
           }
         }
@@ -1575,7 +1575,7 @@ const AppContent: React.FC = () => {
 
     try {
       // If landmark does not exist in Firestore yet, create it so it can be edited.
-      // No GPS-distance restriction here: user requested 10m rule only for
+      // No GPS-distance restriction here: user requested 30m rule only for
       // explicit "add feature" mode (map click), not edit/delete/attribute edit flow.
 
       const featureId = fid !== undefined ? `landmark_${fid}` : null;
