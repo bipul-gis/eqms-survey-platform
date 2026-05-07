@@ -9,12 +9,36 @@ import {
   createUserWithEmailAndPassword,
   signOut
 } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, setDoc, getDoc } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  doc,
+  getDocFromServer,
+  setDoc,
+  getDoc
+} from 'firebase/firestore';
 import { getFunctions } from 'firebase/functions';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 export const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+/**
+ * Enumerator/offline-ready Firestore client:
+ * - Persists cached reads/writes locally (IndexedDB)
+ * - Queues writes while offline
+ * - Auto-syncs when network reconnects
+ *
+ * Keeps the same app UI/flow; this is an internal data-layer upgrade.
+ */
+export const db =
+  typeof window !== 'undefined'
+    ? initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      })
+    : getFirestore(app);
 /** Callable Cloud Functions — must match `region` in `functions/src/index.ts` (`us-central1`). */
 export const functions = getFunctions(app, 'us-central1');
 export const auth = getAuth(app);

@@ -256,6 +256,20 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     return true;
   };
 
+  const isOfflineClient = () => typeof navigator !== 'undefined' && navigator.onLine === false;
+
+  const runWrite = async (writeOp: () => Promise<void>) => {
+    const p = writeOp();
+    if (isOfflineClient()) {
+      // Do not block UI while offline; Firestore local cache keeps the write queued for auto-sync.
+      void p.catch((error) => {
+        console.error('Queued offline write failed:', error);
+      });
+      return;
+    }
+    await p;
+  };
+
   const handleStatusClick = (s: FeatureStatus) => {
     if (!isAdmin && s === 'rejected') return;
     if (!isAdmin && s === 'verified') {
@@ -303,28 +317,30 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         if (!onCreateFeature) {
           throw new Error('Create feature handler is missing.');
         }
-        await onCreateFeature({ attributes: attributesToSave, status: nextStatus });
+        await runWrite(() => onCreateFeature({ attributes: attributesToSave, status: nextStatus }));
       } else {
         const featureRef = doc(db, 'features', feature.id);
-        await updateDoc(featureRef, {
-          attributes: attributesToSave,
-          status: nextStatus,
-          updatedBy: user.email,
-          updatedByUid: user.uid,
-          updatedAt: serverTimestamp(),
-          ...(verificationJustApplied && {
-            verifiedAt: serverTimestamp(),
-            verifiedBy: user.email || ''
-          }),
-          // Store current location for verification
-          ...(location && {
-            collectorLocation: {
-              lat: location.lat,
-              lng: location.lng,
-              accuracy: location.accuracy
-            }
+        await runWrite(() =>
+          updateDoc(featureRef, {
+            attributes: attributesToSave,
+            status: nextStatus,
+            updatedBy: user.email,
+            updatedByUid: user.uid,
+            updatedAt: serverTimestamp(),
+            ...(verificationJustApplied && {
+              verifiedAt: serverTimestamp(),
+              verifiedBy: user.email || ''
+            }),
+            // Store current location for verification
+            ...(location && {
+              collectorLocation: {
+                lat: location.lat,
+                lng: location.lng,
+                accuracy: location.accuracy
+              }
+            })
           })
-        });
+        );
       }
       onPersistSuccess?.();
       setIsSaving(false);
@@ -351,16 +367,18 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
       }
 
       // Admin and enumerator both reject with mandatory remarks.
-      await updateDoc(doc(db, 'features', feature.id), {
-        remarks,
-        status: 'rejected',
-        updatedBy: user.email,
-        updatedByUid: user.uid,
-        updatedAt: serverTimestamp(),
-        ...(feature.status === 'verified'
-          ? { verifiedAt: deleteField(), verifiedBy: deleteField() }
-          : {})
-      });
+      await runWrite(() =>
+        updateDoc(doc(db, 'features', feature.id), {
+          remarks,
+          status: 'rejected',
+          updatedBy: user.email,
+          updatedByUid: user.uid,
+          updatedAt: serverTimestamp(),
+          ...(feature.status === 'verified'
+            ? { verifiedAt: deleteField(), verifiedBy: deleteField() }
+            : {})
+        })
+      );
       onPersistSuccess?.();
       onClose();
     } catch (error) {

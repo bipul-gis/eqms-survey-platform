@@ -534,7 +534,7 @@ const AppContent: React.FC = () => {
     return 'idle';
   }, [authLoading, user, userProfile?.role, userProfile?.status]);
 
-  const { features, loading: featuresLoading } = useOptimizedFeatures({
+  const { features, loading: featuresLoading, syncState } = useOptimizedFeatures({
     mode: featuresMode,
     userUid: user?.uid,
     userEmail: user?.email ?? undefined,
@@ -563,6 +563,31 @@ const AppContent: React.FC = () => {
       featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
   }, [isAdmin, features, assignedWardsForFilter, wardsData, user?.email, user?.uid]);
+
+  const enumeratorSyncUi = useMemo(() => {
+    if (isAdmin) {
+      return {
+        dotClass: 'bg-green-500 animate-pulse',
+        label: 'Live Sync Active'
+      };
+    }
+    if (!syncState.online) {
+      return {
+        dotClass: 'bg-red-500',
+        label: 'Offline - Changes queued'
+      };
+    }
+    if (syncState.hasPendingWrites) {
+      return {
+        dotClass: 'bg-amber-500 animate-pulse',
+        label: 'Syncing pending changes...'
+      };
+    }
+    return {
+      dotClass: 'bg-green-500 animate-pulse',
+      label: 'Live Sync Active'
+    };
+  }, [isAdmin, syncState.fromCache, syncState.hasPendingWrites, syncState.online]);
 
   useEffect(() => {
     let mounted = true;
@@ -1929,19 +1954,15 @@ const AppContent: React.FC = () => {
       {/* Header */}
       <header className="h-16 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-sm z-[1001]">
         <div className="flex items-center gap-3">
-          <div className="bg-blue-600 p-2 rounded-xl text-white">
-            <Compass size={24} />
-          </div>
           <div>
             <h1 className="font-bold text-slate-900 leading-tight">EQMS Geosurvey</h1>
-            <p className="text-[10px] text-slate-400 font-medium tracking-wide">Collect and validate geospatial data from ground level</p>
           </div>
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-full border border-slate-100">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-            <span className="text-xs font-medium text-slate-600">Live Sync Active</span>
+          <div className={`${isAdmin ? 'hidden md:flex' : 'flex'} items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-full border border-slate-100`}>
+            <div className={`w-2 h-2 rounded-full ${enumeratorSyncUi.dotClass}`}></div>
+            <span className="text-xs font-medium text-slate-600">{enumeratorSyncUi.label}</span>
           </div>
           {assignedWardsForFilter.length > 0 && !isAdmin && (
             <div

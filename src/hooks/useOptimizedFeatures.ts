@@ -13,6 +13,11 @@ import type { GeoFeature, FeatureStatus } from '../types';
 import { parseWardNumber } from '../lib/wardGeometry';
 
 export type FeaturesLoadMode = 'idle' | 'admin' | 'enumerator';
+export type FeatureSyncState = {
+  online: boolean;
+  hasPendingWrites: boolean;
+  fromCache: boolean;
+};
 
 function normalizeFeatureStatus(raw: unknown): FeatureStatus {
   if (raw === 'verified' || raw === 'rejected' || raw === 'pending') return raw;
@@ -70,12 +75,32 @@ export function useOptimizedFeatures(options: {
   const [features, setFeatures] = useState<GeoFeature[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [syncState, setSyncState] = useState<FeatureSyncState>({
+    online: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    hasPendingWrites: false,
+    fromCache: false
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateOnline = () => {
+      setSyncState((prev) => ({ ...prev, online: navigator.onLine }));
+    };
+    updateOnline();
+    window.addEventListener('online', updateOnline);
+    window.addEventListener('offline', updateOnline);
+    return () => {
+      window.removeEventListener('online', updateOnline);
+      window.removeEventListener('offline', updateOnline);
+    };
+  }, []);
 
   useEffect(() => {
     if (options.mode !== 'idle') return;
     setFeatures([]);
     setLoading(false);
     setError(null);
+    setSyncState((prev) => ({ ...prev, hasPendingWrites: false, fromCache: false }));
   }, [options.mode]);
 
   useEffect(() => {
@@ -89,6 +114,7 @@ export function useOptimizedFeatures(options: {
         const snap = await getDocsFromServer(collection(db, 'features'));
         if (cancelled) return;
         setFeatures(snap.docs.map((d) => docToGeoFeature(d)));
+        setSyncState((prev) => ({ ...prev, hasPendingWrites: false, fromCache: false }));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e : new Error(String(e)));
       } finally {
@@ -115,11 +141,19 @@ export function useOptimizedFeatures(options: {
     setError(null);
 
     const maps = new Map<string, Map<string, GeoFeature>>();
+    const metaByKey = new Map<string, { hasPendingWrites: boolean; fromCache: boolean }>();
 
     const recompute = () => {
       const byId = new Map<string, GeoFeature>();
       maps.forEach((m) => m.forEach((f, id) => byId.set(id, f)));
       setFeatures(Array.from(byId.values()));
+      let hasPendingWrites = false;
+      let fromCache = false;
+      metaByKey.forEach((m) => {
+        if (m.hasPendingWrites) hasPendingWrites = true;
+        if (m.fromCache) fromCache = true;
+      });
+      setSyncState((prev) => ({ ...prev, hasPendingWrites, fromCache }));
       setLoading(false);
     };
 
@@ -133,6 +167,10 @@ export function useOptimizedFeatures(options: {
             m.set(docSnap.id, docToGeoFeature(docSnap));
           });
           maps.set(key, m);
+          metaByKey.set(key, {
+            hasPendingWrites: snap.metadata.hasPendingWrites,
+            fromCache: snap.metadata.fromCache
+          });
           recompute();
         },
         (err) => {
@@ -184,8 +222,9 @@ export function useOptimizedFeatures(options: {
     return () => {
       unsubs.forEach((u) => u());
       maps.clear();
+      metaByKey.clear();
     };
   }, [options.mode, options.userUid, options.userEmail, wardsKey, options.enumeratorPersistRefreshKey]);
 
-  return { features, loading, error };
+  return { features, loading, error, syncState };
 }
