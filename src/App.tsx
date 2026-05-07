@@ -2396,7 +2396,7 @@ const AppContent: React.FC = () => {
                           <th className="text-center px-0.5 py-1 w-7 font-semibold text-violet-700" title="New Added">
                             N
                           </th>
-                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-slate-600" title="Total">
+                          <th className="text-center px-0.5 py-1 w-6 font-semibold text-slate-600" title="Total + New Added (P+V+R+N)">
                             Σ
                           </th>
                         </tr>
@@ -2411,7 +2411,7 @@ const AppContent: React.FC = () => {
                             <td className="text-center py-1 font-semibold text-green-600">{r.verified}</td>
                             <td className="text-center py-1 font-semibold text-red-600">{r.rejected}</td>
                             <td className="text-center py-1 font-semibold text-violet-700">{r.newAdded}</td>
-                            <td className="text-center py-1 font-semibold text-slate-700">{r.total}</td>
+                            <td className="text-center py-1 font-semibold text-slate-700">{r.total + r.newAdded}</td>
                           </tr>
                         ))}
                         {adminLandmarksByEnumerator.unassigned && (
@@ -2432,7 +2432,7 @@ const AppContent: React.FC = () => {
                               {adminLandmarksByEnumerator.unassigned.newAdded}
                             </td>
                             <td className="text-center py-1 font-bold text-slate-800">
-                              {adminLandmarksByEnumerator.unassigned.total}
+                              {adminLandmarksByEnumerator.unassigned.total + adminLandmarksByEnumerator.unassigned.newAdded}
                             </td>
                           </tr>
                         )}
