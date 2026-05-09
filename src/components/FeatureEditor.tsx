@@ -15,6 +15,7 @@ import {
   SLUM_DEMOGRAPHIC_KEYS,
   SLUM_DEMOGRAPHIC_KEY_SET
 } from '../lib/slumFeatureFields';
+import { isLandmarkPointFormComplete } from '../lib/landmarkQcCompleteness';
 import { useAuth } from './AuthProvider';
 import { useGeoLocation } from './GeoLocationProvider';
 import { formatChangeAtReadable } from '../lib/formatChangeAt';
@@ -207,11 +208,17 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     const nextValue = POSITIVE_INTEGER_ONLY_FIELDS.has(key)
       ? value.replace(/[^\d]/g, '')
       : value;
-    setAttributes((prev) => ({ ...prev, [key]: nextValue }));
+    setAttributes((prev) => {
+      const nextAttributes = { ...prev, [key]: nextValue };
+      if (!isNewFeature) {
+        setStatus('verified');
+      } else if (feature.type === 'point') {
+        const draftFeature: GeoFeature = { ...feature, attributes: nextAttributes };
+        setStatus(isLandmarkPointFormComplete(draftFeature) ? 'verified' : 'pending');
+      }
+      return nextAttributes;
+    });
     setIsDirty(true);
-    if (!isNewFeature) {
-      setStatus('verified');
-    }
   };
 
   const selectedCategory = String(attributes?.Category ?? '').trim();
@@ -290,7 +297,11 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     if (!validateRequiredAttributes()) return;
     setIsSaving(true);
     try {
-      const nextStatus: FeatureStatus = isNewFeature ? 'pending' : isDirty ? 'verified' : status;
+      const nextStatus: FeatureStatus = isNewFeature
+        ? (feature.type === 'point' && isLandmarkPointFormComplete({ ...feature, attributes }) ? 'verified' : 'pending')
+        : isDirty
+          ? 'verified'
+          : status;
       const verificationJustApplied =
         !isNewFeature && nextStatus === 'verified' && feature.status !== 'verified';
       const shouldStampChangeMeta = !isNewFeature && (isDirty || verificationJustApplied);
