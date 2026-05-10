@@ -96,6 +96,8 @@ L.Icon.Default.mergeOptions({
 interface MapComponentProps {
   features: GeoFeature[];
   wards: any; // Using any for GeoJSON FeatureCollection
+  /** Approved admin only: show enumerator display name on landmark point popups (ward-based; falls back to `updatedBy`). */
+  getAdminLandmarkEnumeratorDisplayName?: (feature: GeoFeature) => string;
   /** When set (e.g. ward-tasked enumerators), GeoJSON-only landmark dots must match one of these wards; ward polygons stay full layer via `wards`. */
   enumeratorLandmarkWardFilter?: string[];
   onFeatureSelect: (feature: GeoFeature) => void;
@@ -239,6 +241,7 @@ const PointMarker = React.memo(({
   isPulsing,
   color,
   radius,
+  adminEnumeratorDisplayName,
   onFeatureSelect,
   onRequestMoveFeature,
   onCancelMoveFeature
@@ -249,6 +252,8 @@ const PointMarker = React.memo(({
   isPulsing: boolean;
   color: string;
   radius: number;
+  /** Approved admin only: enumerator full name for landmark popup header. */
+  adminEnumeratorDisplayName?: string;
   onFeatureSelect: (f: GeoFeature) => void;
   onRequestMoveFeature?: (f: GeoFeature) => void;
   onCancelMoveFeature?: () => void;
@@ -265,6 +270,12 @@ const PointMarker = React.memo(({
   >
     <Popup autoPan={false}>
       <div className="min-w-[240px]">
+        {adminEnumeratorDisplayName ? (
+          <div className="mb-2 pb-2 border-b border-amber-100">
+            <p className="text-[10px] font-semibold text-amber-800 uppercase tracking-wide">Enumerator</p>
+            <p className="text-sm font-bold text-slate-900 leading-snug">{adminEnumeratorDisplayName}</p>
+          </div>
+        ) : null}
         <p className="text-xs font-bold text-gray-700 mb-2">Landmark Attributes</p>
         <div className="max-h-48 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
@@ -378,11 +389,13 @@ const LandmarkGeoJsonPoint = React.memo(({
   p,
   idx,
   radius,
+  adminEnumeratorDisplayName,
   onLandmarkPointSelect
 }: {
   p: { lat: number; lng: number; properties: Record<string, any> };
   idx: number;
   radius: number;
+  adminEnumeratorDisplayName?: string;
   onLandmarkPointSelect?: (point: { lat: number; lng: number; properties: Record<string, any> }) => void;
 }) => (
   <CircleMarker
@@ -397,6 +410,12 @@ const LandmarkGeoJsonPoint = React.memo(({
   >
     <Popup>
       <div className="min-w-[220px]">
+        {adminEnumeratorDisplayName ? (
+          <div className="mb-2 pb-2 border-b border-amber-100">
+            <p className="text-[10px] font-semibold text-amber-800 uppercase tracking-wide">Enumerator</p>
+            <p className="text-sm font-bold text-slate-900 leading-snug">{adminEnumeratorDisplayName}</p>
+          </div>
+        ) : null}
         <p className="text-xs font-bold text-gray-700 mb-2">Landmark (GeoJSON)</p>
         <div className="max-h-44 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
@@ -426,6 +445,7 @@ LandmarkGeoJsonPoint.displayName = 'LandmarkGeoJsonPoint';
 export const MapComponent: React.FC<MapComponentProps> = ({ 
   features, 
   wards,
+  getAdminLandmarkEnumeratorDisplayName,
   enumeratorLandmarkWardFilter,
   onFeatureSelect, 
   onRequestMoveFeature,
@@ -442,6 +462,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
   const isAdminUser = userProfile?.role === 'admin';
+  const isApprovedAdmin =
+    userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isEnumeratorUser = userProfile?.role === 'enumerator';
   const [showWards, setShowWards] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(true);
@@ -582,6 +604,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const handleCancelMoveFeature = useCallback(() => onCancelMoveFeature?.(), [onCancelMoveFeature]);
   const handleLandmarkPointSelect = useCallback((p: { lat: number; lng: number; properties: Record<string, any> }) => onLandmarkPointSelect?.(p), [onLandmarkPointSelect]);
 
+  const landmarkGeoJsonAsFeature = useCallback(
+    (p: { lat: number; lng: number; properties: Record<string, any> }): GeoFeature => ({
+      id: '__landmark_geojson_popup__',
+      type: 'point',
+      geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
+      attributes: p.properties || {},
+      status: 'pending',
+      createdBy: '',
+      updatedBy: '',
+      updatedAt: ''
+    }),
+    []
+  );
+
   return (
     <div className="relative w-full h-full">
       <MapContainer 
@@ -645,6 +681,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
           if (feature.type === 'point') {
             if (!showLandmarks) return null;
+            const adminEnumeratorDisplayName =
+              isApprovedAdmin && getAdminLandmarkEnumeratorDisplayName
+                ? getAdminLandmarkEnumeratorDisplayName(feature)
+                : undefined;
             return (
               <PointMarker
                 key={`${feature.id}:${feature.status ?? 'pending'}`}
@@ -654,6 +694,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 isPulsing={isPulsing}
                 color={color}
                 radius={radiusForLandmark(7, isSelected, isPulsing)}
+                adminEnumeratorDisplayName={adminEnumeratorDisplayName}
                 onFeatureSelect={handleFeatureSelect}
                 onRequestMoveFeature={handleRequestMoveFeature}
                 onCancelMoveFeature={handleCancelMoveFeature}
@@ -706,15 +747,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             // (same status symbology) to avoid double-markers.
             return !findMatchingFirestorePoint(p);
           })
-          .map((p, idx) => (
-            <LandmarkGeoJsonPoint
-              key={`landmark_geojson_${idx}`}
-              p={p}
-              idx={idx}
-              radius={radiusForLandmark(5, false, false)}
-              onLandmarkPointSelect={handleLandmarkPointSelect}
-            />
-          ))}
+          .map((p, idx) => {
+            const adminEnumeratorDisplayName =
+              isApprovedAdmin && getAdminLandmarkEnumeratorDisplayName
+                ? getAdminLandmarkEnumeratorDisplayName(landmarkGeoJsonAsFeature(p))
+                : undefined;
+            return (
+              <LandmarkGeoJsonPoint
+                key={`landmark_geojson_${idx}`}
+                p={p}
+                idx={idx}
+                radius={radiusForLandmark(5, false, false)}
+                adminEnumeratorDisplayName={adminEnumeratorDisplayName}
+                onLandmarkPointSelect={handleLandmarkPointSelect}
+              />
+            );
+          })}
 
         {/* Live GPS overlay:
             - Admins / point-add mode: accuracy circle + icon

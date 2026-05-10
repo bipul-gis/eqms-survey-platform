@@ -223,7 +223,7 @@ const parsePointCoordinates = (coords: unknown): [number, number] => {
   ];
 };
 
-/** Approved enumerators with ward assignment — used for SHP `UpdatedBy` (task ward → enumerator email). */
+/** Approved enumerators with ward assignment — preferred for SHP `UpdatedBy`; falls back to feature `updatedBy`. */
 type ShpEnumeratorAssignee = { email: string; assignedWardNames: string[] };
 
 function assignedEnumeratorEmailForLandmark(
@@ -269,6 +269,8 @@ const landmarkShpRowProperties = (
   const fieldChangeAt = formatChangeAtReadable(attrs.ChangeAt).trim();
   const qcVerifiedAt = formatChangeAtReadable(feature.verifiedAt).trim();
   const updatedByFromWard = assignedEnumeratorEmailForLandmark(feature, enumeratorAssignees).trim();
+  const updatedByStored = String(feature.updatedBy ?? '').trim();
+  const updatedByForShp = updatedByFromWard || updatedByStored;
 
   const tw = attrs[TASK_WARD_ATTR];
   out.TaskWard =
@@ -285,7 +287,7 @@ const landmarkShpRowProperties = (
     RejectRmrks: String(feature.remarks ?? ''),
     MoveRemarks: String(feature.moveRemarks ?? ''),
     NewFeatureRemarks: String(feature.newFeatureRemarks ?? ''),
-    UpdatedBy: updatedByFromWard,
+    UpdatedBy: updatedByForShp,
     ChangedAt: changedAtOnly,
     GPS_Lat: feature.collectorLocation?.lat ?? '',
     GPS_Lng: feature.collectorLocation?.lng ?? '',
@@ -730,6 +732,31 @@ const AppContent: React.FC = () => {
     );
     return () => unsub();
   }, [isAdmin]);
+
+  /** Admin map popups: enumerator display name from task ward assignment, else from `updatedBy` email. */
+  const getAdminLandmarkEnumeratorDisplayName = useCallback(
+    (feature: GeoFeature): string => {
+      if (!isAdmin || approvedEnumeratorsAdmin.length === 0) return '';
+      const wardLabel = taskScopeWardLabel(feature, wardsData);
+      if (wardLabel) {
+        for (const e of approvedEnumeratorsAdmin) {
+          if (
+            e.assignedWardNames.length > 0 &&
+            wardMatchesAssignedList(wardLabel, e.assignedWardNames)
+          ) {
+            return e.displayName;
+          }
+        }
+      }
+      const email = String(feature.updatedBy ?? '').trim();
+      if (email) {
+        const row = approvedEnumeratorsAdmin.find((e) => e.email.toLowerCase() === email.toLowerCase());
+        if (row) return row.displayName;
+      }
+      return '';
+    },
+    [isAdmin, approvedEnumeratorsAdmin]
+  );
 
   type EnumeratorLandmarkSummaryRow = {
     email: string;
@@ -1436,7 +1463,8 @@ const AppContent: React.FC = () => {
         status: 'verified' as const,
         ...(bulkVerifyTime && {
           verifiedAt: bulkVerifyTime,
-          verifiedBy: bulkVerifyBy
+          verifiedBy: bulkVerifyBy,
+          updatedBy: bulkVerifyBy || f.updatedBy
         })
       } as GeoFeature;
     });
@@ -2013,6 +2041,9 @@ const AppContent: React.FC = () => {
             <MapComponent 
               features={visibleFeatures}
               wards={wardsData}
+              getAdminLandmarkEnumeratorDisplayName={
+                isAdmin ? getAdminLandmarkEnumeratorDisplayName : undefined
+              }
               enumeratorLandmarkWardFilter={
                 !isAdmin ? assignedWardsForFilter : undefined
               }
