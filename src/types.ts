@@ -13,6 +13,8 @@ export interface GeoFeature {
   moveRemarks?: string;
   /** Auto-generated backend note when a new feature is created. */
   newFeatureRemarks?: string;
+  /** Newline-separated audit log of admin-profile actions (import, merge, QC, moves). */
+  adminRM?: string;
   createdBy: string;
   createdByUid?: string;
   updatedBy: string;

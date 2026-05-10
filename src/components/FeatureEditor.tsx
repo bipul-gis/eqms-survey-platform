@@ -19,6 +19,7 @@ import { isLandmarkPointFormComplete } from '../lib/landmarkQcCompleteness';
 import { useAuth } from './AuthProvider';
 import { useGeoLocation } from './GeoLocationProvider';
 import { formatChangeAtReadable } from '../lib/formatChangeAt';
+import { appendAdminRm } from '../lib/adminRm';
 
 // Match the attribute order in MapComponent popup (FID / Zone hidden but still stored on save)
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
@@ -331,26 +332,36 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         await runWrite(() => onCreateFeature({ attributes: attributesToSave, status: nextStatus }));
       } else {
         const featureRef = doc(db, 'features', feature.id);
-        await runWrite(() =>
-          updateDoc(featureRef, {
-            attributes: attributesToSave,
-            status: nextStatus,
-            updatedBy: user.email,
-            updatedByUid: user.uid,
-            updatedAt: serverTimestamp(),
-            ...(verificationJustApplied && {
-              verifiedAt: serverTimestamp(),
-              verifiedBy: user.email || ''
-            }),
-            // Store current location for verification
-            ...(location && {
-              collectorLocation: {
-                lat: location.lat,
-                lng: location.lng,
-                accuracy: location.accuracy
-              }
-            })
+        const sharedPayload = {
+          attributes: attributesToSave,
+          status: nextStatus,
+          updatedAt: serverTimestamp(),
+          ...(verificationJustApplied && {
+            verifiedAt: serverTimestamp(),
+            verifiedBy: user.email || ''
+          }),
+          ...(location && {
+            collectorLocation: {
+              lat: location.lat,
+              lng: location.lng,
+              accuracy: location.accuracy
+            }
           })
+        };
+        await runWrite(() =>
+          updateDoc(
+            featureRef,
+            isAdmin
+              ? {
+                  ...sharedPayload,
+                  adminRM: appendAdminRm(feature.adminRM, 'Attribute / QC update (admin profile)', user.email || '')
+                }
+              : {
+                  ...sharedPayload,
+                  updatedBy: user.email,
+                  updatedByUid: user.uid
+                }
+          )
         );
       }
       onPersistSuccess?.();
@@ -382,8 +393,14 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         updateDoc(doc(db, 'features', feature.id), {
           remarks,
           status: 'rejected',
-          updatedBy: user.email,
-          updatedByUid: user.uid,
+          ...(isAdmin
+            ? {
+                adminRM: appendAdminRm(feature.adminRM, 'Rejected (admin profile)', user.email || '')
+              }
+            : {
+                updatedBy: user.email,
+                updatedByUid: user.uid
+              }),
           updatedAt: serverTimestamp(),
           ...(feature.status === 'verified'
             ? { verifiedAt: deleteField(), verifiedBy: deleteField() }

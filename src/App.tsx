@@ -64,6 +64,7 @@ import { NEW_POINT_ADD_PROXIMITY_METERS } from './lib/newPointProximity';
 import { isLandmarkPointFormComplete, landmarkHasEnumeratorActivity } from './lib/landmarkQcCompleteness';
 import { formatChangeAtReadable } from './lib/formatChangeAt';
 import { patchShapefileZipUtf8Dbf } from './lib/dbfUtf8';
+import { appendAdminRm } from './lib/adminRm';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -223,27 +224,6 @@ const parsePointCoordinates = (coords: unknown): [number, number] => {
   ];
 };
 
-/** Approved enumerators with ward assignment — preferred for SHP `UpdatedBy`; falls back to feature `updatedBy`. */
-type ShpEnumeratorAssignee = { email: string; assignedWardNames: string[] };
-
-function assignedEnumeratorEmailForLandmark(
-  feature: GeoFeature,
-  enumerators: ShpEnumeratorAssignee[] | undefined
-): string {
-  if (!enumerators?.length) return '';
-  const wardLabel = taskScopeWardLabel(feature, wardsData);
-  if (!wardLabel) return '';
-  for (const e of enumerators) {
-    if (
-      e.assignedWardNames.length > 0 &&
-      wardMatchesAssignedList(wardLabel, e.assignedWardNames)
-    ) {
-      return e.email;
-    }
-  }
-  return '';
-}
-
 /** Omit from generic attribute copy — folded into `ChangedAt` or omitted from SHP entirely. */
 const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt']);
 
@@ -251,12 +231,11 @@ const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt']);
  * Shapefile row properties: landmark attributes (no `__*` keys).
  * - **TaskWard**: immutable assigned ward (`__taskWard` only). Enumerator edits to `Ward_Name` do not change TaskWard.
  * - **Ward_Name** / etc.: from attributes (includes enumerator corrections).
+ * - **UpdatedBy**: Firestore `updatedBy` — enumerator who last saved attribute edits (system placeholder when never edited).
+ * - **AdminRM**: Admin-profile audit log (import, merge, QC, map moves, etc.).
  * - **ChangedAt**: single QC/edit timestamp (verification → attribute edit → last save).
  */
-const landmarkShpRowProperties = (
-  feature: GeoFeature,
-  enumeratorAssignees?: ShpEnumeratorAssignee[]
-): Record<string, string | number | boolean> => {
+const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | number | boolean> => {
   const attrs = sanitizeSlumOnlyFields((feature.attributes || {}) as Record<string, unknown>) as Record<string, any>;
   const out: Record<string, string | number | boolean> = {};
 
@@ -268,9 +247,6 @@ const landmarkShpRowProperties = (
 
   const fieldChangeAt = formatChangeAtReadable(attrs.ChangeAt).trim();
   const qcVerifiedAt = formatChangeAtReadable(feature.verifiedAt).trim();
-  const updatedByFromWard = assignedEnumeratorEmailForLandmark(feature, enumeratorAssignees).trim();
-  const updatedByStored = String(feature.updatedBy ?? '').trim();
-  const updatedByForShp = updatedByFromWard || updatedByStored;
 
   const tw = attrs[TASK_WARD_ATTR];
   out.TaskWard =
@@ -287,7 +263,8 @@ const landmarkShpRowProperties = (
     RejectRmrks: String(feature.remarks ?? ''),
     MoveRemarks: String(feature.moveRemarks ?? ''),
     NewFeatureRemarks: String(feature.newFeatureRemarks ?? ''),
-    UpdatedBy: updatedByForShp,
+    UpdatedBy: toShpPrimitive(feature.updatedBy ?? ''),
+    AdminRM: toShpPrimitive(feature.adminRM ?? ''),
     ChangedAt: changedAtOnly,
     GPS_Lat: feature.collectorLocation?.lat ?? '',
     GPS_Lng: feature.collectorLocation?.lng ?? '',
@@ -295,10 +272,7 @@ const landmarkShpRowProperties = (
   };
 };
 
-const mapLandmarkFeaturesToShpGeoJsonFeatures = (
-  featureList: GeoFeature[],
-  enumeratorAssignees?: ShpEnumeratorAssignee[]
-) => {
+const mapLandmarkFeaturesToShpGeoJsonFeatures = (featureList: GeoFeature[]) => {
   const toNumber = (v: unknown): number | null => {
     const n = typeof v === 'number' ? v : Number(v);
     return Number.isFinite(n) ? n : null;
@@ -313,7 +287,7 @@ const mapLandmarkFeaturesToShpGeoJsonFeatures = (
         type: 'Feature' as const,
         id: feature.attributes?.FID ?? feature.id,
         geometry: { type: 'Point' as const, coordinates: [lng, lat] },
-        properties: landmarkShpRowProperties(feature, enumeratorAssignees)
+        properties: landmarkShpRowProperties(feature)
       };
     })
     .filter(Boolean);
@@ -888,6 +862,7 @@ const AppContent: React.FC = () => {
         scopeWardNum !== null ? `ward ${scopeWardNum}` : '',
         String(f.createdBy ?? ''),
         String(f.updatedBy ?? ''),
+        String(f.adminRM ?? ''),
         attrText
       ].join(' ');
       return haystackMatchesTableQuery(text, q);
@@ -1081,8 +1056,13 @@ const AppContent: React.FC = () => {
           }),
           status: 'pending',
           createdBy: 'ccc_landmark_import',
-          updatedBy: user?.email || 'ccc_landmark_import',
-          updatedByUid: user?.uid || null,
+          updatedBy: 'ccc_landmark_import',
+          updatedByUid: null,
+          adminRM: appendAdminRm(
+            undefined,
+            'Full landmark GeoJSON import (replaced all stored features)',
+            user?.email || 'ccc_landmark_import'
+          ),
           updatedAt: serverTimestamp()
         });
         ops += 1;
@@ -1227,8 +1207,13 @@ const AppContent: React.FC = () => {
             }),
             status: 'pending',
             createdBy: 'ccc_landmark_import',
-            updatedBy: user?.email || 'ccc_landmark_import',
-            updatedByUid: user?.uid || null,
+            updatedBy: 'ccc_landmark_import',
+            updatedByUid: null,
+            adminRM: appendAdminRm(
+              undefined,
+              'Merge upload: new landmark from GeoJSON file',
+              user?.email || 'ccc_landmark_import'
+            ),
             updatedAt: serverTimestamp()
           });
           created += 1;
@@ -1244,6 +1229,11 @@ const AppContent: React.FC = () => {
           const preservedAttrs = withBaselineTaskWard(merged);
           batch.update(ref, {
             attributes: preservedAttrs,
+            adminRM: appendAdminRm(
+              existing.adminRM,
+              'Merge upload: file merged (enumerator/QC field values preserved)',
+              user?.email || 'ccc_landmark_import'
+            ),
             updatedAt: serverTimestamp()
           });
           preserved += 1;
@@ -1257,8 +1247,11 @@ const AppContent: React.FC = () => {
               ...normalizedAttrs,
               __source: 'ccc_landmark'
             }),
-            updatedBy: user?.email || 'ccc_landmark_import',
-            updatedByUid: user?.uid || null,
+            adminRM: appendAdminRm(
+              existing.adminRM,
+              'Merge upload: baseline refreshed from GeoJSON (no enumerator edits on record)',
+              user?.email || 'ccc_landmark_import'
+            ),
             updatedAt: serverTimestamp()
           });
           refreshed += 1;
@@ -1433,12 +1426,16 @@ const AppContent: React.FC = () => {
           const chunk = idsPendingComplete.slice(i, i + chunkSize);
           const batch = writeBatch(db);
           for (const id of chunk) {
+            const row = exportList.find((x) => x.id === id);
             batch.update(doc(db, 'features', id), {
               status: 'verified',
               verifiedAt: serverTimestamp(),
               verifiedBy: bulkVerifyBy,
-              updatedBy: user.email,
-              updatedByUid: user.uid,
+              adminRM: appendAdminRm(
+                row?.adminRM,
+                'Changed SHP export: auto-verified complete pending landmark',
+                bulkVerifyBy
+              ),
               updatedAt: serverTimestamp()
             });
           }
@@ -1461,10 +1458,14 @@ const AppContent: React.FC = () => {
       return {
         ...f,
         status: 'verified' as const,
+        adminRM: appendAdminRm(
+          f.adminRM,
+          'Changed SHP export: auto-verified complete pending landmark',
+          bulkVerifyBy
+        ),
         ...(bulkVerifyTime && {
           verifiedAt: bulkVerifyTime,
-          verifiedBy: bulkVerifyBy,
-          updatedBy: bulkVerifyBy || f.updatedBy
+          verifiedBy: bulkVerifyBy
         })
       } as GeoFeature;
     });
@@ -1472,7 +1473,7 @@ const AppContent: React.FC = () => {
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'changed_landmarks',
-      features: mapLandmarkFeaturesToShpGeoJsonFeatures(featuresForShp, approvedEnumeratorsAdmin)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(featuresForShp)
     };
     // EPSG:4326 WGS84 projection for shapefile .prj
     const wgs84Prj =
@@ -1538,7 +1539,7 @@ const AppContent: React.FC = () => {
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'all_landmarks',
-      features: mapLandmarkFeaturesToShpGeoJsonFeatures(allLandmarkFeatures, approvedEnumeratorsAdmin)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(allLandmarkFeatures)
     };
 
     // EPSG:4326 WGS84 projection for shapefile .prj
@@ -1601,8 +1602,14 @@ const AppContent: React.FC = () => {
         await updateDoc(doc(db, 'features', movingFeature.id), {
           geometry: nextGeometry,
           moveRemarks: moveRemark,
-          updatedBy: user.email || 'user',
-          updatedByUid: user.uid,
+          ...(isAdmin
+            ? {
+                adminRM: appendAdminRm(latestFeature.adminRM, 'Point moved on map', user.email || 'admin')
+              }
+            : {
+                updatedBy: user.email || 'user',
+                updatedByUid: user.uid
+              }),
           updatedAt: serverTimestamp(),
           ...(location && {
             collectorLocation: {
@@ -1697,7 +1704,20 @@ const AppContent: React.FC = () => {
         newFeatureRemarks: 'New added feature remarks.',
         createdBy: user.email,
         createdByUid: user.uid,
-        updatedBy: user.email,
+        ...(isAdmin
+          ? {
+              updatedBy: 'ccc_landmark_import',
+              updatedByUid: null,
+              adminRM: appendAdminRm(
+                undefined,
+                `New ${isAddingFeature} feature created (admin)`,
+                user.email || 'admin'
+              )
+            }
+          : {
+              updatedBy: user.email,
+              updatedByUid: user.uid
+            }),
         updatedAt: serverTimestamp(),
         ...(location && {
           collectorLocation: {
@@ -1731,8 +1751,16 @@ const AppContent: React.FC = () => {
       newFeatureRemarks: 'New added feature remarks.',
       createdBy: user.email,
       createdByUid: user.uid,
-      updatedBy: user.email,
-      updatedByUid: user.uid,
+      ...(isAdmin
+        ? {
+            updatedBy: 'ccc_landmark_import',
+            updatedByUid: null,
+            adminRM: appendAdminRm(undefined, 'New landmark point created (admin)', user.email || '')
+          }
+        : {
+            updatedBy: user.email,
+            updatedByUid: user.uid
+          }),
       updatedAt: serverTimestamp(),
       ...(payload.status === 'verified' && {
         verifiedAt: serverTimestamp(),
@@ -1792,8 +1820,20 @@ const AppContent: React.FC = () => {
             status: 'pending',
             createdBy: user.email,
             createdByUid: user.uid,
-            updatedBy: user.email,
-            updatedByUid: user.uid,
+            ...(isAdmin
+              ? {
+                  updatedBy: 'ccc_landmark_import',
+                  updatedByUid: null,
+                  adminRM: appendAdminRm(
+                    undefined,
+                    'Promoted GeoJSON landmark to editable Firestore record',
+                    user.email || ''
+                  )
+                }
+              : {
+                  updatedBy: user.email,
+                  updatedByUid: user.uid
+                }),
             updatedAt: serverTimestamp(),
             ...(location && {
               collectorLocation: {
@@ -1813,7 +1853,7 @@ const AppContent: React.FC = () => {
           attributes,
           status: 'pending',
           createdBy: user.email || 'user',
-          updatedBy: user.email || 'user',
+          updatedBy: isAdmin ? 'ccc_landmark_import' : user.email || 'user',
           updatedAt: new Date().toISOString()
         } as GeoFeature);
         return;
@@ -1826,8 +1866,20 @@ const AppContent: React.FC = () => {
         status: 'pending',
         createdBy: user.email,
         createdByUid: user.uid,
-        updatedBy: user.email,
-        updatedByUid: user.uid,
+        ...(isAdmin
+          ? {
+              updatedBy: 'ccc_landmark_import',
+              updatedByUid: null,
+              adminRM: appendAdminRm(
+                undefined,
+                'Promoted GeoJSON landmark to editable Firestore record',
+                user.email || ''
+              )
+            }
+          : {
+              updatedBy: user.email,
+              updatedByUid: user.uid
+            }),
         updatedAt: serverTimestamp(),
         ...(location && {
           collectorLocation: {
@@ -1845,7 +1897,7 @@ const AppContent: React.FC = () => {
         attributes,
         status: 'pending',
         createdBy: user.email || 'user',
-        updatedBy: user.email || 'user',
+        updatedBy: isAdmin ? 'ccc_landmark_import' : user.email || 'user',
         updatedAt: new Date().toISOString()
       } as GeoFeature);
     } catch (error) {
@@ -1874,11 +1926,16 @@ const AppContent: React.FC = () => {
       const undoLng = Number(lastMovedPoint.previousGeometry?.coordinates?.[0]);
       const undoLat = Number(lastMovedPoint.previousGeometry?.coordinates?.[1]);
       const undoRemark = `Move undone to (${Number.isFinite(undoLat) ? undoLat.toFixed(6) : 'n/a'}, ${Number.isFinite(undoLng) ? undoLng.toFixed(6) : 'n/a'}) by ${user.email || 'user'} at ${new Date().toISOString()}`;
+      const prevSnap = features.find((f) => f.id === lastMovedPoint.featureId);
       await updateDoc(doc(db, 'features', lastMovedPoint.featureId), {
         geometry: lastMovedPoint.previousGeometry,
         moveRemarks: undoRemark,
-        updatedBy: user.email || 'user',
-        updatedByUid: user.uid,
+        ...(isAdmin
+          ? { adminRM: appendAdminRm(prevSnap?.adminRM, 'Point move undone', user.email || 'admin') }
+          : {
+              updatedBy: user.email || 'user',
+              updatedByUid: user.uid
+            }),
         updatedAt: serverTimestamp()
       });
       setSelectedFeature((prev) =>

@@ -12,6 +12,7 @@
         "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "createdBy": { "type": "string" },
         "updatedBy": { "type": "string" },
+        "adminRM": { "type": "string", "description": "Admin audit log (newline-separated)" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "collectorLocation": { "type": "object", "description": "GPS coordinates of the enumerator at time of edit" }
       },
