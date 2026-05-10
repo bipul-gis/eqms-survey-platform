@@ -20,6 +20,7 @@ import { useAuth } from './AuthProvider';
 import { useGeoLocation } from './GeoLocationProvider';
 import { formatChangeAtReadable } from '../lib/formatChangeAt';
 import { appendAdminRm } from '../lib/adminRm';
+import { stampsForUpdatedBy } from '../lib/featureUpdatedBy';
 
 // Match the attribute order in MapComponent popup (FID / Zone hidden but still stored on save)
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
@@ -135,7 +136,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   onCreateFeature,
   onPersistSuccess
 }) => {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const { location } = useGeoLocation();
   const [attributes, setAttributes] = useState<Record<string, any>>(feature.attributes);
   const [status, setStatus] = useState<FeatureStatus>(feature.status);
@@ -358,8 +359,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 }
               : {
                   ...sharedPayload,
-                  updatedBy: user.email,
-                  updatedByUid: user.uid
+                  ...stampsForUpdatedBy(user, userProfile)
                 }
           )
         );
@@ -397,10 +397,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
             ? {
                 adminRM: appendAdminRm(feature.adminRM, 'Rejected (admin profile)', user.email || '')
               }
-            : {
-                updatedBy: user.email,
-                updatedByUid: user.uid
-              }),
+            : stampsForUpdatedBy(user, userProfile)),
           updatedAt: serverTimestamp(),
           ...(feature.status === 'verified'
             ? { verifiedAt: deleteField(), verifiedBy: deleteField() }

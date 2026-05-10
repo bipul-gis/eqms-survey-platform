@@ -17,6 +17,7 @@ export interface GeoFeature {
   adminRM?: string;
   createdBy: string;
   createdByUid?: string;
+  /** Approved enumerator email only; never an admin account (`ccc_landmark_import` when unset / system). */
   updatedBy: string;
   updatedAt: string;
   /** Set when status becomes `verified` (verification time — not upload/merge time). */

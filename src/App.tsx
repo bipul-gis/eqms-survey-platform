@@ -65,6 +65,7 @@ import { isLandmarkPointFormComplete, landmarkHasEnumeratorActivity } from './li
 import { formatChangeAtReadable } from './lib/formatChangeAt';
 import { patchShapefileZipUtf8Dbf } from './lib/dbfUtf8';
 import { appendAdminRm } from './lib/adminRm';
+import { ENUMERATOR_UPDATED_BY_PLACEHOLDER, stampsForUpdatedBy } from './lib/featureUpdatedBy';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -231,7 +232,7 @@ const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt']);
  * Shapefile row properties: landmark attributes (no `__*` keys).
  * - **TaskWard**: immutable assigned ward (`__taskWard` only). Enumerator edits to `Ward_Name` do not change TaskWard.
  * - **Ward_Name** / etc.: from attributes (includes enumerator corrections).
- * - **UpdatedBy**: Firestore `updatedBy` — enumerator who last saved attribute edits (system placeholder when never edited).
+ * - **UpdatedBy**: Enumerator email only (`ccc_landmark_import` when never edited by an enumerator; admins never appear).
  * - **AdminRM**: Admin-profile audit log (import, merge, QC, map moves, etc.).
  * - **ChangedAt**: single QC/edit timestamp (verification → attribute edit → last save).
  */
@@ -1056,12 +1057,12 @@ const AppContent: React.FC = () => {
           }),
           status: 'pending',
           createdBy: 'ccc_landmark_import',
-          updatedBy: 'ccc_landmark_import',
+          updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
           updatedByUid: null,
           adminRM: appendAdminRm(
             undefined,
             'Full landmark GeoJSON import (replaced all stored features)',
-            user?.email || 'ccc_landmark_import'
+            user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
           ),
           updatedAt: serverTimestamp()
         });
@@ -1207,12 +1208,12 @@ const AppContent: React.FC = () => {
             }),
             status: 'pending',
             createdBy: 'ccc_landmark_import',
-            updatedBy: 'ccc_landmark_import',
+            updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
             updatedByUid: null,
             adminRM: appendAdminRm(
               undefined,
               'Merge upload: new landmark from GeoJSON file',
-              user?.email || 'ccc_landmark_import'
+              user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
             ),
             updatedAt: serverTimestamp()
           });
@@ -1232,7 +1233,7 @@ const AppContent: React.FC = () => {
             adminRM: appendAdminRm(
               existing.adminRM,
               'Merge upload: file merged (enumerator/QC field values preserved)',
-              user?.email || 'ccc_landmark_import'
+              user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
             ),
             updatedAt: serverTimestamp()
           });
@@ -1250,7 +1251,7 @@ const AppContent: React.FC = () => {
             adminRM: appendAdminRm(
               existing.adminRM,
               'Merge upload: baseline refreshed from GeoJSON (no enumerator edits on record)',
-              user?.email || 'ccc_landmark_import'
+              user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
             ),
             updatedAt: serverTimestamp()
           });
@@ -1606,10 +1607,7 @@ const AppContent: React.FC = () => {
             ? {
                 adminRM: appendAdminRm(latestFeature.adminRM, 'Point moved on map', user.email || 'admin')
               }
-            : {
-                updatedBy: user.email || 'user',
-                updatedByUid: user.uid
-              }),
+            : stampsForUpdatedBy(user, userProfile)),
           updatedAt: serverTimestamp(),
           ...(location && {
             collectorLocation: {
@@ -1671,7 +1669,7 @@ const AppContent: React.FC = () => {
           },
           status: 'pending',
           createdBy: user.email || 'user',
-          updatedBy: user.email || 'user',
+          ...stampsForUpdatedBy(user, userProfile),
           updatedAt: new Date().toISOString(),
           ...(location && {
             collectorLocation: {
@@ -1706,7 +1704,7 @@ const AppContent: React.FC = () => {
         createdByUid: user.uid,
         ...(isAdmin
           ? {
-              updatedBy: 'ccc_landmark_import',
+              updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
               updatedByUid: null,
               adminRM: appendAdminRm(
                 undefined,
@@ -1714,10 +1712,7 @@ const AppContent: React.FC = () => {
                 user.email || 'admin'
               )
             }
-          : {
-              updatedBy: user.email,
-              updatedByUid: user.uid
-            }),
+          : stampsForUpdatedBy(user, userProfile)),
         updatedAt: serverTimestamp(),
         ...(location && {
           collectorLocation: {
@@ -1753,14 +1748,11 @@ const AppContent: React.FC = () => {
       createdByUid: user.uid,
       ...(isAdmin
         ? {
-            updatedBy: 'ccc_landmark_import',
+            updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
             updatedByUid: null,
             adminRM: appendAdminRm(undefined, 'New landmark point created (admin)', user.email || '')
           }
-        : {
-            updatedBy: user.email,
-            updatedByUid: user.uid
-          }),
+        : stampsForUpdatedBy(user, userProfile)),
       updatedAt: serverTimestamp(),
       ...(payload.status === 'verified' && {
         verifiedAt: serverTimestamp(),
@@ -1822,7 +1814,7 @@ const AppContent: React.FC = () => {
             createdByUid: user.uid,
             ...(isAdmin
               ? {
-                  updatedBy: 'ccc_landmark_import',
+                  updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
                   updatedByUid: null,
                   adminRM: appendAdminRm(
                     undefined,
@@ -1830,10 +1822,7 @@ const AppContent: React.FC = () => {
                     user.email || ''
                   )
                 }
-              : {
-                  updatedBy: user.email,
-                  updatedByUid: user.uid
-                }),
+              : stampsForUpdatedBy(user, userProfile)),
             updatedAt: serverTimestamp(),
             ...(location && {
               collectorLocation: {
@@ -1853,7 +1842,9 @@ const AppContent: React.FC = () => {
           attributes,
           status: 'pending',
           createdBy: user.email || 'user',
-          updatedBy: isAdmin ? 'ccc_landmark_import' : user.email || 'user',
+          ...(isAdmin
+            ? { updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER, updatedByUid: null }
+            : stampsForUpdatedBy(user, userProfile)),
           updatedAt: new Date().toISOString()
         } as GeoFeature);
         return;
@@ -1868,7 +1859,7 @@ const AppContent: React.FC = () => {
         createdByUid: user.uid,
         ...(isAdmin
           ? {
-              updatedBy: 'ccc_landmark_import',
+              updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
               updatedByUid: null,
               adminRM: appendAdminRm(
                 undefined,
@@ -1876,10 +1867,7 @@ const AppContent: React.FC = () => {
                 user.email || ''
               )
             }
-          : {
-              updatedBy: user.email,
-              updatedByUid: user.uid
-            }),
+          : stampsForUpdatedBy(user, userProfile)),
         updatedAt: serverTimestamp(),
         ...(location && {
           collectorLocation: {
@@ -1897,7 +1885,9 @@ const AppContent: React.FC = () => {
         attributes,
         status: 'pending',
         createdBy: user.email || 'user',
-        updatedBy: isAdmin ? 'ccc_landmark_import' : user.email || 'user',
+        ...(isAdmin
+          ? { updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER, updatedByUid: null }
+          : stampsForUpdatedBy(user, userProfile)),
         updatedAt: new Date().toISOString()
       } as GeoFeature);
     } catch (error) {
@@ -1932,10 +1922,7 @@ const AppContent: React.FC = () => {
         moveRemarks: undoRemark,
         ...(isAdmin
           ? { adminRM: appendAdminRm(prevSnap?.adminRM, 'Point move undone', user.email || 'admin') }
-          : {
-              updatedBy: user.email || 'user',
-              updatedByUid: user.uid
-            }),
+          : stampsForUpdatedBy(user, userProfile)),
         updatedAt: serverTimestamp()
       });
       setSelectedFeature((prev) =>
