@@ -24,7 +24,8 @@ import {
   Clock,
   AlertCircle,
   Users,
-  RefreshCw
+  RefreshCw,
+  Layers
 } from 'lucide-react';
 import {
   collection,
@@ -131,6 +132,39 @@ const landmarkAttributesForTable = (attrs: Record<string, any>) => {
 
   // Table list should follow landmark JSON schema only (no extra/custom keys).
   return ordered.slice(0, 2);
+};
+
+const CATEGORY_GROUP_SEP = '\u241e'; // nested table key: wardKey + sep + category label
+
+const categoryLabelFromAttributes = (attrs: Record<string, any> | undefined): string => {
+  const c = String(attrs?.Category ?? attrs?.category ?? '').trim();
+  return c || 'Uncategorized';
+};
+
+const categoryGroupKey = (wardKey: string, category: string) =>
+  `${wardKey}${CATEGORY_GROUP_SEP}${category}`;
+
+/** Group ward features by Category for ward-expanded nested sections (sorted). */
+const featuresGroupedByCategoryForTable = (
+  wardFeatures: GeoFeature[]
+): Array<{ category: string; features: GeoFeature[] }> => {
+  const m = new Map<string, GeoFeature[]>();
+  for (const f of wardFeatures) {
+    const lab = categoryLabelFromAttributes(f.attributes);
+    const arr = m.get(lab) ?? [];
+    arr.push(f);
+    m.set(lab, arr);
+  }
+  return [...m.entries()]
+    .map(([category, features]) => ({
+      category,
+      features: features.sort((a, b) =>
+        String(a.attributes?.name ?? a.attributes?.Name ?? '').localeCompare(
+          String(b.attributes?.name ?? b.attributes?.Name ?? '')
+        )
+      )
+    }))
+    .sort((a, b) => a.category.localeCompare(b.category));
 };
 
 /** DBF (shapefile) only records string/number/boolean; normalize Firestore values. */
@@ -355,6 +389,8 @@ const AppContent: React.FC = () => {
   } | null>(null);
   const [enumeratorQcExpanded, setEnumeratorQcExpanded] = useState(true);
   const [expandedWardKeys, setExpandedWardKeys] = useState<string[]>([]);
+  /** Ward list → category sections: key = wardKey + sep + category label */
+  const [expandedCategoryKeys, setExpandedCategoryKeys] = useState<string[]>([]);
   const [isImportingLandmarks, setIsImportingLandmarks] = useState(false);
   const [importProgress, setImportProgress] = useState<{
     total: number;
@@ -804,6 +840,42 @@ const AppContent: React.FC = () => {
     };
   }, [isAdmin, features, approvedEnumeratorsAdmin]);
 
+  /** Admin QC panel: category breakdown — same landmark scope as “By enumerator”. */
+  const adminLandmarksByCategory = useMemo(() => {
+    if (!isAdmin) {
+      return [] as Array<{
+        category: string;
+        pending: number;
+        verified: number;
+        rejected: number;
+        newAdded: number;
+        total: number;
+      }>;
+    }
+    const m = new Map<
+      string,
+      { pending: number; verified: number; rejected: number; newAdded: number; total: number }
+    >();
+    for (const f of features) {
+      if (!isEnumeratorScopeLandmarkPoint(f)) continue;
+      const cat = categoryLabelFromAttributes(f.attributes);
+      let row = m.get(cat);
+      if (!row) {
+        row = { pending: 0, verified: 0, rejected: 0, newAdded: 0, total: 0 };
+        m.set(cat, row);
+      }
+      row.total += 1;
+      const s = getFeatureStatusFromQc(f);
+      if (s === 'verified') row.verified += 1;
+      else if (s === 'rejected') row.rejected += 1;
+      else row.pending += 1;
+      if (isNewlyAddedFeature(f)) row.newAdded += 1;
+    }
+    return [...m.entries()]
+      .map(([category, v]) => ({ category, ...v }))
+      .sort((a, b) => a.category.localeCompare(b.category));
+  }, [isAdmin, features]);
+
   const groupedWardRows = useMemo(() => {
     const byWard = new Map<string, GeoFeature[]>();
     for (const f of visibleFeatures) {
@@ -912,8 +984,21 @@ const AppContent: React.FC = () => {
   }, [isAdmin, groupedWardRows, approvedEnumeratorsAdmin]);
 
   const toggleWardExpanded = (wardKey: string) => {
-    setExpandedWardKeys((prev) =>
-      prev.includes(wardKey) ? prev.filter((k) => k !== wardKey) : [...prev, wardKey]
+    setExpandedWardKeys((prev) => {
+      if (prev.includes(wardKey)) {
+        setExpandedCategoryKeys((cks) =>
+          cks.filter((k) => !k.startsWith(`${wardKey}${CATEGORY_GROUP_SEP}`))
+        );
+        return prev.filter((k) => k !== wardKey);
+      }
+      return [...prev, wardKey];
+    });
+  };
+
+  const toggleCategoryExpanded = (wardKey: string, category: string) => {
+    const key = categoryGroupKey(wardKey, category);
+    setExpandedCategoryKeys((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
     );
   };
 
@@ -2132,6 +2217,7 @@ const AppContent: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                       {filteredGroupedWardRows.map((row) => {
                         const expanded = expandedWardKeys.includes(row.wardKey);
+                        const categoryGroups = featuresGroupedByCategoryForTable(row.features);
                         return (
                           <React.Fragment key={row.wardKey}>
                             <tr className="bg-slate-50/80">
@@ -2147,7 +2233,7 @@ const AppContent: React.FC = () => {
                                   <span>
                                     Ward {parseWardNumber(row.wardLabel) ?? row.wardLabel}{' '}
                                     <span className="text-[10px] text-slate-500">
-                                      (Total Landmark: {row.features.length})
+                                      (Total: {row.features.length})
                                     </span>
                                   </span>
                                 </button>
@@ -2173,58 +2259,111 @@ const AppContent: React.FC = () => {
                             </tr>
 
                             {expanded &&
-                              row.features.map((f) => {
-                                const effectiveStatus = getFeatureStatusFromQc(f);
+                              categoryGroups.map((grp) => {
+                                const ck = categoryGroupKey(row.wardKey, grp.category);
+                                const catExpanded = expandedCategoryKeys.includes(ck);
+                                const gp = grp.features.filter((f) => getFeatureStatusFromQc(f) === 'pending').length;
+                                const gv = grp.features.filter((f) => getFeatureStatusFromQc(f) === 'verified').length;
+                                const gr = grp.features.filter((f) => getFeatureStatusFromQc(f) === 'rejected').length;
                                 return (
-                                <tr key={f.id} className="hover:bg-slate-50/50 transition-colors">
-                                  <td className="px-4 py-3">
-                                    <span className="text-sm font-semibold">
-                                      {f.attributes?.name ?? f.attributes?.Name ?? 'Unnamed Feature'}
-                                    </span>
-                                    <div className="flex gap-1 mt-1 flex-wrap">
-                                      {landmarkAttributesForTable(f.attributes || {}).map(([k, v]) => (
-                                        <span key={k} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{k}: {v}</span>
-                                      ))}
-                                    </div>
-                                  </td>
-                                  <td className="px-4 py-3 capitalize font-medium text-slate-600 text-sm">{f.type}</td>
-                                  <td className="px-4 py-3">
-                                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
-                                      effectiveStatus === 'verified' ? 'bg-green-100 text-green-700' :
-                                      effectiveStatus === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
-                                    }`}>
-                                      {effectiveStatus}
-                                    </span>
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <button
-                                      onClick={() => { setSelectedFeature(f); setActiveTab('map'); }}
-                                      className="text-blue-600 text-xs font-bold hover:underline"
-                                    >
-                                      Edit on Map
-                                    </button>
-                                    {f.type === 'point' && (
-                                      <>
+                                  <React.Fragment key={ck}>
+                                    <tr className="bg-teal-50/50 border-t border-teal-100/80">
+                                      <td className="px-4 py-2 pl-8">
                                         <button
-                                          onClick={() => startMoveFeature(f)}
-                                          className="ml-3 text-indigo-600 text-xs font-bold hover:underline"
+                                          type="button"
+                                          onClick={() => toggleCategoryExpanded(row.wardKey, grp.category)}
+                                          className="inline-flex items-center gap-2 text-xs font-bold text-teal-900"
                                         >
-                                          Move Point
+                                          <span className="inline-flex items-center justify-center h-4 w-4 rounded border border-teal-300 bg-white text-teal-800 text-[10px] leading-none">
+                                            {catExpanded ? '−' : '+'}
+                                          </span>
+                                          <span>
+                                            {grp.category}{' '}
+                                            <span className="text-[10px] font-normal text-teal-700">
+                                              ({grp.features.length})
+                                            </span>
+                                          </span>
                                         </button>
-                                        {movingFeature?.id === f.id && (
-                                          <button
-                                            onClick={cancelMoveFeature}
-                                            className="ml-3 text-slate-600 text-xs font-bold hover:underline"
-                                          >
-                                            Cancel Move
-                                          </button>
-                                        )}
-                                      </>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
+                                      </td>
+                                      <td className="px-4 py-2 text-[10px] text-teal-800/80">Category group</td>
+                                      <td className="px-4 py-2 text-[10px] text-teal-800">
+                                        {gp} P / {gv} V / {gr} R
+                                      </td>
+                                      <td className="px-4 py-2 text-[10px] text-teal-700">
+                                        {catExpanded ? 'Expanded' : 'Collapsed'}
+                                      </td>
+                                    </tr>
+                                    {catExpanded &&
+                                      grp.features.map((f) => {
+                                        const effectiveStatus = getFeatureStatusFromQc(f);
+                                        return (
+                                          <tr key={f.id} className="hover:bg-slate-50/50 transition-colors bg-white">
+                                            <td className="px-4 py-3 pl-14 border-l-2 border-teal-100">
+                                              <span className="text-sm font-semibold">
+                                                {f.attributes?.name ?? f.attributes?.Name ?? 'Unnamed Feature'}
+                                              </span>
+                                              <div className="flex gap-1 mt-1 flex-wrap">
+                                                {landmarkAttributesForTable(f.attributes || {}).map(([k, v]) => (
+                                                  <span
+                                                    key={k}
+                                                    className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase"
+                                                  >
+                                                    {k}: {v}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            </td>
+                                            <td className="px-4 py-3 capitalize font-medium text-slate-600 text-sm">
+                                              {f.type}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                              <span
+                                                className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
+                                                  effectiveStatus === 'verified'
+                                                    ? 'bg-green-100 text-green-700'
+                                                    : effectiveStatus === 'rejected'
+                                                      ? 'bg-red-100 text-red-700'
+                                                      : 'bg-amber-100 text-amber-700'
+                                                }`}
+                                              >
+                                                {effectiveStatus}
+                                              </span>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                              <button
+                                                onClick={() => {
+                                                  setSelectedFeature(f);
+                                                  setActiveTab('map');
+                                                }}
+                                                className="text-blue-600 text-xs font-bold hover:underline"
+                                              >
+                                                Edit on Map
+                                              </button>
+                                              {f.type === 'point' && (
+                                                <>
+                                                  <button
+                                                    onClick={() => startMoveFeature(f)}
+                                                    className="ml-3 text-indigo-600 text-xs font-bold hover:underline"
+                                                  >
+                                                    Move Point
+                                                  </button>
+                                                  {movingFeature?.id === f.id && (
+                                                    <button
+                                                      onClick={cancelMoveFeature}
+                                                      className="ml-3 text-slate-600 text-xs font-bold hover:underline"
+                                                    >
+                                                      Cancel Move
+                                                    </button>
+                                                  )}
+                                                </>
+                                              )}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                  </React.Fragment>
+                                );
+                              })}
                           </React.Fragment>
                         );
                       })}
@@ -2513,6 +2652,78 @@ const AppContent: React.FC = () => {
                         )}
                       </tbody>
                     </table>
+                  </div>
+
+                  <div className="border-t border-slate-100 pt-3 mt-3">
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <Layers size={14} className="text-slate-600 shrink-0" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                        By category
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-slate-400 mb-2 leading-snug">
+                      Same landmark scope as enumerator rows; counts by{' '}
+                      <span className="font-semibold text-slate-500">Category</span> attribute (P / V / R / N / Σ).
+                    </p>
+                    {adminLandmarksByCategory.length === 0 ? (
+                      <p className="text-[10px] text-slate-400 italic py-1">No enumerator-scope landmarks loaded.</p>
+                    ) : (
+                      <div className="max-h-56 overflow-y-auto rounded-lg border border-slate-100">
+                        <table className="w-full text-[10px]">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-500">
+                              <th className="text-left px-1.5 py-1 font-semibold">Category</th>
+                              <th
+                                className="text-center px-0.5 py-1 w-6 font-semibold text-amber-600"
+                                title="Pending"
+                              >
+                                P
+                              </th>
+                              <th
+                                className="text-center px-0.5 py-1 w-6 font-semibold text-green-600"
+                                title="Verified"
+                              >
+                                V
+                              </th>
+                              <th
+                                className="text-center px-0.5 py-1 w-6 font-semibold text-red-600"
+                                title="Rejected"
+                              >
+                                R
+                              </th>
+                              <th
+                                className="text-center px-0.5 py-1 w-7 font-semibold text-violet-700"
+                                title="New Added"
+                              >
+                                N
+                              </th>
+                              <th
+                                className="text-center px-0.5 py-1 w-6 font-semibold text-slate-600"
+                                title="Total + New Added"
+                              >
+                                Σ
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {adminLandmarksByCategory.map((r) => (
+                              <tr key={r.category} className="border-t border-slate-100">
+                                <td className="px-1.5 py-1 text-slate-800 truncate max-w-[7rem]" title={r.category}>
+                                  {r.category}
+                                </td>
+                                <td className="text-center py-1 font-semibold text-amber-600">{r.pending}</td>
+                                <td className="text-center py-1 font-semibold text-green-600">{r.verified}</td>
+                                <td className="text-center py-1 font-semibold text-red-600">{r.rejected}</td>
+                                <td className="text-center py-1 font-semibold text-violet-700">{r.newAdded}</td>
+                                <td className="text-center py-1 font-semibold text-slate-700">
+                                  {r.total + r.newAdded}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
