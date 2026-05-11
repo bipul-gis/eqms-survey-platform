@@ -188,7 +188,7 @@ const toShpPrimitive = (v: unknown): string | number | boolean => {
   return String(v);
 };
 
-/** GeoJSON/Firestore-safe value for imported landmark properties (full replace + merge upload). */
+/** GeoJSON/Firestore-safe value for imported landmark properties (full replace import). */
 const normalizeImportedPropertyValue = (v: unknown): unknown => {
   if (v === null) return null;
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
@@ -259,8 +259,8 @@ const parsePointCoordinates = (coords: unknown): [number, number] => {
   ];
 };
 
-/** Omit from generic attribute copy — folded into `ChangedAt` or omitted from SHP entirely. */
-const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt']);
+/** Omit from generic attribute copy — folded into `ChangedAt` / single `QC_Status` column on export. */
+const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt', 'ChangeStatus', 'QC_Status', 'qc_status', 'qcStatus']);
 
 /**
  * Shapefile row properties: landmark attributes (no `__*` keys).
@@ -268,6 +268,7 @@ const SHP_ATTR_OMIT = new Set(['ChangeBy', 'ChangeAt']);
  * - **Ward_Name** / etc.: from attributes (includes enumerator corrections).
  * - **UpdatedBy**: Enumerator email only (`ccc_landmark_import` when never edited by an enumerator; admins never appear).
  * - **AdminRM**: Admin-profile audit log (import, merge, QC, map moves, etc.).
+ * - **QC_Status**: resolved QC only (not duplicated `ChangeStatus`).
  * - **ChangedAt**: single QC/edit timestamp (verification → attribute edit → last save).
  */
 const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | number | boolean> => {
@@ -290,10 +291,11 @@ const landmarkShpRowProperties = (feature: GeoFeature): Record<string, string | 
   const changedAtOnly =
     qcVerifiedAt || fieldChangeAt || formatChangeAtReadable(feature.updatedAt).trim();
 
+  const qcResolved = getFeatureStatusFromQc(feature);
+
   return {
     ...out,
-    ChangeStatus: feature.status,
-    QC_Status: feature.status,
+    QC_Status: qcResolved,
     ChangeRemarks: String(feature.remarks ?? ''),
     RejectRmrks: String(feature.remarks ?? ''),
     MoveRemarks: String(feature.moveRemarks ?? ''),
@@ -403,7 +405,6 @@ const AppContent: React.FC = () => {
   const [landmarkCategoryOptions, setLandmarkCategoryOptions] = useState<string[]>([]);
   const [selfMergedAssignedWards, setSelfMergedAssignedWards] = useState<string[]>([]);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
-  const uploadMergeInputRef = useRef<HTMLInputElement | null>(null);
   const [adminFeaturesRefreshKey, setAdminFeaturesRefreshKey] = useState(0);
   const [enumeratorFeaturesRefreshKey, setEnumeratorFeaturesRefreshKey] = useState(0);
   const backPressArmedUntilRef = useRef(0);
@@ -1191,208 +1192,6 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const mergeUpdateLandmarkGeoJson = async (points: any[]) => {
-    if (!isAdmin || isImportingLandmarks) return;
-    setIsImportingLandmarks(true);
-    setImportNotice(null);
-    try {
-      if (points.length === 0) {
-        setImportNotice({ type: 'error', message: 'No Point features found in uploaded GeoJSON.' });
-        setImportProgress(null);
-        setIsImportingLandmarks(false);
-        return;
-      }
-
-      const confirmed = window.confirm(
-        'This will MERGE uploaded landmark GeoJSON into existing data.\n\n' +
-          'Enumerator-edited records are preserved.\n' +
-          'Untouched landmark baseline records are refreshed from JSON.\n' +
-          'No full delete is performed.\n\n' +
-          'Continue?'
-      );
-      if (!confirmed) {
-        setImportProgress(null);
-        setIsImportingLandmarks(false);
-        return;
-      }
-
-      const pointRecords = points.map((f: any, idx: number) => {
-        const fid = normalizeLandmarkFid(f?.properties?.FID ?? f?.id ?? idx);
-        const id = `landmark_${fid !== undefined ? fid : idx}`;
-        return { id, fid, feature: f };
-      });
-
-      const featureById = new Map(features.map((f) => [f.id, f]));
-      const landmarkByFid = new Map<string, GeoFeature>();
-      for (const f of features) {
-        if (f.type !== 'point') continue;
-        const fid = normalizeLandmarkFid(f.attributes?.FID);
-        if (fid === undefined) continue;
-        landmarkByFid.set(String(fid), f);
-      }
-
-      const MAX_OPS = 450;
-      let batch = writeBatch(db);
-      let ops = 0;
-      const commitIfNeeded = async (nextCost: number) => {
-        if (ops + nextCost > MAX_OPS) {
-          await batch.commit();
-          batch = writeBatch(db);
-          ops = 0;
-        }
-      };
-      const commitBatch = async () => {
-        if (ops > 0) {
-          await batch.commit();
-          batch = writeBatch(db);
-          ops = 0;
-        }
-      };
-
-      let processed = 0;
-      let written = 0;
-      let created = 0;
-      let refreshed = 0;
-      let preserved = 0;
-      setImportProgress({ total: pointRecords.length, processed: 0, written: 0, previousRemoved: 0 });
-
-      for (const rec of pointRecords) {
-        const [lng, lat] = parsePointCoordinates(rec.feature?.geometry?.coordinates);
-        const rawProps =
-          rec.feature?.properties != null && typeof rec.feature.properties === 'object'
-            ? (rec.feature.properties as Record<string, unknown>)
-            : {};
-        const normalizedAttrs = normalizeImportedLandmarkProperties(rawProps, rec.fid);
-
-        const existingById = featureById.get(rec.id);
-        const existingByFid = rec.fid !== undefined ? landmarkByFid.get(String(rec.fid)) : undefined;
-        const existing = existingById || existingByFid;
-        const targetId = existing?.id || rec.id;
-        const ref = doc(db, 'features', targetId);
-
-        const source = String(existing?.attributes?.__source || '');
-        const hasUserEdits = !!existing && (
-          existing.status !== 'pending' ||
-          Boolean(existing.remarks) ||
-          Boolean(existing.moveRemarks) ||
-          Boolean(existing.newFeatureRemarks) ||
-          Boolean(String(existing.attributes?.ChangeBy || '').trim()) ||
-          Boolean(String(existing.attributes?.ChangeAt || '').trim()) ||
-          source.includes('landmark_manual')
-        );
-
-        await commitIfNeeded(1);
-
-        if (!existing) {
-          batch.set(ref, {
-            type: 'point',
-            geometry: { type: 'Point', coordinates: [lng, lat] },
-            attributes: withBaselineTaskWard({
-              ...normalizedAttrs,
-              __source: 'ccc_landmark'
-            }),
-            status: 'pending',
-            createdBy: 'ccc_landmark_import',
-            updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
-            updatedByUid: null,
-            adminRM: appendAdminRm(
-              undefined,
-              'Merge upload: new landmark from GeoJSON file',
-              user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
-            ),
-            updatedAt: serverTimestamp()
-          });
-          created += 1;
-          written += 1;
-          ops += 1;
-        } else if (hasUserEdits) {
-          // Merge fresh file columns in; existing values win (enumerator/admin edits kept).
-          const merged = sanitizeSlumOnlyFields({
-            ...normalizedAttrs,
-            ...(existing.attributes || {}),
-            __source: source || 'ccc_landmark'
-          });
-          const preservedAttrs = withBaselineTaskWard(merged);
-          batch.update(ref, {
-            attributes: preservedAttrs,
-            adminRM: appendAdminRm(
-              existing.adminRM,
-              'Merge upload: file merged (enumerator/QC field values preserved)',
-              user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
-            ),
-            updatedAt: serverTimestamp()
-          });
-          preserved += 1;
-          written += 1;
-          ops += 1;
-        } else {
-          // Refresh untouched landmark baseline with latest JSON values.
-          batch.update(ref, {
-            geometry: { type: 'Point', coordinates: [lng, lat] },
-            attributes: withBaselineTaskWard({
-              ...normalizedAttrs,
-              __source: 'ccc_landmark'
-            }),
-            adminRM: appendAdminRm(
-              existing.adminRM,
-              'Merge upload: baseline refreshed from GeoJSON (no enumerator edits on record)',
-              user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
-            ),
-            updatedAt: serverTimestamp()
-          });
-          refreshed += 1;
-          written += 1;
-          ops += 1;
-        }
-
-        processed += 1;
-        if (processed % 100 === 0 || processed === pointRecords.length) {
-          setImportProgress({
-            total: pointRecords.length,
-            processed,
-            written,
-            previousRemoved: 0
-          });
-        }
-      }
-
-      await commitBatch();
-      setImportNotice({
-        type: 'success',
-        message: `Upload merge complete. Created: ${created}, refreshed: ${refreshed}, preserved edited: ${preserved}.`
-      });
-      setAdminFeaturesRefreshKey((k) => k + 1);
-    } catch (e) {
-      console.error(e);
-      setImportNotice({ type: 'error', message: 'Uploaded landmark merge failed: ' + e });
-    } finally {
-      setIsImportingLandmarks(false);
-    }
-  };
-
-  const onUploadMergeFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const geo = JSON.parse(text);
-      const points = Array.isArray(geo?.features)
-        ? geo.features.filter((f: any) => f?.geometry?.type === 'Point')
-        : [];
-      await mergeUpdateLandmarkGeoJson(points);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setImportNotice({ type: 'error', message: `Invalid upload file. ${message}` });
-    } finally {
-      if (e.target) e.target.value = '';
-    }
-  };
-
-  const openUploadMergePicker = () => {
-    if (isImportingLandmarks) return;
-    uploadMergeInputRef.current?.click();
-  };
-
   const downloadChangedLandmarkShp = async () => {
     if (!isAdmin) return;
     setImportNotice(null);
@@ -1556,10 +1355,32 @@ const AppContent: React.FC = () => {
       } as GeoFeature;
     });
 
+    /**
+     * Exclude records still **pending** in Firestore (`feature.status`). Use document status here — not
+     * `getFeatureStatusFromQc` alone — so export matches totals built from the same source of truth as the
+     * QC panel (attrs can lag behind `feature.status` for a few docs, which caused small count gaps).
+     */
+    const omittedPendingForShp = featuresForShp.filter(
+      (f) => !verifiedIdSet.has(f.id) && f.status === 'pending'
+    );
+    const changedShpFeatures = featuresForShp.filter((f) => {
+      if (verifiedIdSet.has(f.id)) return true;
+      return f.status !== 'pending';
+    });
+
+    if (changedShpFeatures.length === 0) {
+      setImportNotice({
+        type: 'error',
+        message:
+          'No records to export: Changed SHP only includes landmarks whose QC_Status is not pending (verify or reject first).'
+      });
+      return;
+    }
+
     const exportPayload = {
       type: 'FeatureCollection',
       name: 'changed_landmarks',
-      features: mapLandmarkFeaturesToShpGeoJsonFeatures(featuresForShp)
+      features: mapLandmarkFeaturesToShpGeoJsonFeatures(changedShpFeatures)
     };
     // EPSG:4326 WGS84 projection for shapefile .prj
     const wgs84Prj =
@@ -1593,12 +1414,31 @@ const AppContent: React.FC = () => {
       URL.revokeObjectURL(url);
       const exported = (exportPayload.features as any[]).length;
       const verifiedCount = idsPendingComplete.length;
+      const droppedPending = featuresForShp.length - exported;
+      const fidLabelsForOmitted = omittedPendingForShp.map((f) => {
+        const n = normalizeLandmarkFid(f.attributes?.FID);
+        if (n !== undefined) return String(n);
+        const raw = String(f.attributes?.FID ?? '').trim();
+        if (raw) return raw;
+        return `doc:${f.id}`;
+      });
+      const maxFidsInMessage = 20;
+      const fidListForMessage =
+        fidLabelsForOmitted.length === 0
+          ? ''
+          : fidLabelsForOmitted.length <= maxFidsInMessage
+            ? fidLabelsForOmitted.join(', ')
+            : `${fidLabelsForOmitted.slice(0, maxFidsInMessage).join(', ')} …+${fidLabelsForOmitted.length - maxFidsInMessage} more`;
+      const pendingOmitNote =
+        droppedPending > 0
+          ? ` Omitted ${droppedPending} from this ZIP only (FID: ${fidListForMessage}; Firestore status still pending). Not your total pending count — most pending points are not in Changed SHP.`
+          : '';
       setImportNotice({
         type: 'success',
         message:
           verifiedCount > 0
-            ? `SHP ready: ${exported} point(s). Marked ${verifiedCount} complete pending record(s) as verified.`
-            : `SHP download ready. Exported ${exported} enumerator-changed point feature(s) as ZIP.`
+            ? `SHP ready: ${exported} point(s). Marked ${verifiedCount} complete pending record(s) as verified.${pendingOmitNote}`
+            : `SHP download ready. Exported ${exported} enumerator-changed point feature(s) as ZIP.${pendingOmitNote}`
       });
     } catch (error) {
       console.error(error);
@@ -2525,20 +2365,6 @@ const AppContent: React.FC = () => {
                 >
                   {isImportingLandmarks ? 'Importing Landmarks...' : 'Import Landmark GeoJSON'}
                 </button>
-                <button
-                  onClick={openUploadMergePicker}
-                  disabled={isImportingLandmarks}
-                  className="w-full py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  Upload + Merge Landmark GeoJSON
-                </button>
-                <input
-                  ref={uploadMergeInputRef}
-                  type="file"
-                  accept=".geojson,.json,application/geo+json,application/json"
-                  className="hidden"
-                  onChange={onUploadMergeFileSelected}
-                />
                 {importProgress && (
                   <div className="space-y-1">
                     <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
