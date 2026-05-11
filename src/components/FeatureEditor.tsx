@@ -295,8 +295,14 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
 
   const handleSave = async () => {
     if (!user) return;
-    if (!validateOtherInputs()) return;
-    if (!validateRequiredAttributes()) return;
+    // Admin-only: allow downgrading a record back to `pending` without enforcing attribute completeness.
+    // Enumerators (and any verified action) must still pass validation.
+    const isAdminDowngradeToPending =
+      isAdmin && !isNewFeature && status === 'pending' && feature.status === 'verified' && !isDirty;
+    if (!isAdminDowngradeToPending) {
+      if (!validateOtherInputs()) return;
+      if (!validateRequiredAttributes()) return;
+    }
     setIsSaving(true);
     try {
       const nextStatus: FeatureStatus = isNewFeature
