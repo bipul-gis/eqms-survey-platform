@@ -415,6 +415,11 @@ const AppContent: React.FC = () => {
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isApprovedEnumerator = userProfile?.role === 'enumerator' && userProfile?.status === 'approved';
 
+  // Never allow admin-only overlays to persist across role changes or logout/login.
+  useEffect(() => {
+    if (!isAdmin && showUserManagement) setShowUserManagement(false);
+  }, [isAdmin, showUserManagement]);
+
   useEffect(() => {
     if (
       isAdmin ||
@@ -1993,7 +1998,12 @@ const AppContent: React.FC = () => {
               <p className="text-[10px] text-blue-600 font-bold uppercase">{isAdmin ? 'ADMIN' : 'ENUMERATOR'}</p>
             </div>
             <button 
-              onClick={logout}
+              onClick={() => {
+                setShowUserManagement(false);
+                setShowQuestionnaireManager(false);
+                setSelectedQuestionnaire(null);
+                void logout();
+              }}
               className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
               title="Logout"
             >
@@ -2216,7 +2226,7 @@ const AppContent: React.FC = () => {
         </main>
 
         {/* User Management Overlay */}
-        {showUserManagement && (
+        {isAdmin && showUserManagement && (
           <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
             <UserManagement onClose={() => setShowUserManagement(false)} />
           </div>
