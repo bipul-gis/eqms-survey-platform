@@ -38,6 +38,7 @@ import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Project, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
 import { useAuth } from './AuthProvider';
 import { QuestionnaireForm } from './QuestionnaireForm';
+import { AppFooter } from './AppFooter';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { fmtDate, tsToDate } from '../lib/responseExport';
 import { ResponseIdCell } from './ResponseIdCell';
@@ -436,6 +437,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           </div>
         )}
       </main>
+      <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
 
       {/* My Responses panel — a per-questionnaire response list scoped to
           the signed-in enumerator. Sits at z-[1002], below the form so

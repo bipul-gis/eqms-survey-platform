@@ -25,8 +25,8 @@ export default defineConfig(({mode}) => {
         // place. `display: standalone` is what makes Android "Add to home
         // screen" launch the app full-screen.
         manifest: {
-          name: 'EQMS Geosurvey',
-          short_name: 'EQMS Survey',
+          name: 'Geosurvey',
+          short_name: 'Geosurvey',
           description:
             'EQMS Geosurvey — offline-capable enumerator app for household questionnaire and geospatial feature collection.',
           theme_color: '#0f172a',

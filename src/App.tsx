@@ -2055,7 +2055,8 @@ const AppContent: React.FC = () => {
 
   if (userProfile.status === 'pending') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
+      <div className="min-h-screen flex flex-col bg-slate-50 font-sans">
+        <div className="flex-1 flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 border border-slate-100">
           <div className="flex flex-col items-center text-center mb-6">
             <div className="w-16 h-16 bg-amber-500 rounded-2xl flex items-center justify-center shadow-lg shadow-amber-200 mb-4">
@@ -2078,15 +2079,17 @@ const AppContent: React.FC = () => {
               Log out
             </button>
           </div>
-          <AppFooter className="mt-4 border-t border-slate-100" />
         </div>
+        </div>
+        <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
       </div>
     );
   }
 
   if (userProfile.status === 'rejected') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
+      <div className="min-h-screen flex flex-col bg-slate-50 font-sans">
+        <div className="flex-1 flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 border border-slate-100">
           <div className="flex flex-col items-center text-center mb-6">
             <div className="w-16 h-16 bg-red-500 rounded-2xl flex items-center justify-center shadow-lg shadow-red-200 mb-4">
@@ -2107,8 +2110,9 @@ const AppContent: React.FC = () => {
           >
             Log out
           </button>
-          <AppFooter className="mt-4 border-t border-slate-100" />
         </div>
+        </div>
+        <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
       </div>
     );
   }
@@ -2257,9 +2261,9 @@ const AppContent: React.FC = () => {
                 </div>
               </button>
             </div>
-            <AppFooter />
           </div>
         </main>
+        <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
       </div>
     );
   }
@@ -2270,7 +2274,8 @@ const AppContent: React.FC = () => {
     !enumeratorHasQTasks
   ) {
     return (
-      <div className="flex h-[100dvh] flex-col items-center justify-center bg-gradient-to-br from-slate-50 to-blue-50/40 p-6">
+      <div className="flex h-[100dvh] flex-col bg-gradient-to-br from-slate-50 to-blue-50/40">
+        <div className="flex-1 flex flex-col items-center justify-center p-6">
         <div className="bg-white rounded-2xl border border-slate-200 shadow-lg p-8 max-w-md text-center">
           <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4">
             <ClipboardList size={24} className="text-amber-600" />
@@ -2286,8 +2291,9 @@ const AppContent: React.FC = () => {
           >
             <LogOut size={13} /> Sign out
           </button>
-          <AppFooter className="mt-4 border-t border-slate-100" />
         </div>
+        </div>
+        <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
       </div>
     );
   }
@@ -2325,11 +2331,11 @@ const AppContent: React.FC = () => {
                 <Shield size={18} className="text-white" />
               </div>
               <div>
-                <h1 className="font-bold text-slate-900 leading-tight flex items-center gap-1.5">
+                <h1 className="text-lg font-bold text-slate-900 leading-tight flex items-center gap-2">
                   <img
                     src="/eqms-logo.png"
                     alt="EQMS"
-                    className="h-5 w-auto select-none"
+                    className="h-7 w-auto select-none"
                     draggable={false}
                   />
                   <span>Geosurvey</span>
@@ -2482,9 +2488,9 @@ const AppContent: React.FC = () => {
                 </button>
               </div>
             </div>
-            <AppFooter />
           </div>
         </main>
+        <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
 
         {/* User Management side-panel works on top of the home screen too. */}
         {showUserManagement && (
@@ -2528,11 +2534,11 @@ const AppContent: React.FC = () => {
       <header className="h-16 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-sm z-[1001]">
         <div className="flex items-center gap-3">
           <div>
-            <h1 className="font-bold text-slate-900 leading-tight flex items-center gap-1.5">
+            <h1 className="text-lg font-bold text-slate-900 leading-tight flex items-center gap-2">
               <img
                 src="/eqms-logo.png"
                 alt="EQMS"
-                className="h-5 w-auto select-none"
+                className="h-7 w-auto select-none"
                 draggable={false}
               />
               <span>Geosurvey</span>

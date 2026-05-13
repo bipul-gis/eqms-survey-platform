@@ -27,6 +27,7 @@ import {
   LogOut
 } from 'lucide-react';
 import { Project } from '../types';
+import { AppFooter } from './AppFooter';
 import {
   countAllQuestionnairesByProject,
   createProject,
@@ -138,12 +139,15 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
       <header className="bg-white/80 backdrop-blur border-b border-slate-200 px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center shadow-md shadow-blue-200">
-              <Folder size={20} className="text-white" />
-            </div>
             <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold text-slate-800 truncate">
-                Field Survey Platform
+              <h1 className="text-lg sm:text-xl font-bold text-slate-800 flex items-center gap-2">
+                <img
+                  src="/eqms-logo.png"
+                  alt="EQMS"
+                  className="h-7 sm:h-8 w-auto select-none"
+                  draggable={false}
+                />
+                <span>Geosurvey</span>
               </h1>
               <p className="text-[11px] sm:text-xs text-slate-500 truncate">
                 Admin · {currentUserName || 'Signed in'} · Select a project to continue
@@ -259,6 +263,8 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           </div>
         )}
       </main>
+
+      <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
 
       {editing && (
         <ProjectEditorDialog

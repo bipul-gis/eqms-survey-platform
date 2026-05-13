@@ -485,28 +485,28 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               <table className="w-full text-left border-collapse">
                 <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
                 <tr>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     #
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Response ID
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Submitted
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Enumerator
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Location
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center">
                     Consent
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-right">
+                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-right">
                     Actions
                   </th>
                 </tr>
@@ -514,28 +514,28 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               <tbody className="divide-y divide-slate-100">
                 {filtered.map((r, idx) => (
                   <tr key={r.id} className="hover:bg-slate-50/60">
-                    <td className="px-4 py-3 text-xs text-slate-400">{idx + 1}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-1.5 text-xs text-slate-400">{idx + 1}</td>
+                    <td className="px-3 py-1.5">
                       <ResponseIdCell id={r.id} />
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-700">
+                    <td className="px-3 py-1.5 text-xs text-slate-700">
                       {fmtDate(r.submittedAt) || (
                         <span className="text-slate-400 italic">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="text-sm font-semibold text-slate-800">
+                    <td className="px-3 py-1.5">
+                      <div className="text-[13px] font-semibold text-slate-800 leading-tight">
                         {r.respondentName || (
                           <span className="text-slate-400 italic">Unknown</span>
                         )}
                       </div>
                       {r.respondentEmail && (
-                        <div className="text-[10px] text-slate-400">
+                        <div className="text-[10px] text-slate-400 leading-tight">
                           {r.respondentEmail}
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-700">
+                    <td className="px-3 py-1.5 text-xs text-slate-700">
                       {r.location ? (
                         <span className="inline-flex items-center gap-1">
                           <MapPin size={11} className="text-slate-400" />
@@ -550,20 +550,20 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
                         <span className="text-slate-400 italic">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-1.5 text-center">
                       {r.consentGranted ? (
                         <CheckCircle2
-                          size={16}
+                          size={14}
                           className="text-emerald-500 inline"
                         />
                       ) : (
                         <span className="text-[10px] text-slate-400">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-1.5">
                       <StatusPill status={r.status} />
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-1.5">
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => setSelected(r)}

@@ -20,7 +20,7 @@ const config: CapacitorConfig = {
   // install effectively a "different app" and they'd have to reinstall.
   // Pick once, keep forever.
   appId: 'bd.gov.eqms.mamata.enumerator',
-  appName: 'EQMS Geosurvey',
+  appName: 'Geosurvey',
 
   // `www` is populated by `scripts/copy-web.js` (run as part of
   // `npm run prepare`). We don't symlink to `../dist` directly because

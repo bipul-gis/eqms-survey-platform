@@ -240,7 +240,8 @@ export const LoginScreen: React.FC = () => {
           : 'Sign In';
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+      <div className="flex-1 flex items-center justify-center p-6">
       <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 border border-slate-100">
         <div className="flex flex-col items-center mb-8">
           <img
@@ -435,8 +436,9 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         <p className="text-[10px] text-slate-400 text-center mt-6 uppercase tracking-wider">Authorized Access Only</p>
-        <AppFooter className="mt-2 border-t border-slate-100" />
       </div>
+      </div>
+      <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
     </div>
   );
 };

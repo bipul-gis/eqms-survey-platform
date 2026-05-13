@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthProvider';
+import { AppFooter } from './AppFooter';
 import {
   ConsentGate,
   DefaultValueRule,
@@ -581,6 +582,7 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
           </div>
         )}
       </div>
+      <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
     </div>
   );
 };
