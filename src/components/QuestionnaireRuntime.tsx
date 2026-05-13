@@ -827,15 +827,23 @@ const OsmMiniMap: React.FC<{ lat: number; lng: number; accuracy?: number }> = ({
 
   return (
     <div className="rounded-md border border-emerald-200/80 overflow-hidden bg-white">
-      <iframe
-        key={src}
-        title="GPS location preview"
-        src={src}
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        className="w-full h-40 sm:h-44 block"
-        style={{ border: 0 }}
-      />
+      {/* The OSM embed paints an attribution / donation strip across the
+          bottom of its own document. We can't style across the cross-origin
+          iframe, so instead we make the iframe taller than the visible
+          area and clip it — the visible window shows just the map. A
+          tiny "© OSM" link in the footer strip below preserves the
+          required attribution. */}
+      <div className="relative overflow-hidden h-40 sm:h-44">
+        <iframe
+          key={src}
+          title="GPS location preview"
+          src={src}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="absolute inset-x-0 top-0 w-full block"
+          style={{ border: 0, height: 'calc(100% + 36px)' }}
+        />
+      </div>
       <div className="px-2.5 py-1 text-[10px] text-slate-500 flex items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/60">
         <span className="truncate">Marker = your device's current position.</span>
         <a
@@ -844,7 +852,7 @@ const OsmMiniMap: React.FC<{ lat: number; lng: number; accuracy?: number }> = ({
           rel="noreferrer"
           className="shrink-0 text-emerald-700 hover:text-emerald-800 font-semibold"
         >
-          Open in OSM ↗
+          © OSM ↗
         </a>
       </div>
     </div>
