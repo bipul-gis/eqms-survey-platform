@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useStat
 import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
 import { NetworkStatusBadge } from './components/NetworkStatusBadge';
+import { AppFooter } from './components/AppFooter';
 import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
 import {
   useQuestionnaireSurveyLocations,
@@ -2077,6 +2078,7 @@ const AppContent: React.FC = () => {
               Log out
             </button>
           </div>
+          <AppFooter className="mt-4 border-t border-slate-100" />
         </div>
       </div>
     );
@@ -2105,6 +2107,7 @@ const AppContent: React.FC = () => {
           >
             Log out
           </button>
+          <AppFooter className="mt-4 border-t border-slate-100" />
         </div>
       </div>
     );
@@ -2254,6 +2257,7 @@ const AppContent: React.FC = () => {
                 </div>
               </button>
             </div>
+            <AppFooter />
           </div>
         </main>
       </div>
@@ -2282,6 +2286,7 @@ const AppContent: React.FC = () => {
           >
             <LogOut size={13} /> Sign out
           </button>
+          <AppFooter className="mt-4 border-t border-slate-100" />
         </div>
       </div>
     );
@@ -2320,7 +2325,15 @@ const AppContent: React.FC = () => {
                 <Shield size={18} className="text-white" />
               </div>
               <div>
-                <h1 className="font-bold text-slate-900 leading-tight">EQMS Geosurvey</h1>
+                <h1 className="font-bold text-slate-900 leading-tight flex items-center gap-1.5">
+                  <img
+                    src="/eqms-logo.png"
+                    alt="EQMS"
+                    className="h-5 w-auto select-none"
+                    draggable={false}
+                  />
+                  <span>Geosurvey</span>
+                </h1>
                 <p className="text-[10px] text-blue-700 font-bold uppercase tracking-wider">
                   Admin Console
                 </p>
@@ -2469,6 +2482,7 @@ const AppContent: React.FC = () => {
                 </button>
               </div>
             </div>
+            <AppFooter />
           </div>
         </main>
 
@@ -2514,7 +2528,15 @@ const AppContent: React.FC = () => {
       <header className="h-16 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-sm z-[1001]">
         <div className="flex items-center gap-3">
           <div>
-            <h1 className="font-bold text-slate-900 leading-tight">EQMS Geosurvey</h1>
+            <h1 className="font-bold text-slate-900 leading-tight flex items-center gap-1.5">
+              <img
+                src="/eqms-logo.png"
+                alt="EQMS"
+                className="h-5 w-auto select-none"
+                draggable={false}
+              />
+              <span>Geosurvey</span>
+            </h1>
           </div>
         </div>
 
@@ -3260,6 +3282,11 @@ const AppContent: React.FC = () => {
           Press back again within 4 seconds to leave this page.
         </div>
       )}
+      {/* Persistent attribution strip — slim enough not to fight the map for
+          vertical space, but always visible for licensing / credit clarity. */}
+      <div className="bg-white/90 backdrop-blur border-t border-slate-200 px-3 py-1 flex items-center justify-center">
+        <AppFooter variant="inline" />
+      </div>
     </div>
   );
 };

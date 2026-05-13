@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from './AuthProvider';
+import { AppFooter } from './AppFooter';
 import {
   LogIn,
   Map as MapIcon,
@@ -242,10 +243,15 @@ export const LoginScreen: React.FC = () => {
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
       <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 border border-slate-100">
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
-            <MapIcon size={32} className="text-white" />
-          </div>
-          <h1 className="text-2xl font-bold text-slate-800">EQMS Geosurvey</h1>
+          <img
+            src="/eqms-logo.png"
+            alt="EQMS"
+            className="h-14 w-auto mb-3 select-none"
+            draggable={false}
+          />
+          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            <span>Geosurvey</span>
+          </h1>
           <p className="text-slate-400 text-center mt-2 text-sm">
             {mode === 'forgot'
               ? 'Confirm your registered email and mobile to get a password reset link.'
@@ -429,6 +435,7 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         <p className="text-[10px] text-slate-400 text-center mt-6 uppercase tracking-wider">Authorized Access Only</p>
+        <AppFooter className="mt-2 border-t border-slate-100" />
       </div>
     </div>
   );
