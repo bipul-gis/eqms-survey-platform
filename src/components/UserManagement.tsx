@@ -11,7 +11,10 @@ import {
   Ban,
   ClipboardList,
   Phone,
-  Search
+  Search,
+  MapPin,
+  FileText,
+  Folder
 } from 'lucide-react';
 import { fetchLandmarkGeoJson } from '../lib/landmarkGeoJson';
 
@@ -20,7 +23,8 @@ import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth'
 import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, deleteField, deleteDoc } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { db } from '../lib/firebase';
-import { UserProfile } from '../types';
+import { Project, Questionnaire, UserProfile } from '../types';
+import { DEFAULT_PROJECT_ID } from '../lib/projects';
 
 type EnumeratorEntry = {
   email: string;
@@ -30,6 +34,8 @@ type EnumeratorEntry = {
   uids: string[];
   /** Normalized list (legacy single ward folded in when loading). */
   assignedWardNames: string[];
+  /** Union of `assignedQuestionnaireIds` across all UIDs sharing this email. */
+  assignedQuestionnaireIds: string[];
 };
 
 const normalizeUserSearch = (q: string) => q.trim().toLowerCase();
@@ -79,6 +85,14 @@ const wardsFromUserProfile = (data: UserProfile): string[] => {
   }
   const legacy = data.assignedWardName;
   if (typeof legacy === 'string' && legacy.trim()) return [legacy.trim()];
+  return [];
+};
+
+const questionnaireIdsFromUserProfile = (data: UserProfile): string[] => {
+  const list = data.assignedQuestionnaireIds;
+  if (Array.isArray(list) && list.length > 0) {
+    return [...new Set(list.map((w) => String(w).trim()).filter(Boolean))].sort();
+  }
   return [];
 };
 
@@ -178,7 +192,140 @@ const EnumeratorWardRow: React.FC<{
   );
 };
 
-export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+/**
+ * Per-enumerator card on the Tasks → Questionnaires sub-tab. Lets the admin
+ * toggle which questionnaires (from the current project) the enumerator is
+ * allowed to fill. Mirrors the look-and-feel of EnumeratorWardRow.
+ */
+const EnumeratorQuestionnaireRow: React.FC<{
+  entry: EnumeratorEntry;
+  questionnaires: Questionnaire[];
+  saving: boolean;
+  onSave: (ids: string[]) => void;
+}> = ({ entry, questionnaires, saving, onSave }) => {
+  // Only project questionnaires participate in this picker; the saved value
+  // is the intersection so we don't accidentally drop other projects' ids.
+  const projectIds = useMemo(() => new Set(questionnaires.map((q) => q.id)), [questionnaires]);
+  const initialSelected = useMemo(
+    () => (entry.assignedQuestionnaireIds || []).filter((id) => projectIds.has(id)),
+    [entry.assignedQuestionnaireIds, projectIds]
+  );
+
+  const [value, setValue] = useState<string[]>(initialSelected);
+
+  useEffect(() => {
+    setValue(initialSelected);
+  }, [initialSelected]);
+
+  const toggle = (id: string) => {
+    setValue((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const allOnFlag = questionnaires.length > 0 && value.length === questionnaires.length;
+
+  return (
+    <div className="bg-gray-50 border border-gray-100 rounded-xl p-3 space-y-2">
+      <div className="min-w-0">
+        <p className="text-xs font-semibold text-gray-800 truncate">{entry.displayName}</p>
+        <p className="text-[10px] text-gray-500 truncate">{entry.email}</p>
+        <p className="text-[10px] text-gray-500 truncate">{entry.mobileNumber || 'No mobile number'}</p>
+        <EnumeratorUidLines uids={entry.uids} />
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+            Questionnaires (multi)
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={saving || questionnaires.length === 0 || allOnFlag}
+              onClick={() => setValue(questionnaires.map((q) => q.id))}
+              className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              disabled={saving || value.length === 0}
+              onClick={() => setValue([])}
+              className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
+            >
+              Clear all
+            </button>
+          </div>
+        </div>
+        <div className="max-h-44 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
+          {questionnaires.length === 0 ? (
+            <p className="text-[11px] text-gray-400 italic">No questionnaires in this project.</p>
+          ) : (
+            questionnaires.map((q) => {
+              const checked = value.includes(q.id);
+              const inactive = q.isActive === false;
+              return (
+                <label
+                  key={q.id}
+                  className="flex items-start gap-2 text-xs select-none cursor-pointer"
+                  title={inactive ? 'Draft / inactive questionnaire' : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={saving}
+                    onChange={() => toggle(q.id)}
+                    className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 mt-0.5 shrink-0"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <FileText size={11} className="text-emerald-600 shrink-0" />
+                      <span className="block truncate text-gray-800">
+                        {q.title || '(untitled)'}
+                      </span>
+                      {inactive && (
+                        <span className="text-[9px] uppercase tracking-wider font-bold bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded">
+                          Draft
+                        </span>
+                      )}
+                    </span>
+                    {q.version && (
+                      <span className="block text-[10px] text-gray-400 mt-0.5">v{q.version}</span>
+                    )}
+                  </span>
+                </label>
+              );
+            })
+          )}
+        </div>
+        <p className="text-[10px] text-gray-500">
+          {value.length === 0
+            ? 'No selection — this enumerator sees no questionnaires from this project.'
+            : `${value.length} of ${questionnaires.length} questionnaire(s) assigned in this project.`}
+        </p>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => onSave(value)}
+          className="w-full text-xs font-bold py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save questionnaire assignment'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export const UserManagement: React.FC<{
+  /**
+   * Active project context. When provided:
+   *  - the Tasks tab gets a "Questionnaires" sub-tab driven by this project's
+   *    questionnaire list,
+   *  - questionnaire assignments saved/cleared apply only to questionnaires
+   *    in this project (other projects' assignments are preserved),
+   *  - segment toggles on the project hide irrelevant sub-tabs.
+   */
+  project?: Project | null;
+  onClose: () => void;
+}> = ({ project, onClose }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -188,6 +335,20 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [error, setError] = useState<string | null>(null);
   const [pendingUsers, setPendingUsers] = useState<UserProfile[]>([]);
   const [activeTab, setActiveTab] = useState<'create' | 'pending' | 'tasks'>('pending');
+  // Geospatial vs Questionnaire sub-tab within Tasks.
+  const segmentGeo = project ? project.segments?.geospatial !== false : true;
+  const segmentQ = project ? project.segments?.questionnaire !== false : true;
+  const [taskSection, setTaskSection] = useState<'geospatial' | 'questionnaire'>(
+    segmentGeo ? 'geospatial' : 'questionnaire'
+  );
+  useEffect(() => {
+    // Auto-flip when project segments change and current section is no longer enabled.
+    if (taskSection === 'geospatial' && !segmentGeo && segmentQ) setTaskSection('questionnaire');
+    if (taskSection === 'questionnaire' && !segmentQ && segmentGeo) setTaskSection('geospatial');
+  }, [segmentGeo, segmentQ, taskSection]);
+
+  // Project's questionnaires — drives the Questionnaire-tasks sub-tab UI.
+  const [projectQuestionnaires, setProjectQuestionnaires] = useState<Questionnaire[]>([]);
 
   const [activeEnumeratorsCount, setActiveEnumeratorsCount] = useState(0);
   const [activeEnumerators, setActiveEnumerators] = useState<EnumeratorEntry[]>([]);
@@ -289,6 +450,75 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
   );
 
   useEffect(() => {
+    // Subscribe to questionnaires belonging to the active project. Server-side
+    // filter via `where projectId == targetId` so we don't stream the entire
+    // /questionnaires collection. The default project also picks up legacy
+    // questionnaires (`projectId` missing) via a second subscription.
+    const targetProjectId = project?.id;
+    if (!targetProjectId) {
+      setProjectQuestionnaires([]);
+      return;
+    }
+
+    const merged: Record<string, Questionnaire> = {};
+    const setMergedList = () => {
+      const list = Object.values(merged).sort((a, b) =>
+        (a.title || '').localeCompare(b.title || '')
+      );
+      setProjectQuestionnaires(list);
+    };
+
+    const unsubs: Array<() => void> = [];
+
+    // Primary: questionnaires explicitly tagged with this project.
+    unsubs.push(
+      onSnapshot(
+        query(collection(db, 'questionnaires'), where('projectId', '==', targetProjectId)),
+        (snap) => {
+          for (const d of snap.docChanges()) {
+            if (d.type === 'removed') {
+              delete merged[d.doc.id];
+            } else {
+              merged[d.doc.id] = { ...(d.doc.data() as Questionnaire), id: d.doc.id };
+            }
+          }
+          setMergedList();
+        },
+        (err) => console.error('Error fetching project questionnaires:', err)
+      )
+    );
+
+    // Fallback: when the active project IS the default one, also include any
+    // legacy questionnaires that pre-date `projectId`. We can't filter on
+    // "field missing" in Firestore, so we keep a second subscription that
+    // filters client-side and only fires when we're in the default project.
+    if (targetProjectId === DEFAULT_PROJECT_ID) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'questionnaires'),
+          (snap) => {
+            for (const d of snap.docChanges()) {
+              const data = d.doc.data() as Questionnaire;
+              if (data.projectId) continue; // already covered by the primary sub
+              if (d.type === 'removed') {
+                delete merged[d.doc.id];
+              } else {
+                merged[d.doc.id] = { ...data, id: d.doc.id };
+              }
+            }
+            setMergedList();
+          },
+          (err) => console.warn('Error fetching legacy questionnaires:', err)
+        )
+      );
+    }
+
+    return () => {
+      for (const u of unsubs) u();
+    };
+  }, [project?.id]);
+
+  useEffect(() => {
     const q = query(collection(db, 'users'), where('status', '==', 'pending'));
 
     const unsubscribe = onSnapshot(
@@ -358,6 +588,7 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
           const existing = byEmail.get(emailKey);
 
           const wn = wardsFromUserProfile(data);
+          const qids = questionnaireIdsFromUserProfile(data);
 
           if (!existing) {
             byEmail.set(emailKey, {
@@ -365,7 +596,8 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
               displayName: data.displayName,
               mobileNumber: data.mobileNumber,
               uids: [uid],
-              assignedWardNames: wn
+              assignedWardNames: wn,
+              assignedQuestionnaireIds: qids
             });
           } else {
             if (uid && !existing.uids.includes(uid)) {
@@ -376,6 +608,12 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             }
             if (existing.assignedWardNames.length === 0 && wn.length > 0) {
               existing.assignedWardNames = wn;
+            }
+            if (qids.length > 0) {
+              // Union across multiple UIDs sharing the same email.
+              existing.assignedQuestionnaireIds = [
+                ...new Set([...existing.assignedQuestionnaireIds, ...qids])
+              ].sort();
             }
           }
         });
@@ -413,7 +651,9 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
               email: data.email,
               displayName: data.displayName,
               mobileNumber: data.mobileNumber,
-              uids: [uid]
+              uids: [uid],
+              assignedWardNames: [],
+              assignedQuestionnaireIds: []
             });
           } else if (uid && !existing.uids.includes(uid)) {
             existing.uids.push(uid);
@@ -565,6 +805,80 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
     }
   };
 
+  /**
+   * Save questionnaire assignment for a single enumerator. The save preserves
+   * questionnaire ids that belong to OTHER projects (since those are owned by
+   * different project task panels), and only writes the union for ids that
+   * belong to the currently active project.
+   */
+  const saveEnumeratorQuestionnaireAssignment = async (
+    entry: EnumeratorEntry,
+    selectedIdsForProject: string[]
+  ) => {
+    try {
+      setTaskSavingEmail(entry.email);
+      setError(null);
+
+      // Build the new full list = (current questionnaire ids NOT in project) ∪ (newly selected within project)
+      const projectQIds = new Set(projectQuestionnaires.map((q) => q.id));
+      const preserved = (entry.assignedQuestionnaireIds || []).filter(
+        (id) => !projectQIds.has(id)
+      );
+      const next = [...new Set([...preserved, ...selectedIdsForProject])].sort();
+
+      await Promise.all(
+        entry.uids.map((uid) =>
+          updateDoc(doc(db, 'users', uid), {
+            ...(next.length
+              ? { assignedQuestionnaireIds: next }
+              : { assignedQuestionnaireIds: deleteField() })
+          })
+        )
+      );
+    } catch (e) {
+      console.error('Error saving questionnaire assignment:', e);
+      setError('Failed to save questionnaire assignment');
+    } finally {
+      setTaskSavingEmail(null);
+    }
+  };
+
+  const clearAllEnumeratorQuestionnaireAssignmentsForProject = async () => {
+    if (activeEnumerators.length === 0 || projectQuestionnaires.length === 0) return;
+    if (
+      !confirm(
+        `Clear questionnaire assignments for ALL active enumerators in this project?\n\n` +
+          `Assignments for questionnaires in other projects are preserved.`
+      )
+    )
+      return;
+
+    try {
+      setClearingAllAssignments(true);
+      setError(null);
+      const projectQIds = new Set(projectQuestionnaires.map((q) => q.id));
+      await Promise.all(
+        activeEnumerators.flatMap((entry) => {
+          const preserved = (entry.assignedQuestionnaireIds || []).filter(
+            (id) => !projectQIds.has(id)
+          );
+          return entry.uids.map((uid) =>
+            updateDoc(doc(db, 'users', uid), {
+              ...(preserved.length
+                ? { assignedQuestionnaireIds: preserved }
+                : { assignedQuestionnaireIds: deleteField() })
+            })
+          );
+        })
+      );
+    } catch (e) {
+      console.error('Error clearing project questionnaire assignments:', e);
+      setError('Failed to clear questionnaire assignments');
+    } finally {
+      setClearingAllAssignments(false);
+    }
+  };
+
   const clearAllEnumeratorWardAssignments = async () => {
     if (activeEnumerators.length === 0) return;
 
@@ -631,14 +945,25 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
   return (
     <div className="flex flex-col h-full bg-white shadow-2xl border-l border-gray-200 w-full md:w-96">
-      <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
-        <h2 className="font-semibold text-gray-800 flex items-center gap-2">
-          <UserPlus size={20} className="text-blue-600" />
-          User Management
-        </h2>
-        <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
-          <X size={20} className="text-gray-500" />
-        </button>
+      <div className="p-4 border-b border-gray-100 bg-gray-50/50">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+            <UserPlus size={20} className="text-blue-600" />
+            User Management
+          </h2>
+          <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
+            <X size={20} className="text-gray-500" />
+          </button>
+        </div>
+        {project && (
+          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-500">
+            <Folder size={12} className="text-blue-500 shrink-0" />
+            <span className="truncate" title={project.name}>
+              {project.name}
+            </span>
+            {project.code && <span className="text-gray-400">· {project.code}</span>}
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -823,35 +1148,48 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
             {error && (
               <div className="bg-red-50 text-red-600 p-3 rounded-xl text-xs border border-red-100">{error}</div>
             )}
-            <div>
-              <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2">
-                <ClipboardList size={18} className="text-blue-600" />
-                Task distribution
-              </h3>
-              <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-                Each ward can only be assigned to one enumerator. Select one or more wards per person; they only see
-                features whose <span className="font-semibold text-gray-600">Ward_Name</span> matches a ward they hold.
-                Wards taken by others are greyed out (release a ward by clearing it on the holder first). Clear all to
-                give full access.
-              </p>
-              <div className="mt-3">
+            {project && (
+              <div className="bg-blue-50/60 border border-blue-100 rounded-xl px-3 py-2 flex items-start gap-2">
+                <Folder size={14} className="text-blue-600 mt-0.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold text-blue-900 truncate">
+                    {project.name}
+                  </p>
+                  {project.code && (
+                    <p className="text-[10px] text-blue-700">Project code · {project.code}</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Sub-tab: Geospatial vs Questionnaire — only shown segments that the project enables. */}
+            {(segmentGeo && segmentQ) && (
+              <div className="grid grid-cols-2 bg-gray-100 rounded-xl p-1 text-xs font-bold">
                 <button
                   type="button"
-                  disabled={clearingAllAssignments || activeEnumerators.length === 0}
-                  onClick={() => {
-                    const ok = confirm(
-                      'Clear ward assignments for all active enumerators?\n\nThis removes all task ward restrictions until you assign wards again.'
-                    );
-                    if (!ok) return;
-                    void clearAllEnumeratorWardAssignments();
-                  }}
-                  className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
-                  title="Clear ward assignments for all enumerators"
+                  onClick={() => setTaskSection('geospatial')}
+                  className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                    taskSection === 'geospatial'
+                      ? 'bg-white text-blue-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
                 >
-                  {clearingAllAssignments ? 'Clearing all wards…' : 'Clear all wards (all enumerators)'}
+                  <MapPin size={13} /> Geospatial
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTaskSection('questionnaire')}
+                  className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                    taskSection === 'questionnaire'
+                      ? 'bg-white text-emerald-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <ClipboardList size={13} /> Questionnaires
                 </button>
               </div>
-            </div>
+            )}
+
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
               <input
@@ -863,48 +1201,152 @@ export const UserManagement: React.FC<{ onClose: () => void }> = ({ onClose }) =
                 aria-label="Search enumerators for tasks"
               />
             </div>
-            {duplicateWardAssignments.length > 0 && (
-              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1">
-                <p className="font-semibold">Overlapping assignments detected</p>
-                <p className="text-amber-900">
-                  The same ward is assigned to more than one enumerator. Adjust assignments so each ward has a single
-                  holder:
-                </p>
-                <ul className="list-disc list-inside text-amber-900">
-                  {duplicateWardAssignments.map((d) => (
-                    <li key={d.wardLabel}>
-                      <span className="font-medium">{d.wardLabel}</span>: {d.owners.join(', ')}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+
+            {/* ────────────────────────  Geospatial sub-section  ───────────────────── */}
+            {(taskSection === 'geospatial' && segmentGeo) && (
+              <>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2">
+                    <MapPin size={16} className="text-blue-600" />
+                    Geospatial task distribution
+                  </h3>
+                  <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                    Each ward can only be assigned to one enumerator. Select one or more wards per person; they only see
+                    features whose <span className="font-semibold text-gray-600">Ward_Name</span> matches a ward they hold.
+                    Wards taken by others are greyed out (release a ward by clearing it on the holder first). Clear all to
+                    give full access.
+                  </p>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      disabled={clearingAllAssignments || activeEnumerators.length === 0}
+                      onClick={() => {
+                        const ok = confirm(
+                          'Clear ward assignments for all active enumerators?\n\nThis removes all task ward restrictions until you assign wards again.'
+                        );
+                        if (!ok) return;
+                        void clearAllEnumeratorWardAssignments();
+                      }}
+                      className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
+                      title="Clear ward assignments for all enumerators"
+                    >
+                      {clearingAllAssignments ? 'Clearing all wards…' : 'Clear all wards (all enumerators)'}
+                    </button>
+                  </div>
+                </div>
+                {duplicateWardAssignments.length > 0 && (
+                  <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1">
+                    <p className="font-semibold">Overlapping assignments detected</p>
+                    <p className="text-amber-900">
+                      The same ward is assigned to more than one enumerator. Adjust assignments so each ward has a single
+                      holder:
+                    </p>
+                    <ul className="list-disc list-inside text-amber-900">
+                      {duplicateWardAssignments.map((d) => (
+                        <li key={d.wardLabel}>
+                          <span className="font-medium">{d.wardLabel}</span>: {d.owners.join(', ')}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {wardNameOptions.length === 0 && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
+                    Could not read ward names from landmark reference data.
+                  </p>
+                )}
+                {activeEnumerators.length === 0 ? (
+                  <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
+                ) : filteredEnumeratorsForTasks.length === 0 ? (
+                  <p className="text-sm text-gray-500">No users match your search.</p>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-[11px] text-gray-500">
+                      Showing {filteredEnumeratorsForTasks.length}
+                      {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
+                    </p>
+                    {filteredEnumeratorsForTasks.map((entry) => (
+                      <EnumeratorWardRow
+                        key={entry.email}
+                        entry={entry}
+                        wardOptions={wardNameOptions}
+                        wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
+                        saving={taskSavingEmail === entry.email || clearingAllAssignments}
+                        onSave={(wards) => void saveEnumeratorWardAssignment(entry, wards)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-            {wardNameOptions.length === 0 && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                Could not read ward names from landmark reference data.
-              </p>
-            )}
-            {activeEnumerators.length === 0 ? (
-              <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
-            ) : filteredEnumeratorsForTasks.length === 0 ? (
-              <p className="text-sm text-gray-500">No users match your search.</p>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-[11px] text-gray-500">
-                  Showing {filteredEnumeratorsForTasks.length}
-                  {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
-                </p>
-                {filteredEnumeratorsForTasks.map((entry) => (
-                  <EnumeratorWardRow
-                    key={entry.email}
-                    entry={entry}
-                    wardOptions={wardNameOptions}
-                    wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
-                    saving={taskSavingEmail === entry.email || clearingAllAssignments}
-                    onSave={(wards) => void saveEnumeratorWardAssignment(entry, wards)}
-                  />
-                ))}
-              </div>
+
+            {/* ───────────────────────  Questionnaire sub-section  ─────────────────── */}
+            {(taskSection === 'questionnaire' && segmentQ) && (
+              <>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2">
+                    <ClipboardList size={16} className="text-emerald-600" />
+                    Questionnaire task distribution
+                  </h3>
+                  <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                    Pick the questionnaires each enumerator can fill in this project. Unlike wards,
+                    a single questionnaire can be assigned to several enumerators simultaneously.
+                    Assignments in other projects are not affected.
+                  </p>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      disabled={
+                        clearingAllAssignments ||
+                        activeEnumerators.length === 0 ||
+                        projectQuestionnaires.length === 0
+                      }
+                      onClick={() => void clearAllEnumeratorQuestionnaireAssignmentsForProject()}
+                      className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
+                      title="Clear questionnaire assignments (for this project) on all enumerators"
+                    >
+                      {clearingAllAssignments
+                        ? 'Clearing assignments…'
+                        : 'Clear all questionnaires (this project)'}
+                    </button>
+                  </div>
+                </div>
+
+                {!project && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
+                    Open a project from the project picker to assign questionnaires.
+                  </p>
+                )}
+                {project && projectQuestionnaires.length === 0 && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
+                    This project has no questionnaires yet. Build one from the Questionnaire Survey workspace first.
+                  </p>
+                )}
+
+                {activeEnumerators.length === 0 ? (
+                  <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
+                ) : filteredEnumeratorsForTasks.length === 0 ? (
+                  <p className="text-sm text-gray-500">No users match your search.</p>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-[11px] text-gray-500">
+                      Showing {filteredEnumeratorsForTasks.length}
+                      {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
+                    </p>
+                    {filteredEnumeratorsForTasks.map((entry) => (
+                      <EnumeratorQuestionnaireRow
+                        key={entry.email}
+                        entry={entry}
+                        questionnaires={projectQuestionnaires}
+                        saving={taskSavingEmail === entry.email || clearingAllAssignments}
+                        onSave={(ids) =>
+                          void saveEnumeratorQuestionnaireAssignment(entry, ids)
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

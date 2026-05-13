@@ -35,9 +35,11 @@ service cloud.firestore {
         && request.resource.data.displayName == prior.displayName
         && request.resource.data.role == prior.role
         && request.resource.data.status == prior.status
-        // Ward assignment is admin-only; enumerator UI prefs may not change it.
+        // Task assignments are admin-only; enumerator UI prefs may not change them.
         && request.resource.data.get('assignedWardName', null) == prior.get('assignedWardName', null)
-        && request.resource.data.get('assignedWardNames', []) == prior.get('assignedWardNames', []);
+        && request.resource.data.get('assignedWardNames', []) == prior.get('assignedWardNames', [])
+        && request.resource.data.get('projectWardAssignments', {}) == prior.get('projectWardAssignments', {})
+        && request.resource.data.get('assignedQuestionnaireIds', []) == prior.get('assignedQuestionnaireIds', []);
     }
 
     function isValidFeature(data) {
@@ -64,6 +66,34 @@ service cloud.firestore {
     match /wards/{wardId} {
       allow read: if isSignedIn();
       allow write: if false;
+    }
+
+    // Admin-defined projects (top-level engagement containers).
+    // Every signed-in user can read project metadata so the app can show the
+    // current project's name etc.; only admins create/edit/archive projects.
+    match /projects/{projectId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Admin-authored survey questionnaires.
+    // Admins: full read/write. Enumerators: read-only (so they can later fill them out).
+    match /questionnaires/{questionnaireId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Survey responses captured by enumerators in the field.
+    // Enumerators may create their own response docs and update/read those they own.
+    // Admins may read/update/delete any response.
+    match /questionnaireResponses/{responseId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.respondentId == request.auth.uid);
+      allow create: if isSignedIn()
+        && request.resource.data.respondentId == request.auth.uid;
+      allow update: if isAdmin()
+        || (isSignedIn() && resource.data.respondentId == request.auth.uid);
+      allow delete: if isAdmin();
     }
   }
 }

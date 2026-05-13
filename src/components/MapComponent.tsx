@@ -112,6 +112,41 @@ interface MapComponentProps {
   showPointAddBuffer?: boolean;
   /** Bump (e.g. admin refresh) to reload bundled landmark GeoJSON overlay from the network. */
   landmarkGeoJsonRefreshKey?: number;
+  /**
+   * Initial visibility for the landmark layer. Defaults to `true` to keep
+   * the geospatial-survey tab's behaviour unchanged. The admin Responses
+   * map embeds passes `false` because admins reviewing submissions don't
+   * need the landmark dataset visible by default and it just clutters the
+   * map. Users can still toggle it on via the layer panel.
+   */
+  defaultShowLandmarks?: boolean;
+  /**
+   * Optional "HH Survey Location" layer — one point per questionnaire
+   * response with a captured GPS. Toggleable from the layer panel. When
+   * omitted (`undefined`), the layer + its toggle don't render at all,
+   * so call sites that don't care about questionnaire responses (e.g.
+   * the standalone feature-editor preview) aren't forced to deal with
+   * them.
+   */
+  surveyLocations?: SurveyLocationMarker[];
+  /** Initial visibility for the survey-locations layer. Defaults to `true`. */
+  defaultShowSurveyLocations?: boolean;
+}
+
+export interface SurveyLocationMarker {
+  id: string;
+  lat: number;
+  lng: number;
+  accuracy?: number;
+  respondentName?: string;
+  respondentEmail?: string;
+  questionnaireId?: string;
+  /** Optional questionnaire display name — populated by the caller when known. */
+  questionnaireTitle?: string;
+  status?: 'draft' | 'submitted' | 'reviewed';
+  submittedAt?: unknown;
+  capturedAt?: unknown;
+  ward?: string;
 }
 
 const MapEvents = ({ onClick }: { onClick: (lat: number, lng: number) => void }) => {
@@ -442,6 +477,106 @@ const LandmarkGeoJsonPoint = React.memo(({
 
 LandmarkGeoJsonPoint.displayName = 'LandmarkGeoJsonPoint';
 
+// SurveyLocationCircle — renders a single HH-Survey GPS marker (one per
+// questionnaire response). Dark-ash fill is distinct from existing layers
+// (amber landmarks, status-coloured features) so the layer reads
+// instantly. Outline encodes status so reviewers can tell drafts apart
+// from submitted/reviewed at a glance.
+const SURVEY_LOCATION_FILL = '#374151'; // gray-700 — dark ash
+const SURVEY_LOCATION_OUTLINE_BY_STATUS: Record<string, string> = {
+  draft: '#9ca3af',     // gray-400 — provisional / still in progress (pale ash)
+  submitted: '#111827', // gray-900 — accepted, awaiting review (near-black ring)
+  reviewed: '#16a34a'   // green-600 — fully processed (kept green for "done")
+};
+function formatSurveyTimestamp(value: unknown): string {
+  if (!value) return '—';
+  try {
+    // Firestore Timestamps expose `.toDate()`; ISO strings are also accepted.
+    if (typeof value === 'object' && value && typeof (value as any).toDate === 'function') {
+      return (value as any).toDate().toLocaleString();
+    }
+    if (typeof value === 'string' || typeof value === 'number') {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+    }
+  } catch {
+    /* fall through to placeholder */
+  }
+  return '—';
+}
+const SurveyLocationCircle: React.FC<{ point: SurveyLocationMarker }> = React.memo(({ point }) => {
+  const status = point.status ?? 'submitted';
+  const outline = SURVEY_LOCATION_OUTLINE_BY_STATUS[status] || SURVEY_LOCATION_OUTLINE_BY_STATUS.submitted;
+  const tsLabel = formatSurveyTimestamp(point.submittedAt || point.capturedAt);
+  return (
+    <CircleMarker
+      center={[point.lat, point.lng]}
+      radius={6}
+      pathOptions={{
+        color: outline,
+        fillColor: SURVEY_LOCATION_FILL,
+        fillOpacity: 0.85,
+        weight: 2
+      }}
+    >
+      <Popup>
+        <div className="min-w-[220px]">
+          <div className="mb-2 pb-2 border-b border-slate-200">
+            <p className="text-[10px] font-semibold text-slate-700 uppercase tracking-wide">
+              HH Survey Location
+            </p>
+            <p className="text-sm font-bold text-slate-900 leading-snug">
+              {point.respondentName || 'Unknown enumerator'}
+            </p>
+            {point.respondentEmail ? (
+              <p className="text-[11px] text-slate-500">{point.respondentEmail}</p>
+            ) : null}
+          </div>
+          <table className="w-full text-[11px]">
+            <tbody>
+              <tr className="border-b border-gray-100">
+                <td className="py-1 pr-2 font-semibold text-gray-600">Status</td>
+                <td className="py-1 text-gray-800 capitalize">{status}</td>
+              </tr>
+              {point.questionnaireTitle ? (
+                <tr className="border-b border-gray-100">
+                  <td className="py-1 pr-2 font-semibold text-gray-600">Questionnaire</td>
+                  <td className="py-1 text-gray-800">{point.questionnaireTitle}</td>
+                </tr>
+              ) : null}
+              {point.ward ? (
+                <tr className="border-b border-gray-100">
+                  <td className="py-1 pr-2 font-semibold text-gray-600">Ward</td>
+                  <td className="py-1 text-gray-800">{point.ward}</td>
+                </tr>
+              ) : null}
+              <tr className="border-b border-gray-100">
+                <td className="py-1 pr-2 font-semibold text-gray-600">Lat</td>
+                <td className="py-1 text-gray-800 font-mono">{point.lat.toFixed(6)}</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-1 pr-2 font-semibold text-gray-600">Lng</td>
+                <td className="py-1 text-gray-800 font-mono">{point.lng.toFixed(6)}</td>
+              </tr>
+              {typeof point.accuracy === 'number' ? (
+                <tr className="border-b border-gray-100">
+                  <td className="py-1 pr-2 font-semibold text-gray-600">Accuracy</td>
+                  <td className="py-1 text-gray-800">±{Math.round(point.accuracy)} m</td>
+                </tr>
+              ) : null}
+              <tr>
+                <td className="py-1 pr-2 font-semibold text-gray-600">When</td>
+                <td className="py-1 text-gray-800">{tsLabel}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Popup>
+    </CircleMarker>
+  );
+});
+SurveyLocationCircle.displayName = 'SurveyLocationCircle';
+
 export const MapComponent: React.FC<MapComponentProps> = ({ 
   features, 
   wards,
@@ -457,7 +592,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   onMapClick,
   addFeatureType,
   showPointAddBuffer = false,
-  landmarkGeoJsonRefreshKey = 0
+  landmarkGeoJsonRefreshKey = 0,
+  defaultShowLandmarks = true,
+  surveyLocations,
+  defaultShowSurveyLocations = true
 }) => {
   const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
@@ -466,7 +604,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isEnumeratorUser = userProfile?.role === 'enumerator';
   const [showWards, setShowWards] = useState(true);
-  const [showLandmarks, setShowLandmarks] = useState(true);
+  const [showLandmarks, setShowLandmarks] = useState(defaultShowLandmarks);
+  const [showSurveyLocations, setShowSurveyLocations] = useState(defaultShowSurveyLocations);
   const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(false);
   const [enumeratorLocationFocusKey, setEnumeratorLocationFocusKey] = useState(0);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -764,6 +903,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             );
           })}
 
+        {/* HH Survey Location layer — one CircleMarker per questionnaire
+            response GPS. Distinct violet fill keeps it readable against
+            both green/red feature markers and amber landmark dots. Status
+            tints the outline so reviewers can tell drafts apart from
+            submitted/reviewed responses at a glance. */}
+        {showSurveyLocations && Array.isArray(surveyLocations) && surveyLocations.map((p) => (
+          <SurveyLocationCircle key={`survey_loc_${p.id}`} point={p} />
+        ))}
+
         {/* Live GPS overlay:
             - Admins / point-add mode: accuracy circle + icon
             - Enumerator "My Current Location" toggle: icon only */}
@@ -885,6 +1033,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <input type="checkbox" checked={showWards} onChange={(e) => setShowWards(e.target.checked)} />
                 <span>Ward Boundaries</span>
               </label>
+              {/* Only render the HH Survey Location toggle when the parent
+                  actually supplies the layer data. Hiding the control when
+                  there's nothing to show keeps the panel uncluttered for
+                  consumers that don't care about questionnaire responses. */}
+              {Array.isArray(surveyLocations) && (
+                <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={showSurveyLocations}
+                    onChange={(e) => setShowSurveyLocations(e.target.checked)}
+                  />
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-full border-2"
+                      style={{ backgroundColor: '#374151', borderColor: '#111827' }}
+                      aria-hidden
+                    />
+                    HH Survey Location
+                    <span className="text-[11px] font-normal text-slate-500">
+                      ({surveyLocations.length})
+                    </span>
+                  </span>
+                </label>
+              )}
               {!isAdminUser && isEnumeratorUser && (
                 <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
                   <input

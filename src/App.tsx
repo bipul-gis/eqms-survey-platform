@@ -1,14 +1,52 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
-import { MapComponent } from './components/MapComponent';
-import { FeatureEditor } from './components/FeatureEditor';
-import { LoginScreen } from './components/LoginScreen';
-import { UserManagement } from './components/UserManagement';
-import { QuestionnaireManager } from './components/QuestionnaireManager';
-import { QuestionnaireForm } from './components/QuestionnaireForm';
 import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
-import { FeatureStatus, GeoFeature, Questionnaire, UserProfile } from './types';
+import {
+  useQuestionnaireSurveyLocations,
+  type SurveyLocationLoadMode
+} from './hooks/useQuestionnaireSurveyLocations';
+import { FeatureStatus, GeoFeature, Project, Questionnaire, UserProfile } from './types';
+
+// Code-split heavy screens so the initial bundle stays small. Each of these
+// pulls in big dependencies (Leaflet, Firebase admin queries, jsPDF, etc.)
+// and most users only ever see a subset of them.
+const MapComponent = lazy(() =>
+  import('./components/MapComponent').then((m) => ({ default: m.MapComponent }))
+);
+const FeatureEditor = lazy(() =>
+  import('./components/FeatureEditor').then((m) => ({ default: m.FeatureEditor }))
+);
+const LoginScreen = lazy(() =>
+  import('./components/LoginScreen').then((m) => ({ default: m.LoginScreen }))
+);
+const UserManagement = lazy(() =>
+  import('./components/UserManagement').then((m) => ({ default: m.UserManagement }))
+);
+const QuestionnaireManager = lazy(() =>
+  import('./components/QuestionnaireManager').then((m) => ({ default: m.QuestionnaireManager }))
+);
+const QuestionnaireForm = lazy(() =>
+  import('./components/QuestionnaireForm').then((m) => ({ default: m.QuestionnaireForm }))
+);
+const ProjectPicker = lazy(() =>
+  import('./components/ProjectPicker').then((m) => ({ default: m.ProjectPicker }))
+);
+const EnumeratorQuestionnaireList = lazy(() =>
+  import('./components/EnumeratorQuestionnaireList').then((m) => ({
+    default: m.EnumeratorQuestionnaireList,
+  }))
+);
+
+// Tiny full-screen fallback shown while a code-split chunk is being fetched.
+const ScreenFallback: React.FC<{ label?: string }> = ({ label = 'Loading…' }) => (
+  <div className="min-h-screen flex items-center justify-center bg-slate-50">
+    <div className="flex items-center gap-3 text-slate-600">
+      <div className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" />
+      <span className="text-sm font-medium">{label}</span>
+    </div>
+  </div>
+);
 import {
   MapPin,
   Map as MapIcon,
@@ -25,7 +63,11 @@ import {
   AlertCircle,
   Users,
   RefreshCw,
-  Layers
+  Layers,
+  LayoutGrid,
+  ClipboardList,
+  ChevronRight,
+  Folder
 } from 'lucide-react';
 import {
   collection,
@@ -47,7 +89,9 @@ import {
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
 import wardsData from './data/ccc_wards.json';
 import { fetchLandmarkGeoJson } from './lib/landmarkGeoJson';
-import shpwrite from '@mapbox/shp-write';
+// @mapbox/shp-write pulls in jszip (~200 KB combined). Loaded on-demand from
+// the two export call sites below so it never lands in the initial bundle.
+const loadShpWrite = () => import('@mapbox/shp-write').then((m) => m.default ?? m);
 import {
   assignedWardsFromUserProfile,
   featureMatchesAssignedWardsResolved,
@@ -375,7 +419,38 @@ const AppContent: React.FC = () => {
   const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
-  const [showQuestionnaireManager, setShowQuestionnaireManager] = useState(false);
+  /**
+   * Admin top-level navigation. Admins land on `'home'` after sign-in and pick a
+   * mode (Geospatial vs Questionnaire). Enumerators ignore this state — they
+   * always see the geospatial UI. Reset to `'home'` whenever the user logs out
+   * or their role changes (see effects below).
+   */
+  const [adminMode, setAdminMode] = useState<'home' | 'geospatial' | 'questionnaire'>('home');
+  /**
+   * Project the admin has currently opened. `null` means "show the project
+   * picker first". Persisted to localStorage so a hard refresh doesn't kick
+   * the admin back to the picker. Cleared on logout/role change below.
+   */
+  const [currentProject, setCurrentProject] = useState<Project | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem('eqms.currentProject');
+      return raw ? (JSON.parse(raw) as Project) : null;
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      if (currentProject) {
+        window.localStorage.setItem('eqms.currentProject', JSON.stringify(currentProject));
+      } else {
+        window.localStorage.removeItem('eqms.currentProject');
+      }
+    } catch {
+      // ignore quota errors etc.
+    }
+  }, [currentProject]);
   const [selectedQuestionnaire, setSelectedQuestionnaire] = useState<Questionnaire | null>(null);
   const [questionnaireLocation, setQuestionnaireLocation] = useState<{ lat: number; lng: number; ward?: string } | null>(null);
   const [activeTab, setActiveTab] = useState<'map' | 'list'>('map');
@@ -419,6 +494,12 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     if (!isAdmin && showUserManagement) setShowUserManagement(false);
   }, [isAdmin, showUserManagement]);
+
+  // Force admins back to the landing on role change (e.g. after logout/login).
+  useEffect(() => {
+    if (!isAdmin && adminMode !== 'home') setAdminMode('home');
+    if (!isAdmin && currentProject) setCurrentProject(null);
+  }, [isAdmin, adminMode, currentProject]);
 
   useEffect(() => {
     if (
@@ -546,12 +627,70 @@ const AppContent: React.FC = () => {
     userProfile?.assignedWardName
   ]);
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Enumerator task profile
+  //
+  // An enumerator should only see survey segments they're actually assigned
+  // to. We derive booleans from their user profile (wards = geospatial,
+  // questionnaire ids = questionnaire) and route the UI accordingly:
+  //   - both segments → "home" with a chooser (similar to admin landing)
+  //   - geospatial only → existing map flow
+  //   - questionnaire only → `EnumeratorQuestionnaireList` (no map)
+  //   - neither → friendly "no tasks assigned" state
+  //
+  // Booleans are memoized so the routing effect below only fires when the
+  // underlying assignment counts cross zero.
+  // ──────────────────────────────────────────────────────────────────────
+  const enumeratorHasGeoTasks = useMemo(
+    () => assignedWardsForFilter.length > 0,
+    [assignedWardsForFilter]
+  );
+  const enumeratorHasQTasks = useMemo(
+    () => (userProfile?.assignedQuestionnaireIds || []).length > 0,
+    [userProfile?.assignedQuestionnaireIds]
+  );
+
+  const [enumeratorMode, setEnumeratorMode] = useState<
+    'home' | 'geospatial' | 'questionnaire'
+  >('home');
+
+  // Auto-route enumerators to the only segment they're assigned to. When
+  // both segments have tasks, we stay on 'home' so the enumerator can pick.
+  // Guarded so we don't enqueue noop setState calls every render.
+  useEffect(() => {
+    if (!isApprovedEnumerator) return;
+    let next: 'home' | 'geospatial' | 'questionnaire';
+    if (enumeratorHasGeoTasks && !enumeratorHasQTasks) next = 'geospatial';
+    else if (!enumeratorHasGeoTasks && enumeratorHasQTasks) next = 'questionnaire';
+    else next = 'home';
+    setEnumeratorMode((cur) => (cur === next ? cur : next));
+  }, [isApprovedEnumerator, enumeratorHasGeoTasks, enumeratorHasQTasks]);
+
   const featuresMode = useMemo<FeaturesLoadMode>(() => {
     if (authLoading || !user) return 'idle';
     if (userProfile?.role === 'admin' && userProfile?.status === 'approved') return 'admin';
-    if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') return 'enumerator';
+    if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') {
+      // Questionnaire-only enumerators never see the map, so skip the
+      // potentially-large /features subscription entirely. Reverts to
+      // 'enumerator' the moment they're given any ward assignment.
+      const hasWards =
+        (Array.isArray(userProfile.assignedWardNames) && userProfile.assignedWardNames.length > 0) ||
+        (typeof userProfile.assignedWardName === 'string' && userProfile.assignedWardName.trim().length > 0);
+      const hasQuestionnaires =
+        (userProfile.assignedQuestionnaireIds?.length || 0) > 0;
+      if (!hasWards && hasQuestionnaires) return 'idle';
+      return 'enumerator';
+    }
     return 'idle';
-  }, [authLoading, user, userProfile?.role, userProfile?.status]);
+  }, [
+    authLoading,
+    user,
+    userProfile?.role,
+    userProfile?.status,
+    userProfile?.assignedWardName,
+    userProfile?.assignedWardNames,
+    userProfile?.assignedQuestionnaireIds
+  ]);
 
   const { features, loading: featuresLoading, syncState } = useOptimizedFeatures({
     mode: featuresMode,
@@ -560,6 +699,23 @@ const AppContent: React.FC = () => {
     assignedWards: assignedWardsForFilter,
     adminRefreshKey: adminFeaturesRefreshKey,
     enumeratorPersistRefreshKey: enumeratorFeaturesRefreshKey
+  });
+
+  // HH Survey Locations layer — reuse the same role gating as features so
+  // approved admins see every response's GPS pin and approved enumerators
+  // only see their own (matching firestore.rules). The hook itself short-
+  // circuits cleanly in `idle` mode, so unapproved users never hit
+  // Firestore for this layer.
+  const surveyLocationsMode = useMemo<SurveyLocationLoadMode>(() => {
+    if (authLoading || !user) return 'idle';
+    if (userProfile?.role === 'admin' && userProfile?.status === 'approved') return 'admin';
+    if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') return 'enumerator';
+    return 'idle';
+  }, [authLoading, user, userProfile?.role, userProfile?.status]);
+
+  const { locations: surveyLocations } = useQuestionnaireSurveyLocations({
+    mode: surveyLocationsMode,
+    userUid: user?.uid
   });
 
   const visibleFeatures = useMemo(() => {
@@ -1394,6 +1550,7 @@ const AppContent: React.FC = () => {
       'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]';
 
     try {
+      const shpwrite = await loadShpWrite();
       const zipResult = await shpwrite.zip(exportPayload as any, {
         folder: 'changed_landmarks',
         types: { point: 'changed_landmarks' },
@@ -1480,6 +1637,7 @@ const AppContent: React.FC = () => {
       'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]';
 
     try {
+      const shpwrite = await loadShpWrite();
       const zipResult = await shpwrite.zip(exportPayload as any, {
         folder: 'all_landmarks',
         types: { point: 'all_landmarks' },
@@ -1951,6 +2109,402 @@ const AppContent: React.FC = () => {
     );
   }
 
+  // ────────────────────────────────────────────────────────────────────────
+  // Enumerator routing (questionnaire-only / both-segments / geospatial-only)
+  //
+  // Geospatial-only flows through to the main map render below. The two
+  // branches below intercept the other cases so questionnaire-only
+  // enumerators never see the map UI, and dual-assignment enumerators get a
+  // chooser similar to the admin landing.
+  // ────────────────────────────────────────────────────────────────────────
+  // Questionnaire-only enumerator → always render the list. We don't gate
+  // on `enumeratorMode` here so the map UI never flashes between renders.
+  if (
+    isApprovedEnumerator &&
+    enumeratorHasQTasks &&
+    !enumeratorHasGeoTasks &&
+    userProfile
+  ) {
+    return (
+      <EnumeratorQuestionnaireList
+        userProfile={userProfile}
+        onLogout={async () => {
+          await logout();
+        }}
+      />
+    );
+  }
+
+  // Dual-segment enumerator who picked the questionnaire branch → list with
+  // a back-link to the chooser.
+  if (
+    isApprovedEnumerator &&
+    enumeratorHasQTasks &&
+    enumeratorHasGeoTasks &&
+    enumeratorMode === 'questionnaire' &&
+    userProfile
+  ) {
+    return (
+      <EnumeratorQuestionnaireList
+        userProfile={userProfile}
+        onBack={() => setEnumeratorMode('home')}
+      />
+    );
+  }
+
+  if (
+    isApprovedEnumerator &&
+    enumeratorHasQTasks &&
+    enumeratorHasGeoTasks &&
+    enumeratorMode === 'home'
+  ) {
+    return (
+      <div className="flex h-[100dvh] flex-col bg-gradient-to-br from-slate-50 via-blue-50/40 to-emerald-50/30 font-sans text-slate-800">
+        <header className="h-16 bg-white/85 backdrop-blur border-b border-slate-200 px-4 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center shadow-md shadow-emerald-200">
+              <ClipboardList size={18} className="text-white" />
+            </div>
+            <div>
+              <h1 className="font-bold text-slate-900 leading-tight">My Tasks</h1>
+              <p className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider">
+                Enumerator
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="text-right hidden sm:block">
+              <p className="text-xs font-bold text-slate-900">
+                {userProfile?.displayName || user.email}
+              </p>
+              <p className="text-[10px] text-emerald-700 font-bold uppercase">ENUMERATOR</p>
+            </div>
+            <button
+              onClick={() => void logout()}
+              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+              title="Logout"
+            >
+              <LogOut size={20} />
+            </button>
+          </div>
+        </header>
+        <main className="flex-1 overflow-y-auto px-6 py-10">
+          <div className="max-w-4xl mx-auto">
+            <div className="mb-8 text-center">
+              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-1">
+                Welcome, {(userProfile?.displayName || user.email || 'Enumerator').split(' ')[0]}
+              </h2>
+              <p className="text-sm text-slate-500">
+                You have both geospatial and questionnaire tasks assigned. Pick one to get started.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <button
+                onClick={() => setEnumeratorMode('geospatial')}
+                className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+              >
+                <div className="absolute -top-12 -right-12 w-40 h-40 bg-blue-100/60 rounded-full blur-2xl group-hover:bg-blue-200/70 transition-colors" />
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
+                    <MapIcon size={26} className="text-white" />
+                  </div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-lg font-bold text-slate-900">Geospatial Survey</h3>
+                    <ChevronRight
+                      size={18}
+                      className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all"
+                    />
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    Map view for field-collected landmarks. Add and edit features in your assigned
+                    wards.
+                  </p>
+                  <div className="mt-3 text-[11px] text-blue-700 font-semibold">
+                    {assignedWardsForFilter.length} ward
+                    {assignedWardsForFilter.length === 1 ? '' : 's'} assigned
+                  </div>
+                </div>
+              </button>
+              <button
+                onClick={() => setEnumeratorMode('questionnaire')}
+                className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-emerald-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+              >
+                <div className="absolute -top-12 -right-12 w-40 h-40 bg-emerald-100/60 rounded-full blur-2xl group-hover:bg-emerald-200/70 transition-colors" />
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-200 mb-4">
+                    <ClipboardList size={26} className="text-white" />
+                  </div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-lg font-bold text-slate-900">Questionnaire Survey</h3>
+                    <ChevronRight
+                      size={18}
+                      className="text-slate-300 group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all"
+                    />
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    Fill in the questionnaires assigned to you. Drafts are saved between
+                    submissions.
+                  </p>
+                  <div className="mt-3 text-[11px] text-emerald-700 font-semibold">
+                    {(userProfile?.assignedQuestionnaireIds || []).length} questionnaire
+                    {(userProfile?.assignedQuestionnaireIds || []).length === 1 ? '' : 's'} assigned
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (
+    isApprovedEnumerator &&
+    !enumeratorHasGeoTasks &&
+    !enumeratorHasQTasks
+  ) {
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center bg-gradient-to-br from-slate-50 to-blue-50/40 p-6">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-lg p-8 max-w-md text-center">
+          <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4">
+            <ClipboardList size={24} className="text-amber-600" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-900 mb-1">No tasks assigned yet</h2>
+          <p className="text-sm text-slate-500 mb-5">
+            Your admin hasn't assigned any wards or questionnaires to your account yet. They'll
+            show up here automatically once they do.
+          </p>
+          <button
+            onClick={() => void logout()}
+            className="text-xs font-semibold px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1.5"
+          >
+            <LogOut size={13} /> Sign out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Admin top-level navigation
+  //
+  // Admins land on the ProjectPicker. Once a project is opened, they see the
+  // existing "choose your survey" home screen scoped to that project, then
+  // route into the geospatial or questionnaire surfaces from there. The
+  // project itself stays in state so the rest of the admin UI can scope its
+  // data (questionnaires, user task assignments) by `currentProject.id`.
+  // ────────────────────────────────────────────────────────────────────────
+  if (isAdmin && !currentProject) {
+    return (
+      <ProjectPicker
+        currentUserUid={user.uid}
+        currentUserName={userProfile?.displayName || user.email || undefined}
+        onOpen={(p) => {
+          setCurrentProject(p);
+          setAdminMode('home');
+        }}
+        onSignOut={() => void logout()}
+      />
+    );
+  }
+
+  if (isAdmin && adminMode === 'home') {
+    return (
+      <div className="flex h-[100dvh] flex-col bg-gradient-to-br from-slate-50 via-blue-50/40 to-indigo-50/30 font-sans text-slate-800">
+        <header className="bg-white/80 backdrop-blur border-b border-slate-200 px-4 py-2.5 flex flex-col gap-1 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-200">
+                <Shield size={18} className="text-white" />
+              </div>
+              <div>
+                <h1 className="font-bold text-slate-900 leading-tight">EQMS Geosurvey</h1>
+                <p className="text-[10px] text-blue-700 font-bold uppercase tracking-wider">
+                  Admin Console
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-right hidden sm:block">
+                <p className="text-xs font-bold text-slate-900">
+                  {userProfile?.displayName || user.email}
+                </p>
+                <p className="text-[10px] text-blue-600 font-bold uppercase">ADMIN</p>
+              </div>
+              <button
+                onClick={() => void logout()}
+                className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                title="Logout"
+              >
+                <LogOut size={20} />
+              </button>
+            </div>
+          </div>
+          {currentProject && (
+            <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
+              <div className="text-[11px] text-slate-600 min-w-0 truncate">
+                <span className="font-bold text-slate-400 uppercase tracking-wider mr-1.5">
+                  Project
+                </span>
+                <span className="font-semibold text-slate-800">{currentProject.name}</span>
+                {currentProject.code && (
+                  <span className="text-slate-400 ml-2">· Code {currentProject.code}</span>
+                )}
+              </div>
+              <button
+                onClick={() => setCurrentProject(null)}
+                className="text-[11px] font-semibold text-blue-700 hover:text-blue-900 inline-flex items-center gap-1"
+              >
+                Switch project <ChevronRight size={12} />
+              </button>
+            </div>
+          )}
+        </header>
+
+        <main className="flex-1 overflow-y-auto px-6 py-10">
+          <div className="max-w-5xl mx-auto">
+            <div className="mb-10 text-center">
+              <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-2">
+                Welcome back, {(userProfile?.displayName || user.email || 'Admin').split(' ')[0]}
+              </h2>
+              <p className="text-slate-500">
+                Choose a workspace to get started. You can switch between modes anytime.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Geospatial Survey tile */}
+              <button
+                onClick={() => setAdminMode('geospatial')}
+                className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+              >
+                <div className="absolute -top-12 -right-12 w-40 h-40 bg-blue-100/60 rounded-full blur-2xl group-hover:bg-blue-200/70 transition-colors" />
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
+                    <MapIcon size={26} className="text-white" />
+                  </div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-lg font-bold text-slate-900">Geospatial Survey</h3>
+                    <ChevronRight
+                      size={18}
+                      className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all"
+                    />
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    Map view, attribute data table, quality control and feature management for
+                    field-collected landmarks, points, lines and polygons.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-1.5">
+                    {['Map', 'QC', 'Landmarks', 'Wards', 'Shapefile export'].map((tag) => (
+                      <span
+                        key={tag}
+                        className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </button>
+
+              {/* Questionnaire Survey tile */}
+              <button
+                onClick={() => setAdminMode('questionnaire')}
+                className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-indigo-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+              >
+                <div className="absolute -top-12 -right-12 w-40 h-40 bg-indigo-100/60 rounded-full blur-2xl group-hover:bg-indigo-200/70 transition-colors" />
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200 mb-4">
+                    <ClipboardList size={26} className="text-white" />
+                  </div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-lg font-bold text-slate-900">Questionnaire Survey</h3>
+                    <ChevronRight
+                      size={18}
+                      className="text-slate-300 group-hover:text-indigo-600 group-hover:translate-x-0.5 transition-all"
+                    />
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    Design and publish surveys: add questions, configure properties, validation
+                    rules and conditional logic. Preview before publishing to the field.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-1.5">
+                    {['Question types', 'Validation', 'Logic', 'Sections', 'Preview'].map(
+                      (tag) => (
+                        <span
+                          key={tag}
+                          className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full"
+                        >
+                          {tag}
+                        </span>
+                      )
+                    )}
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            {/* Quick actions row */}
+            <div className="mt-8 bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center">
+                    <Users size={18} className="text-slate-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">User Management</p>
+                    <p className="text-xs text-slate-500">
+                      Approve enumerators, assign wards and manage roles.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowUserManagement(true)}
+                  className="text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
+                >
+                  Open <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        {/* User Management side-panel works on top of the home screen too. */}
+        {showUserManagement && (
+          <div className="fixed top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
+            <UserManagement
+              project={currentProject}
+              onClose={() => setShowUserManagement(false)}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (isAdmin && adminMode === 'questionnaire') {
+    return (
+      <>
+        <QuestionnaireManager
+          project={currentProject}
+          onClose={() => setAdminMode('home')}
+          onSelectQuestionnaire={(questionnaire) => {
+            setSelectedQuestionnaire(questionnaire);
+            setAdminMode('geospatial');
+          }}
+        />
+        {showUserManagement && (
+          <div className="fixed top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
+            <UserManagement
+              project={currentProject}
+              onClose={() => setShowUserManagement(false)}
+            />
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col bg-slate-50 font-sans text-slate-800">
       {/* Header */}
@@ -1982,8 +2536,37 @@ const AppContent: React.FC = () => {
           )}
           
           <div className="flex items-center gap-3 border-l border-slate-200 pl-4 ml-4">
+            {/* Dual-segment enumerator: surface a "back to chooser" button so
+                they can switch to their questionnaire tasks without logging
+                out. Shown only when both segments are assigned. */}
+            {isApprovedEnumerator && enumeratorHasGeoTasks && enumeratorHasQTasks && (
+              <button
+                onClick={() => setEnumeratorMode('home')}
+                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                title="My tasks"
+              >
+                <LayoutGrid size={20} />
+              </button>
+            )}
             {isAdmin && (
               <>
+                <button
+                  onClick={() => setAdminMode('home')}
+                  className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                  title="Switch survey mode"
+                >
+                  <LayoutGrid size={20} />
+                </button>
+                {currentProject && (
+                  <button
+                    onClick={() => setCurrentProject(null)}
+                    className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-100 rounded-lg max-w-[18rem] truncate"
+                    title={`Switch project · current: ${currentProject.name}`}
+                  >
+                    <Folder size={13} className="shrink-0" />
+                    <span className="truncate">{currentProject.name}</span>
+                  </button>
+                )}
                 <button 
                   onClick={() => setShowUserManagement(true)}
                   className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
@@ -2000,7 +2583,7 @@ const AppContent: React.FC = () => {
             <button 
               onClick={() => {
                 setShowUserManagement(false);
-                setShowQuestionnaireManager(false);
+                setAdminMode('home');
                 setSelectedQuestionnaire(null);
                 void logout();
               }}
@@ -2037,6 +2620,7 @@ const AppContent: React.FC = () => {
               addFeatureType={isAddingFeature}
               showPointAddBuffer={!isAdmin && isAddingFeature === 'point'}
               landmarkGeoJsonRefreshKey={isAdmin ? adminFeaturesRefreshKey : 0}
+              surveyLocations={surveyLocations}
             />
           ) : (
             <div className="p-6 overflow-y-auto w-full">
@@ -2228,22 +2812,15 @@ const AppContent: React.FC = () => {
         {/* User Management Overlay */}
         {isAdmin && showUserManagement && (
           <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <UserManagement onClose={() => setShowUserManagement(false)} />
-          </div>
-        )}
-
-        {/* Questionnaire Manager Overlay */}
-        {showQuestionnaireManager && (
-          <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <QuestionnaireManager
-              onClose={() => setShowQuestionnaireManager(false)}
-              onSelectQuestionnaire={(questionnaire) => {
-                setSelectedQuestionnaire(questionnaire);
-                setShowQuestionnaireManager(false);
-              }}
+            <UserManagement
+              project={currentProject}
+              onClose={() => setShowUserManagement(false)}
             />
           </div>
         )}
+
+        {/* Questionnaire Builder is now reached via the admin home screen
+            (see `adminMode === 'questionnaire'` branch above). */}
 
         {/* Questionnaire Form Overlay */}
         {selectedQuestionnaire && (
@@ -2687,7 +3264,9 @@ export default function App() {
   return (
     <AuthProvider>
       <GeoLocationProvider>
-        <AppContent />
+        <Suspense fallback={<ScreenFallback />}>
+          <AppContent />
+        </Suspense>
       </GeoLocationProvider>
     </AuthProvider>
   );

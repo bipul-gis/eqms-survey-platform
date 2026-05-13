@@ -33,7 +33,9 @@ html, body, #root {
   border: none !important;
 }
 
-/* Visible scrollbar for the admin QC panel (Windows overlay scrollbars can look like “no bar”). */
+/* Visible (non-overlay) scrollbar — used by the admin QC panel and the
+   enumerator's full-screen questionnaire form / list so users always see
+   that more content is below on Windows. */
 .qc-panel-scroll {
   scrollbar-gutter: stable;
   scrollbar-width: auto; /* Firefox */
