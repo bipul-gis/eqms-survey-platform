@@ -1435,7 +1435,7 @@ const PropertiesPanel: React.FC<{
   const typeDef = QUESTION_TYPE_BY_KEY[question.type];
 
   return (
-          <div>
+        <div>
       <Field label="Question Type">
         <select
           value={question.type}
@@ -1452,7 +1452,7 @@ const PropertiesPanel: React.FC<{
       </Field>
 
       <Field label="Question Prompt">
-        <textarea
+          <textarea
           value={question.question}
           onChange={(e) => onUpdate({ question: e.target.value })}
           rows={2}
@@ -1537,7 +1537,7 @@ const PropertiesPanel: React.FC<{
           onChange={(gpsSettings) => onUpdate({ gpsSettings })}
         />
       )}
-          </div>
+        </div>
   );
 };
 
@@ -1769,7 +1769,7 @@ const MatrixEditor: React.FC<{
                   >
             <Trash2 size={14} />
                   </button>
-                </div>
+        </div>
       ))}
       <button
         onClick={() => onChange([...values, `${label.replace(/s$/, '')} ${values.length + 1}`])}
@@ -2574,8 +2574,8 @@ const DefaultRulesPanel: React.FC<{
                                     ))}
                                   </select>
                                 ) : (
-                                  <input
-                                    type="text"
+                  <input
+                    type="text"
                                     value={cond.value || ''}
                                     onChange={(e) =>
                                       updateRuleCond(rule.id, cond.id, {
@@ -2606,7 +2606,7 @@ const DefaultRulesPanel: React.FC<{
                       Then
                     </div>
                     <div className="space-y-1.5">
-                      <select
+                    <select
                         value={rule.mode}
                         onChange={(e) =>
                           updateRule(rule.id, { mode: e.target.value as ValueRuleMode })
@@ -2619,7 +2619,7 @@ const DefaultRulesPanel: React.FC<{
                             {VALUE_RULE_MODE_LABELS[m].label}
                           </option>
                         ))}
-                      </select>
+                    </select>
                       <p className="text-[10px] text-slate-500 leading-snug">
                         {VALUE_RULE_MODE_LABELS[rule.mode].hint}
                       </p>

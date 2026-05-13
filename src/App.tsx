@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
+import { NetworkStatusBadge } from './components/NetworkStatusBadge';
 import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
 import {
   useQuestionnaireSurveyLocations,
@@ -2173,6 +2174,7 @@ const AppContent: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <NetworkStatusBadge />
             <div className="text-right hidden sm:block">
               <p className="text-xs font-bold text-slate-900">
                 {userProfile?.displayName || user.email}
@@ -2325,6 +2327,7 @@ const AppContent: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <NetworkStatusBadge />
               <div className="text-right hidden sm:block">
                 <p className="text-xs font-bold text-slate-900">
                   {userProfile?.displayName || user.email}
@@ -2516,6 +2519,7 @@ const AppContent: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-4">
+          <NetworkStatusBadge />
           <div className={`${isAdmin ? 'hidden md:flex' : 'flex'} items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-full border border-slate-100`}>
             <div className={`w-2 h-2 rounded-full ${enumeratorSyncUi.dotClass}`}></div>
             <span className="text-xs font-medium text-slate-600">{enumeratorSyncUi.label}</span>

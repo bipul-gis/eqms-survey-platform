@@ -736,12 +736,36 @@ export const SubmissionGpsCaptureWidget: React.FC<GpsCaptureWidgetProps> = ({
  * even on low-end devices. The bbox tightens around the marker so the pin is
  * always centered and visible; we cap the span so a poor first-fix
  * (accuracy in hundreds of meters) doesn't zoom out to a useless level.
+ *
+ * Offline fallback: the iframe points at openstreetmap.org so it can't load
+ * without network. When `navigator.onLine === false` we render an
+ * SVG/CSS-only "compass-style" preview that still confirms the capture —
+ * coordinates, accuracy, and a centered crosshair with a scaled accuracy
+ * ring — so the enumerator gets the same "yes, my fix was recorded" signal
+ * they get online.
  */
 const OsmMiniMap: React.FC<{ lat: number; lng: number; accuracy?: number }> = ({
   lat,
   lng,
   accuracy
 }) => {
+  // Track online state locally so reconnecting (or going offline mid-survey)
+  // swaps the preview without remounting the parent.
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const on = () => setIsOnline(true);
+    const off = () => setIsOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+
   // span ~ degrees on each side of the marker. ~0.0015° ≈ 150 m at the equator.
   const acc = typeof accuracy === 'number' && Number.isFinite(accuracy) ? accuracy : 50;
   const span = Math.max(0.0015, Math.min(0.015, acc / 30000));
@@ -757,6 +781,50 @@ const OsmMiniMap: React.FC<{ lat: number; lng: number; accuracy?: number }> = ({
   const viewUrl = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat.toFixed(
     5
   )}/${lng.toFixed(5)}`;
+
+  if (!isOnline) {
+    // Map the accuracy onto a visual ring radius. Real-world feel: 5 m fix
+    // shows tight, 100 m fix shows a wider "uncertainty" ring. Capped so a
+    // very poor fix doesn't blow past the card edges.
+    const ringRadius = Math.min(60, Math.max(8, acc));
+    return (
+      <div className="rounded-md border border-amber-200 overflow-hidden bg-gradient-to-br from-slate-50 to-amber-50/50">
+        <div className="relative h-40 sm:h-44 flex items-center justify-center">
+          {/* Subtle grid backdrop so the user sees a 'map-ish' canvas, not
+              a blank white box. Pure CSS, no network. */}
+          <div
+            className="absolute inset-0 opacity-40"
+            style={{
+              backgroundImage:
+                'linear-gradient(to right, rgba(15,23,42,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(15,23,42,0.06) 1px, transparent 1px)',
+              backgroundSize: '20px 20px'
+            }}
+          />
+          {/* Accuracy ring + crosshair pin */}
+          <div className="relative" style={{ width: ringRadius * 2, height: ringRadius * 2 }}>
+            <div
+              className="absolute inset-0 rounded-full border-2 border-amber-500/50 bg-amber-500/15 animate-pulse"
+              aria-hidden
+            />
+          </div>
+          <div className="absolute w-3 h-3 rounded-full bg-amber-600 ring-4 ring-white shadow" aria-hidden />
+          <div className="absolute top-1.5 left-1.5 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+            Offline preview
+          </div>
+        </div>
+        <div className="px-2.5 py-1.5 text-[10px] text-slate-600 flex items-center justify-between gap-2 border-t border-amber-100 bg-white/70">
+          <span className="font-mono">
+            {lat.toFixed(6)}, {lng.toFixed(6)}
+            {Number.isFinite(acc) && <> · ±{Math.round(acc)} m</>}
+          </span>
+          <span className="shrink-0 text-amber-700 font-semibold">
+            Map will load when online
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-md border border-emerald-200/80 overflow-hidden bg-white">
       <iframe

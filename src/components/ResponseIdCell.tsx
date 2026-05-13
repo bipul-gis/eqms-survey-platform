@@ -59,14 +59,31 @@ export const ResponseIdCell: React.FC<ResponseIdCellProps> = ({
 
   return (
     <div className="flex items-center gap-1.5 min-w-0">
-      <code
-        className={`font-mono text-[11px] text-slate-700 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 ${
-          variant === 'compact' ? 'break-all max-w-[160px]' : 'whitespace-nowrap'
-        }`}
-        title={id}
-      >
-        {id}
-      </code>
+      {variant === 'compact' ? (
+        // Mobile / narrow-column variant — keep the id on a single line and
+        // let the user swipe horizontally to read or copy it. Without
+        // `overflow-x-auto` the column would force a wrap; with `break-all`
+        // alone (the previous behaviour) each character ended up on its own
+        // line on phone widths, which made the cell unusable.
+        <div
+          className="min-w-0 max-w-[180px] overflow-x-auto no-scrollbar"
+          style={{ WebkitOverflowScrolling: 'touch' }}
+        >
+          <code
+            className="font-mono text-[11px] text-slate-700 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap inline-block"
+            title={id}
+          >
+            {id}
+          </code>
+        </div>
+      ) : (
+        <code
+          className="font-mono text-[11px] text-slate-700 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+          title={id}
+        >
+          {id}
+        </code>
+      )}
       <button
         type="button"
         onClick={handleCopy}

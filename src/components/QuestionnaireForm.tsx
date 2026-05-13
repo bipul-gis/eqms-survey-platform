@@ -577,7 +577,17 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       } else {
         await addDoc(collection(db, 'questionnaireResponses'), responseData);
       }
-      alert('Draft saved successfully!');
+      // Firestore's `addDoc` / `updateDoc` resolve as soon as the write is
+      // committed to the local IndexedDB cache. When the device is offline
+      // the server hasn't seen it yet — be honest about that so the
+      // enumerator understands the work is safe but not yet uploaded.
+      const isOffline =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+      alert(
+        isOffline
+          ? 'Draft saved on this device. It will sync automatically once you reconnect.'
+          : 'Draft saved successfully!'
+      );
     } catch (error) {
       try {
         handleFirestoreError(
@@ -627,7 +637,13 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         savedId = docRef.id;
       }
       onSubmit?.({ ...(responseData as any), id: savedId } as QuestionnaireResponse);
-      alert('Questionnaire submitted successfully!');
+      const isOffline =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+      alert(
+        isOffline
+          ? 'Submission saved on this device. It will upload automatically once you reconnect — no need to resubmit.'
+          : 'Questionnaire submitted successfully!'
+      );
       onClose();
     } catch (error) {
       try {

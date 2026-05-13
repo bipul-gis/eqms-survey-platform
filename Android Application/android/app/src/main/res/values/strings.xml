@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">EQMS Geosurvey</string>
+    <string name="title_activity_main">EQMS Geosurvey</string>
+    <string name="package_name">bd.gov.eqms.mamata.enumerator</string>
+    <string name="custom_url_scheme">bd.gov.eqms.mamata.enumerator</string>
+</resources>
