@@ -45,15 +45,18 @@ export const AppFooter: React.FC<AppFooterProps> = ({
 
   return (
     <footer
-      className={`pt-4 pb-3 text-center text-[11px] text-slate-500 leading-relaxed ${className}`}
+      className={`pt-3 pb-2 text-center text-[11px] text-slate-500 leading-relaxed ${className}`}
       aria-label="App attribution"
     >
-      <div>
-        <span className="font-semibold text-slate-600">Copyright:</span> EQMS
-      </div>
-      <div className="mt-0.5">
-        <span className="font-semibold text-slate-600">Developed by:</span> Bipul Paul
-      </div>
+      <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5">
+        <span>
+          <span className="font-semibold text-slate-600">Copyright:</span> EQMS
+        </span>
+        <span className="text-slate-300">·</span>
+        <span>
+          <span className="font-semibold text-slate-600">Developed by:</span> Bipul Paul
+        </span>
+      </span>
     </footer>
   );
 };
