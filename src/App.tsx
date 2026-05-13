@@ -539,10 +539,21 @@ const AppContent: React.FC = () => {
   }, [isAdmin, userProfile?.role, userProfile?.status, userProfile?.email]);
 
   useEffect(() => {
+    // On Capacitor (native Android shell), the hardware back button is
+    // handled by MainActivity.onBackPressed — it walks the WebView history
+    // for nested layers and shows a native "press back again to exit" toast
+    // at the root. If we also push a synthetic guard entry here it confuses
+    // that flow (the guard would always make canGoBack=true, so the user
+    // would need extra presses to exit). Skip the JS guard on Capacitor.
+    const isCapacitorNative =
+      typeof window !== 'undefined' &&
+      (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } })
+        .Capacitor?.isNativePlatform?.() === true;
     const isLikelyMobile =
       /Android|iPhone|iPad|iPod|Mobile|Opera Mini|IEMobile/i.test(navigator.userAgent) ||
       window.innerWidth <= 900;
-    const shouldGuardBack = isApprovedEnumerator && isLikelyMobile;
+    const shouldGuardBack =
+      isApprovedEnumerator && isLikelyMobile && !isCapacitorNative;
     if (!shouldGuardBack) return;
 
     // Keep one synthetic history entry so first browser-back is consumed inside app.

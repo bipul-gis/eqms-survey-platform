@@ -210,9 +210,24 @@ Write-Host "  drawable/splash (1280 x 1920)"
 # ---------------------------------------------------------------------------
 Write-Host "`n[4/4] PWA icons + web logo…"
 if (-not (Test-Path $publicDir)) { New-Item -ItemType Directory -Path $publicDir -Force | Out-Null }
+# PWA install icons: keep a safe inset so the logo doesn't touch the edge
+# when a launcher applies its own rounded mask.
 Save-Png (New-LogoOnBg -width 192 -height 192 -bg $iconBg -padPct 0.15) (Join-Path $publicDir 'pwa-192.png')
 Save-Png (New-LogoOnBg -width 512 -height 512 -bg $iconBg -padPct 0.15) (Join-Path $publicDir 'pwa-512.png')
-Write-Host "  public/pwa-192.png + public/pwa-512.png"
+Write-Host "  public/pwa-192.png + public/pwa-512.png (with safe inset)"
+
+# Browser tab favicon: zero padding so the wordmark fills the canvas
+# edge-to-edge. The logo is wider than tall so there's natural transparent
+# space above / below, but the visible logo itself is as large as a square
+# slot allows without distorting the aspect ratio. Tabs render this scaled
+# to ~16/32px — the larger source means crisper letterforms.
+Save-Png (New-LogoOnBg -width 64 -height 64 -bg $iconBg -padPct 0.00 -transparentBg $true) (Join-Path $publicDir 'favicon-64.png')
+Save-Png (New-LogoOnBg -width 192 -height 192 -bg $iconBg -padPct 0.00 -transparentBg $true) (Join-Path $publicDir 'favicon-192.png')
+# Wide variant for browsers that honour rectangular favicons (Safari pinned
+# tabs, Edge collections). Sized to the logo's native ratio so nothing gets
+# squashed when the OS scales it down.
+Save-Png (New-LogoOnBg -width 384 -height 162 -bg $iconBg -padPct 0.00 -transparentBg $true) (Join-Path $publicDir 'favicon-wide.png')
+Write-Host "  public/favicon-64.png + public/favicon-192.png + public/favicon-wide.png (logo only, transparent)"
 
 # Logo for in-app header use — keep aspect ratio so React can size by height.
 # Copy the master directly; consuming components scale it via CSS.

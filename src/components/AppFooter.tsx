@@ -34,7 +34,16 @@ export const AppFooter: React.FC<AppFooterProps> = ({
         className={`text-[10px] text-slate-500 leading-tight flex items-center gap-1.5 whitespace-nowrap ${className}`}
         aria-label="App attribution"
       >
-        <span>© EQMS</span>
+        <span className="inline-flex items-center gap-1">
+          ©
+          <img
+            src="/eqms-logo.png"
+            alt="EQMS"
+            className="h-3 w-auto align-middle inline-block select-none"
+            draggable={false}
+          />
+          Consulting Limited
+        </span>
         <span className="text-slate-300">·</span>
         <span>
           Developed by <span className="font-semibold text-slate-600">Bipul Paul</span>
@@ -49,8 +58,15 @@ export const AppFooter: React.FC<AppFooterProps> = ({
       aria-label="App attribution"
     >
       <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5">
-        <span>
-          <span className="font-semibold text-slate-600">Copyright:</span> EQMS
+        <span className="inline-flex items-center gap-1">
+          <span className="font-semibold text-slate-600">Copyright:</span>
+          <img
+            src="/eqms-logo.png"
+            alt="EQMS"
+            className="h-3.5 w-auto align-middle inline-block select-none"
+            draggable={false}
+          />
+          <span>Consulting Limited</span>
         </span>
         <span className="text-slate-300">·</span>
         <span>
