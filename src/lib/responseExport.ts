@@ -15,6 +15,10 @@ import {
   Questionnaire,
   QuestionnaireResponse
 } from '../types';
+import {
+  formatChoiceAnswerForExport,
+  isOtherSpecifyAnswer
+} from '../lib/choiceAnswers';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -83,9 +87,46 @@ const formatDateTimeToAmPm = (raw: string): string => {
   return `${m[1]} ${formatTimeToAmPm(`${m[2]}:${m[3]}`)}`;
 };
 
+/**
+ * Render an `age` value as "X years Y months" for CSV/Excel viewers.
+ * Single-segment ages drop the zero segment so the cell stays readable
+ * (`"5 years"` instead of `"5 years 0 months"`).
+ */
+const stringifyAge = (v: unknown): string => {
+  if (!v || typeof v !== 'object') return '';
+  const obj = v as { years?: number | string; months?: number | string };
+  const y = Number(obj.years ?? 0);
+  const m = Number(obj.months ?? 0);
+  const yy = Number.isFinite(y) ? y : 0;
+  const mm = Number.isFinite(m) ? m : 0;
+  if (yy === 0 && mm === 0) return '0 months';
+  const parts: string[] = [];
+  if (yy > 0) parts.push(`${yy} ${yy === 1 ? 'year' : 'years'}`);
+  if (mm > 0) parts.push(`${mm} ${mm === 1 ? 'month' : 'months'}`);
+  return parts.join(' ');
+};
+
 /** Convert raw answer values into a human-readable string. */
 const stringifyAnswer = (v: unknown, q?: Question): string => {
   if (v == null) return '';
+  // Age objects need a custom serializer — the generic object branch
+  // below would otherwise emit `years: 3; months: 5` which is fine but
+  // less natural than "3 years 5 months" in spreadsheets.
+  if (q?.type === 'age' && typeof v === 'object' && !Array.isArray(v)) {
+    return stringifyAge(v);
+  }
+  // Computed answers are stored as raw numbers/strings. Re-apply the
+  // admin-authored prefix/suffix so the CSV reads the same as what the
+  // enumerator saw on screen (e.g. "BDT 1200" instead of "1200").
+  if (q?.type === 'computed' && (typeof v === 'number' || typeof v === 'string')) {
+    if (v === '' || v === null) return '';
+    const prefix = q.computed?.prefix ?? '';
+    const suffix = q.computed?.suffix ?? '';
+    return `${prefix}${String(v)}${suffix}`;
+  }
+  if (isOtherSpecifyAnswer(v)) {
+    return formatChoiceAnswerForExport(v);
+  }
   if (Array.isArray(v)) {
     if (q && ensureOptions(q.options).length > 0) {
       const opts = ensureOptions(q.options);

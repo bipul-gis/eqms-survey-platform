@@ -10,7 +10,7 @@
  * publish controls, etc.) just to render a survey.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -21,9 +21,11 @@ import {
   Lock,
   Satellite,
   ShieldCheck,
+  Sigma,
   Star
 } from 'lucide-react';
 import {
+  ComputedSpec,
   ConsentGate,
   DescriptionBlock,
   DefaultValueRule,
@@ -34,10 +36,54 @@ import {
   QuestionOption,
   ValueRuleMode
 } from '../types';
+import { evaluateComputed } from '../lib/computedAnswers';
+import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
+import {
+  choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
+  choiceAnswerToComparableString
+} from '../lib/choiceAnswers';
+import { ChoiceWithOtherFields } from './ChoiceWithOtherFields';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Read-only chip shown for `computed` questions in the live runtime.
+ * Enumerators can see the live result but cannot edit it — the field
+ * is non-interactive and styled distinctly so they know to look
+ * upstream when the cell is empty.
+ */
+const ComputedAnswerCell: React.FC<{
+  display: string;
+  spec?: ComputedSpec;
+}> = ({ display, spec }) => {
+  const hasValue = display !== '';
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        className={`flex items-center justify-between gap-2 rounded-md border px-3 py-2 ${
+          hasValue
+            ? 'border-violet-200 bg-violet-50 text-violet-900'
+            : 'border-dashed border-slate-300 bg-slate-50 text-slate-400 italic'
+        }`}
+        aria-readonly="true"
+      >
+        <span className="text-sm font-mono break-all min-w-0">
+          {hasValue ? display : 'Waiting for operand answers…'}
+        </span>
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-violet-700 bg-white border border-violet-200 rounded-full px-1.5 py-0.5 shrink-0">
+          <Sigma size={10} /> Auto
+        </span>
+      </div>
+      {spec?.operation && (
+        <p className="text-[10px] text-slate-400">
+          Auto-calculated from other answers. You can&rsquo;t edit this field directly.
+        </p>
+      )}
+    </div>
+  );
+};
 
 /**
  * Some legacy questionnaires still store `Question.options` as plain string
@@ -63,28 +109,42 @@ export const evaluateLogic = (
     const v = c.value ?? '';
     switch (c.operator) {
       case 'equals':
-        return String(a ?? '') === String(v);
+        return choiceAnswerToComparableString(a) === String(v);
       case 'notEquals':
-        return String(a ?? '') !== String(v);
+        return choiceAnswerToComparableString(a) !== String(v);
       case 'contains':
         if (Array.isArray(a)) return a.includes(v);
-        return String(a ?? '').toLowerCase().includes(String(v).toLowerCase());
+        return choiceAnswerToComparableString(a)
+          .toLowerCase()
+          .includes(String(v).toLowerCase());
       case 'notContains':
         if (Array.isArray(a)) return !a.includes(v);
-        return !String(a ?? '').toLowerCase().includes(String(v).toLowerCase());
+        return !choiceAnswerToComparableString(a)
+          .toLowerCase()
+          .includes(String(v).toLowerCase());
       case 'greaterThan':
         return Number(a) > Number(v);
       case 'lessThan':
         return Number(a) < Number(v);
       case 'isEmpty':
-        return a === undefined || a === null || a === '' || (Array.isArray(a) && a.length === 0);
+        return choiceAnswerIsLogicallyEmpty(a);
       case 'isNotEmpty':
-        return !(a === undefined || a === null || a === '' || (Array.isArray(a) && a.length === 0));
+        return !choiceAnswerIsLogicallyEmpty(a);
       default:
         return true;
     }
   });
   return logic.combinator === 'AND' ? results.every(Boolean) : results.some(Boolean);
+};
+
+/** True when this choice option should be greyed out / unselectable. */
+export const isChoiceOptionDisabled = (
+  option: QuestionOption,
+  answers: Record<string, unknown>
+): boolean => {
+  const w = option.disabledWhen;
+  if (!w?.enabled || !w.conditions?.length) return false;
+  return evaluateLogic(w, answers);
 };
 
 // ---------------------------------------------------------------------------
@@ -106,6 +166,18 @@ const coerceRuleValue = (raw: string, target: Question): unknown => {
       // if the admin somehow stored a non-numeric default.
       if (raw === '') return '';
       return Number.isFinite(Number(raw)) ? Number(raw) : raw;
+    case 'age': {
+      // Accept "Y", "Y,M" or "Y M" for an age default — `0,6` means six
+      // months old, `5` means exactly 5y/0m. Anything past `,` after the
+      // first two slots is ignored.
+      if (!raw.trim()) return '';
+      const parts = raw.split(/[,\s/]+/).filter(Boolean);
+      const y = Number(parts[0] ?? 0);
+      const m = Number(parts[1] ?? 0);
+      const yy = Number.isFinite(y) ? Math.max(0, Math.floor(y)) : 0;
+      const mm = Number.isFinite(m) ? Math.min(11, Math.max(0, Math.floor(m))) : 0;
+      return { years: yy, months: mm, totalMonths: yy * 12 + mm };
+    }
     case 'checkbox':
     case 'multiselect':
       // Comma-separated → array of option values. Trim each and drop
@@ -124,11 +196,7 @@ const coerceRuleValue = (raw: string, target: Question): unknown => {
 };
 
 /** True when an answer should be considered "empty" for `fillIfEmpty` purposes. */
-const isAnswerEmpty = (v: unknown): boolean => {
-  if (v === undefined || v === null || v === '') return true;
-  if (Array.isArray(v) && v.length === 0) return true;
-  return false;
-};
+const isAnswerEmpty = (v: unknown): boolean => choiceAnswerIsLogicallyEmpty(v);
 
 export interface AppliedDefaultRule {
   questionId: string;
@@ -182,10 +250,9 @@ export const ruleValueMatchesCurrent = (current: unknown, target: unknown): bool
     if (current.length !== target.length) return false;
     return current.every((v, i) => v === target[i]);
   }
-  // Loose stringification covers `'5' === 5` mismatches that would
-  // otherwise trigger pointless rewrites between the input layer and
-  // our coerced value (number inputs surface their value as string).
-  return String(current ?? '') === String(target ?? '');
+  return (
+    choiceAnswerToComparableString(current) === choiceAnswerToComparableString(target)
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -261,14 +328,25 @@ export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[] }> = ({
 export const EnumeratorInfoTable: React.FC<{
   info: EnumeratorInfo;
   answers: Record<string, unknown>;
+  /**
+   * Answer map used to evaluate per-option `disabledWhen` rules. Defaults
+   * to `answers` when omitted. Pass a merge of enumerator + survey answers so
+   * enumerator choice options can reference main questionnaire fields.
+   */
+  logicAnswers?: Record<string, unknown>;
   onChange: (fieldId: string, value: unknown) => void;
-}> = ({ info, answers, onChange }) => {
+}> = ({ info, answers, logicAnswers, onChange }) => {
   const cls =
     'w-full text-sm border border-slate-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const logicCtx = logicAnswers ?? answers;
 
   const renderInput = (f: Question) => {
     const v = answers[f.id];
     const opts = ensureOptionShape(f.options);
+    const getOptionDisabled = (optValue: string) => {
+      const o = opts.find((x) => x.value === optValue);
+      return o ? isChoiceOptionDisabled(o, logicCtx) : false;
+    };
     switch (f.type) {
       case 'text':
       case 'email':
@@ -301,6 +379,62 @@ export const EnumeratorInfoTable: React.FC<{
             className={cls}
           />
         );
+      case 'age': {
+        const ageVal = (v && typeof v === 'object' ? v : {}) as {
+          years?: number | string;
+          months?: number | string;
+        };
+        const yrs = ageVal.years === undefined ? '' : String(ageVal.years);
+        const mos = ageVal.months === undefined ? '' : String(ageVal.months);
+        const commit = (ny: string, nm: string) => {
+          const y = ny === '' ? undefined : Math.max(0, Number(ny));
+          const mRaw = nm === '' ? undefined : Math.max(0, Number(nm));
+          const m = mRaw === undefined ? undefined : Math.min(11, mRaw);
+          if (y === undefined && m === undefined) {
+            onChange(f.id, undefined);
+            return;
+          }
+          const yy = y ?? 0;
+          const mm = m ?? 0;
+          onChange(f.id, { years: yy, months: mm, totalMonths: yy * 12 + mm });
+        };
+        return (
+          <div className="flex gap-2">
+            <div className="flex-1 min-w-0 relative">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={150}
+                step={1}
+                value={yrs}
+                onChange={(e) => commit(e.target.value, mos)}
+                placeholder="0"
+                className={`${cls} pr-12`}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                Years
+              </span>
+            </div>
+            <div className="flex-1 min-w-0 relative">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={11}
+                step={1}
+                value={mos}
+                onChange={(e) => commit(yrs, e.target.value)}
+                placeholder="0"
+                className={`${cls} pr-14`}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                Months
+              </span>
+            </div>
+          </div>
+        );
+      }
       case 'date':
         return (
           <input
@@ -330,44 +464,44 @@ export const EnumeratorInfoTable: React.FC<{
         );
       case 'select':
         return (
-          <select
-            value={(v as string) || ''}
-            onChange={(e) => onChange(f.id, e.target.value)}
+          <ChoiceWithOtherFields
+            mode="select"
+            name={f.id}
+            options={opts}
+            allowOther={f.allowOther}
+            value={v}
+            onChange={(next) => onChange(f.id, next)}
             className={cls}
-          >
-            <option value="">— select —</option>
-            {opts.map((o) => (
-              <option key={o.id} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            getOptionDisabled={getOptionDisabled}
+          />
         );
       case 'radio':
         return (
-          <div className="flex flex-wrap gap-3">
-            {opts.map((o) => (
-              <label key={o.id} className="flex items-center gap-1.5 text-xs text-slate-700">
-                <input
-                  type="radio"
-                  name={f.id}
-                  value={o.value}
-                  checked={v === o.value}
-                  onChange={() => onChange(f.id, o.value)}
-                />
-                {o.label}
-              </label>
-            ))}
-          </div>
+          <ChoiceWithOtherFields
+            mode="radio"
+            name={f.id}
+            options={opts}
+            allowOther={f.allowOther}
+            value={v}
+            onChange={(next) => onChange(f.id, next)}
+            className={cls}
+            getOptionDisabled={getOptionDisabled}
+          />
         );
       case 'checkbox': {
         const arr = Array.isArray(v) ? (v as string[]) : [];
         return (
           <div className="flex flex-wrap gap-3">
             {opts.map((o) => (
-              <label key={o.id} className="flex items-center gap-1.5 text-xs text-slate-700">
+              <label
+                key={o.id}
+                className={`flex items-center gap-1.5 text-xs ${
+                  isChoiceOptionDisabled(o, logicCtx) ? 'text-slate-400' : 'text-slate-700'
+                }`}
+              >
                 <input
                   type="checkbox"
+                  disabled={isChoiceOptionDisabled(o, logicCtx)}
                   checked={arr.includes(o.value)}
                   onChange={(e) =>
                     onChange(
@@ -392,13 +526,18 @@ export const EnumeratorInfoTable: React.FC<{
                 f.id,
                 Array.from(
                   e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>
-                ).map((o) => o.value)
+                )
+                  .map((o) => o.value)
+                  .filter((pv) => {
+                    const o = opts.find((x) => x.value === pv);
+                    return !o || !isChoiceOptionDisabled(o, logicCtx);
+                  })
               )
             }
             className={`${cls} h-24`}
           >
             {opts.map((o) => (
-              <option key={o.id} value={o.value}>
+              <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, logicCtx)}>
                 {o.label}
               </option>
             ))}
@@ -445,7 +584,22 @@ export const ConsentGateForm: React.FC<{
   gate: ConsentGate;
   granted: boolean;
   onChange: (granted: boolean) => void;
-}> = ({ gate, granted, onChange }) => {
+  /**
+   * Display name (or email fallback) for `{{enumeratorName}}` in `gate.text`
+   * and `gate.checkboxLabel` when substitution is enabled.
+   */
+  enumeratorDisplayName?: string | null;
+}> = ({ gate, granted, onChange, enumeratorDisplayName }) => {
+  const substitute = gate.substituteEnumeratorName !== false;
+  const displayText = useMemo(
+    () => formatConsentGateTemplate(gate.text, enumeratorDisplayName, substitute),
+    [gate.text, enumeratorDisplayName, substitute]
+  );
+  const displayCheckboxLabel = useMemo(
+    () => formatConsentGateTemplate(gate.checkboxLabel, enumeratorDisplayName, substitute),
+    [gate.checkboxLabel, enumeratorDisplayName, substitute]
+  );
+
   return (
     <div
       className={`rounded-lg overflow-hidden border ${
@@ -461,7 +615,7 @@ export const ConsentGateForm: React.FC<{
         <div className="text-sm font-bold">{gate.title || 'Permission Grant'}</div>
       </div>
       <div className="p-4 space-y-3">
-        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{gate.text}</p>
+        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{displayText}</p>
         <label className="flex items-start gap-2 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -470,7 +624,7 @@ export const ConsentGateForm: React.FC<{
             className="mt-0.5 w-4 h-4 accent-emerald-600"
           />
           <span className="text-sm font-semibold text-slate-800">
-            {gate.checkboxLabel}
+            {displayCheckboxLabel}
             <span className="text-red-500 ml-1">*</span>
           </span>
         </label>
@@ -986,10 +1140,48 @@ const Stat: React.FC<{
 
 export const RuntimeQuestion: React.FC<{
   index: number;
+  /**
+   * Hierarchical label printed before the prompt (e.g. `"3"` or
+   * `"3.a"`). When omitted we fall back to the legacy `index + 1`
+   * numbering so existing call-sites keep working.
+   */
+  numberLabel?: string;
   question: Question;
   value: unknown;
   onChange: (v: unknown) => void;
-}> = ({ index, question, value, onChange }) => {
+  /**
+   * Full snapshot of the form's current answers, used to evaluate
+   * `computed` questions. Optional so existing call-sites that only
+   * render simple input controls keep working.
+   */
+  allAnswers?: Record<string, unknown>;
+  /** Sibling questions, used by `computed` to resolve operand keys. */
+  allQuestions?: Question[];
+}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions }) => {
+  const opts =
+    question.type === 'section' ? [] : ensureOptionShape(question.options);
+  const cls = 'w-full text-sm border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const answersMap = allAnswers ?? {};
+
+  const getOptionDisabled = useCallback(
+    (optValue: string) => {
+      const o = opts.find((x) => x.value === optValue);
+      return o ? isChoiceOptionDisabled(o, answersMap) : false;
+    },
+    [opts, answersMap]
+  );
+
+  useEffect(() => {
+    if (question.type !== 'multiselect' && question.type !== 'checkbox') return;
+    const optionList = ensureOptionShape(question.options);
+    const arr = Array.isArray(value) ? (value as string[]) : [];
+    const filtered = arr.filter((pv) => {
+      const o = optionList.find((x) => x.value === pv);
+      return !o || !isChoiceOptionDisabled(o, answersMap);
+    });
+    if (filtered.length !== arr.length) onChange(filtered);
+  }, [question.type, question.id, question.options, value, answersMap, onChange]);
+
   if (question.type === 'section') {
     return (
       <div className="border-t-2 border-indigo-200 pt-3">
@@ -999,9 +1191,6 @@ export const RuntimeQuestion: React.FC<{
       </div>
     );
   }
-
-  const opts = ensureOptionShape(question.options);
-  const cls = 'w-full text-sm border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500';
 
   let body: React.ReactNode = null;
   switch (question.type) {
@@ -1061,6 +1250,90 @@ export const RuntimeQuestion: React.FC<{
         />
       );
       break;
+    case 'age': {
+      // Two-input composite: years + months. Stored as `{ years, months,
+      // totalMonths }` so admins can sort on either dimension and the CSV
+      // export can render both columns. Empty input is preserved as
+      // `undefined` so the "required" validator can still reject blanks.
+      const ageVal = (value && typeof value === 'object' ? value : {}) as {
+        years?: number | string;
+        months?: number | string;
+      };
+      const yrs = ageVal.years === undefined ? '' : String(ageVal.years);
+      const mos = ageVal.months === undefined ? '' : String(ageVal.months);
+      const commit = (nextYears: string, nextMonths: string) => {
+        const y = nextYears === '' ? undefined : Math.max(0, Number(nextYears));
+        const mRaw = nextMonths === '' ? undefined : Math.max(0, Number(nextMonths));
+        const m = mRaw === undefined ? undefined : Math.min(11, mRaw);
+        if (y === undefined && m === undefined) {
+          onChange(undefined);
+          return;
+        }
+        const yy = y ?? 0;
+        const mm = m ?? 0;
+        onChange({ years: yy, months: mm, totalMonths: yy * 12 + mm });
+      };
+      body = (
+        <div className="flex items-stretch gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="relative">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={150}
+                step={1}
+                value={yrs}
+                onChange={(e) => commit(e.target.value, mos)}
+                placeholder="0"
+                className={`${cls} pr-12`}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Years
+              </span>
+            </div>
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="relative">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={11}
+                step={1}
+                value={mos}
+                onChange={(e) => commit(yrs, e.target.value)}
+                placeholder="0"
+                className={`${cls} pr-14`}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Months
+              </span>
+            </div>
+          </div>
+        </div>
+      );
+      break;
+    }
+    case 'computed': {
+      // The form layer is responsible for actually writing the computed
+      // result into `responses` (so it persists on submit). Here we just
+      // mirror the live calculation back to the enumerator — re-running
+      // it on every render keeps the value in sync the moment any
+      // operand answer changes, with zero extra subscriptions.
+      const res = evaluateComputed(
+        question.computed,
+        allAnswers ?? {},
+        allQuestions ?? []
+      );
+      body = (
+        <ComputedAnswerCell
+          display={res.display}
+          spec={question.computed}
+        />
+      );
+      break;
+    }
     case 'date':
       body = <input type="date" value={(value as string) || ''} onChange={(e) => onChange(e.target.value)} className={cls} />;
       break;
@@ -1072,14 +1345,16 @@ export const RuntimeQuestion: React.FC<{
       break;
     case 'select':
       body = (
-        <select value={(value as string) || ''} onChange={(e) => onChange(e.target.value)} className={cls}>
-          <option value="">— select —</option>
-          {opts.map((o) => (
-            <option key={o.id} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+        <ChoiceWithOtherFields
+          mode="select"
+          name={question.id}
+          options={opts}
+          allowOther={question.allowOther}
+          value={value}
+          onChange={onChange}
+          className={cls}
+          getOptionDisabled={getOptionDisabled}
+        />
       );
       break;
     case 'multiselect':
@@ -1087,15 +1362,20 @@ export const RuntimeQuestion: React.FC<{
         <select
           multiple
           value={(value as string[]) || []}
-          onChange={(e) =>
-            onChange(
-              Array.from(e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>).map((o) => o.value)
-            )
-          }
+          onChange={(e) => {
+            const picked = Array.from(
+              e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>
+            ).map((o) => o.value);
+            const filtered = picked.filter((pv) => {
+              const o = opts.find((x) => x.value === pv);
+              return !o || !isChoiceOptionDisabled(o, answersMap);
+            });
+            onChange(filtered);
+          }}
           className={`${cls} h-32`}
         >
           {opts.map((o) => (
-            <option key={o.id} value={o.value}>
+            <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, answersMap)}>
               {o.label}
             </option>
           ))}
@@ -1104,20 +1384,16 @@ export const RuntimeQuestion: React.FC<{
       break;
     case 'radio':
       body = (
-        <div className="space-y-1.5">
-          {opts.map((o) => (
-            <label key={o.id} className="flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="radio"
-                name={question.id}
-                value={o.value}
-                checked={value === o.value}
-                onChange={() => onChange(o.value)}
-              />
-              {o.label}
-            </label>
-          ))}
-        </div>
+        <ChoiceWithOtherFields
+          mode="radio"
+          name={question.id}
+          options={opts}
+          allowOther={question.allowOther}
+          value={value}
+          onChange={onChange}
+          className={cls}
+          getOptionDisabled={getOptionDisabled}
+        />
       );
       break;
     case 'checkbox':
@@ -1126,9 +1402,15 @@ export const RuntimeQuestion: React.FC<{
           {opts.map((o) => {
             const arr = Array.isArray(value) ? (value as string[]) : [];
             return (
-              <label key={o.id} className="flex items-center gap-2 text-sm text-slate-700">
+              <label
+                key={o.id}
+                className={`flex items-center gap-2 text-sm ${
+                  isChoiceOptionDisabled(o, answersMap) ? 'text-slate-400' : 'text-slate-700'
+                }`}
+              >
                 <input
                   type="checkbox"
+                  disabled={isChoiceOptionDisabled(o, answersMap)}
                   checked={arr.includes(o.value)}
                   onChange={(e) =>
                     onChange(e.target.checked ? [...arr, o.value] : arr.filter((x) => x !== o.value))
@@ -1255,10 +1537,12 @@ export const RuntimeQuestion: React.FC<{
       );
   }
 
+  const prefix = numberLabel !== undefined ? numberLabel : String(index + 1);
   return (
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-slate-800">
-        {index + 1}. {question.question || 'Untitled question'}
+        {prefix !== '' && `${prefix}. `}
+        {question.question || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
       {question.description && <p className="text-xs text-slate-500 -mt-1">{question.description}</p>}

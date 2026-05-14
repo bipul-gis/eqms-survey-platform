@@ -89,6 +89,7 @@ import {
   updateDoc
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './lib/firebase';
+import { normalizedFullName } from './lib/userDisplayName';
 import wardsData from './data/ccc_wards.json';
 import { fetchLandmarkGeoJson } from './lib/landmarkGeoJson';
 // @mapbox/shp-write pulls in jszip (~200 KB combined). Loaded on-demand from
@@ -385,32 +386,6 @@ const haystackMatchesTableQuery = (haystack: string, q: string): boolean => {
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   if (tokens.length <= 1) return false;
   return tokens.every((t) => h.includes(t));
-};
-
-const toTitleCaseWords = (input: string): string =>
-  input
-    .trim()
-    .split(/\s+/)
-    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w))
-    .join(' ');
-
-const normalizedFullName = (displayName: string | undefined, email: string): string => {
-  const raw = String(displayName || '').trim();
-  const emailLocal = email.split('@')[0] || '';
-  const rawKey = raw.toLowerCase();
-  const emailKey = email.toLowerCase();
-  const localKey = emailLocal.toLowerCase();
-  const looksLikeEmailOrUsername =
-    !raw ||
-    rawKey === emailKey ||
-    rawKey === localKey ||
-    /^[a-z0-9._-]+$/i.test(raw);
-
-  if (looksLikeEmailOrUsername) {
-    const pretty = emailLocal.replace(/[._-]+/g, ' ').trim();
-    return toTitleCaseWords(pretty || raw || email);
-  }
-  return toTitleCaseWords(raw);
 };
 
 const AppContent: React.FC = () => {

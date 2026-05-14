@@ -114,19 +114,96 @@ export type QuestionType =
   | 'datetime'
   | 'email'
   | 'phone'
+  | 'age'
   | 'rating'
   | 'scale'
   | 'location'
   | 'photo'
   | 'signature'
   | 'matrix'
+  | 'computed'
   | 'section';
+
+/**
+ * Operation used by a `computed` question. The enumerator never types
+ * the answer — it's derived live from other questions' answers.
+ *
+ * - `sum` / `subtract` / `multiply` / `divide`: arithmetic over the
+ *   operands in the order they appear in `operandQuestionIds`.
+ * - `average`: arithmetic mean of all non-empty numeric operands.
+ * - `min` / `max`: extreme of all non-empty numeric operands.
+ * - `count_nonempty`: integer count of operands that have any answer
+ *   (handy for "how many household members are employed" totals).
+ * - `concat`: string concatenation of operand answers, joined by the
+ *   configured separator (defaults to a single space).
+ * - `expression`: free arithmetic expression with `{{questionId}}`
+ *   placeholders — only `+ - * / ( )` and numeric literals allowed.
+ */
+export type ComputedOperation =
+  | 'sum'
+  | 'subtract'
+  | 'multiply'
+  | 'divide'
+  | 'average'
+  | 'min'
+  | 'max'
+  | 'count_nonempty'
+  | 'concat'
+  | 'expression';
+
+export interface ComputedSpec {
+  operation: ComputedOperation;
+  /**
+   * Question ids whose answers feed the formula. Order matters for
+   * `subtract`, `divide` and `concat`. For `expression` they're only
+   * advisory (the placeholders inside `expression` are the source of
+   * truth) but we still keep them so the dependency tracker can rebuild
+   * the computed value as those answers change.
+   */
+  operandQuestionIds: string[];
+  /**
+   * Free-form arithmetic expression for `operation === 'expression'`.
+   * Use `{{questionId}}` or `{{questionKey}}` placeholders. Only `+`,
+   * `-`, `*`, `/`, parentheses and numeric literals are evaluated;
+   * anything else is rejected and the result falls back to empty.
+   */
+  expression?: string;
+  /** Number of decimal places to round to (defaults to 2 for arithmetic, no rounding for `count_nonempty`). */
+  decimals?: number;
+  /** Optional prefix shown before the value (e.g. "BDT "). */
+  prefix?: string;
+  /** Optional suffix shown after the value (e.g. " m²" or "%"). */
+  suffix?: string;
+  /** For `concat` only. Joiner between operand strings (defaults to a single space). */
+  separator?: string;
+}
+
+/**
+ * Stored shape of an `age` answer. Both fields are integers; we keep them
+ * structured (rather than serialising "3 years 5 months") so admins can
+ * sort/filter on years separately and the CSV export can break them into
+ * two columns if needed. `totalMonths` is derived but persisted for fast
+ * queries.
+ */
+export interface AgeValue {
+  years: number;
+  months: number;
+  /** Convenience field: years * 12 + months. */
+  totalMonths?: number;
+}
 
 /** Option for choice questions. `value` is the stored answer; `label` is shown to enumerators. */
 export interface QuestionOption {
   id: string;
   value: string;
   label: string;
+  /**
+   * When set with `enabled` and at least one condition, this option cannot
+   * be selected while the rule matches current answers (same evaluation as
+   * question display logic). Example: disable option 4 when question 8a is
+   * not zero — one condition: ref 8a, operator `notEquals`, value `0`.
+   */
+  disabledWhen?: LogicRule;
 }
 
 export interface QuestionValidation {
@@ -252,6 +329,19 @@ export interface Question {
    * fallbacks). Empty/undefined means no auto behaviour.
    */
   defaultValueRules?: DefaultValueRule[];
+  /**
+   * Formula spec for `type === 'computed'`. The answer is auto-derived
+   * live from other questions' answers and displayed read-only in the
+   * runtime — enumerators never type it directly. See `ComputedSpec`.
+   */
+  computed?: ComputedSpec;
+  /**
+   * Parent question id when this question is a **sub-question** (e.g.
+   * 1.a, 1.b under question 1). Single-level nesting only — a
+   * sub-question can't itself have sub-questions. When the parent is
+   * hidden by its `logic` rule, every child is hidden alongside it.
+   */
+  parentId?: string;
   /** For matrix questions only — row labels. */
   rows?: string[];
   /** For matrix questions only — column option labels. */
@@ -314,6 +404,12 @@ export interface ConsentGate {
   text: string;
   /** Label shown next to the checkbox. */
   checkboxLabel: string;
+  /**
+   * When true (default), `{{enumeratorName}}` (and `{{enumerator_name}}`)
+   * in `text` and `checkboxLabel` is replaced with the signed-in
+   * enumerator's name when the form is shown.
+   */
+  substituteEnumeratorName?: boolean;
 }
 
 /**
@@ -374,6 +470,17 @@ export interface Questionnaire {
   description: string;
   /** Rich-content description: headings, paragraphs, tables. Authoritative when set. */
   descriptionBlocks?: DescriptionBlock[];
+  /**
+   * Plain-text summary of the conclusion (for search / list cards). Derived
+   * from `conclusionBlocks` when the admin authors rich content.
+   */
+  conclusion?: string;
+  /**
+   * Closing content shown after the last survey question (and before
+   * end-of-survey submission GPS when enabled): thank-you text, next steps,
+   * contact info, etc. Same block types as `descriptionBlocks`.
+   */
+  conclusionBlocks?: DescriptionBlock[];
   /** Enumerator info captured above the survey questions, as a table form. */
   enumeratorInfo?: EnumeratorInfo;
   /** Permission/consent gate shown before survey questions. */

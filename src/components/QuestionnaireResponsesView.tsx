@@ -7,9 +7,14 @@ import {
   doc,
   updateDoc,
   deleteDoc,
-  serverTimestamp
+  serverTimestamp,
+  writeBatch
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  formatChoiceAnswerForExport,
+  isOtherSpecifyAnswer
+} from '../lib/choiceAnswers';
 import { Question, Questionnaire, QuestionnaireResponse } from '../types';
 import { useAuth } from './AuthProvider';
 import { useOptimizedFeatures } from '../hooks/useOptimizedFeatures';
@@ -60,13 +65,21 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   questionnaire,
   onClose
 }) => {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
+  const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const [responses, setResponses] = useState<QuestionnaireResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
+  const [showDeleteAll, setShowDeleteAll] = useState(false);
+  const [deleteAllConfirmText, setDeleteAllConfirmText] = useState('');
+  const [deletingAll, setDeletingAll] = useState(false);
+  const [deleteAllProgress, setDeleteAllProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
 
   // Pull the same feature set the geospatial-survey tab uses so admins viewing
   // this questionnaire's responses get the full map context (wards, points,
@@ -304,6 +317,45 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     }
   };
 
+  /**
+   * Bulk-delete every response that's currently loaded for this
+   * questionnaire. We rely on the local `responses` snapshot (already scoped
+   * to `questionnaireId`) as the source of truth so the delete cannot
+   * accidentally span other questionnaires. Firestore caps a single
+   * `writeBatch` at 500 ops, so we chunk and commit sequentially. Progress
+   * is surfaced to the user via the modal in case the dataset is large.
+   */
+  const handleDeleteAll = async () => {
+    if (!isAdmin) return;
+    if (responses.length === 0) return;
+    setDeletingAll(true);
+    setDeleteAllProgress({ done: 0, total: responses.length });
+    try {
+      const ids = responses.map((r) => r.id);
+      const chunkSize = 400;
+      let done = 0;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const slice = ids.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        for (const id of slice) {
+          batch.delete(doc(db, 'questionnaireResponses', id));
+        }
+        await batch.commit();
+        done += slice.length;
+        setDeleteAllProgress({ done, total: ids.length });
+      }
+      setResponses([]);
+      setSelected(null);
+      setShowDeleteAll(false);
+      setDeleteAllConfirmText('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'questionnaireResponses');
+    } finally {
+      setDeletingAll(false);
+      setDeleteAllProgress(null);
+    }
+  };
+
   const handleExportCsv = () => {
     if (filtered.length === 0) {
       alert('Nothing to export — no responses match the current filter.');
@@ -340,6 +392,19 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         >
           <RefreshCw size={16} />
         </button>
+        {isAdmin && (
+          <button
+            onClick={() => {
+              setDeleteAllConfirmText('');
+              setShowDeleteAll(true);
+            }}
+            disabled={loading || responses.length === 0 || deletingAll}
+            className="px-3 py-2 text-sm font-semibold bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
+            title="Permanently delete every response for this questionnaire"
+          >
+            <Trash2 size={15} /> Delete All ({responses.length})
+          </button>
+        )}
         <button
           onClick={handleExportCsv}
           disabled={loading || filtered.length === 0}
@@ -646,6 +711,111 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
           onMarkReviewed={() => void markReviewed(selected)}
           onDelete={() => void handleDelete(selected)}
         />
+      )}
+
+      {/* Bulk delete confirmation. Admin-only; requires the user to type
+          "DELETE" so a stray click can't wipe out the dataset. */}
+      {showDeleteAll && (
+        <div
+          className="fixed inset-0 z-[1015] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => {
+            if (!deletingAll) {
+              setShowDeleteAll(false);
+              setDeleteAllConfirmText('');
+            }
+          }}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center shrink-0">
+                <AlertCircle size={20} className="text-rose-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-slate-900">
+                  Delete all responses?
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  This will permanently remove all{' '}
+                  <span className="font-bold text-slate-700">{responses.length}</span>{' '}
+                  responses (drafts + submitted + reviewed) for{' '}
+                  <span className="font-semibold text-slate-700">
+                    {questionnaire.title}
+                  </span>
+                  . This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">
+                Type <span className="text-rose-600 font-bold">DELETE</span> to
+                confirm
+              </label>
+              <input
+                type="text"
+                value={deleteAllConfirmText}
+                onChange={(e) => setDeleteAllConfirmText(e.target.value)}
+                disabled={deletingAll}
+                placeholder="DELETE"
+                autoFocus
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none disabled:opacity-60"
+              />
+            </div>
+
+            {deleteAllProgress && (
+              <div className="mb-4 text-xs text-slate-600">
+                <div className="flex justify-between mb-1">
+                  <span>Deleting…</span>
+                  <span className="font-semibold">
+                    {deleteAllProgress.done} / {deleteAllProgress.total}
+                  </span>
+                </div>
+                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-rose-500 transition-all"
+                    style={{
+                      width: `${
+                        (deleteAllProgress.done /
+                          Math.max(1, deleteAllProgress.total)) *
+                        100
+                      }%`
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!deletingAll) {
+                    setShowDeleteAll(false);
+                    setDeleteAllConfirmText('');
+                  }
+                }}
+                disabled={deletingAll}
+                className="px-3 py-2 text-sm font-semibold rounded-lg text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteAll()}
+                disabled={
+                  deletingAll || deleteAllConfirmText.trim().toUpperCase() !== 'DELETE'
+                }
+                className="px-3 py-2 text-sm font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                <Trash2 size={14} />
+                {deletingAll ? 'Deleting…' : `Delete ${responses.length}`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1296,8 +1466,49 @@ const toAmPm = (hhmm: string): string => {
   return `${h}:${mm} ${ampm}`;
 };
 
+/**
+ * Render an `age` answer object as a human-readable string. Pluralises
+ * "year"/"years" and "month"/"months" and drops a zero segment when the
+ * other one is non-zero ("3 years" instead of "3 years 0 months"), but
+ * keeps "0 months" when the whole age is zero so the cell never appears
+ * blank for a filled response.
+ */
+const formatAgeAnswer = (v: unknown): string => {
+  if (!v || typeof v !== 'object') return '';
+  const obj = v as { years?: number | string; months?: number | string };
+  const y = Number(obj.years ?? 0);
+  const m = Number(obj.months ?? 0);
+  if (!Number.isFinite(y) && !Number.isFinite(m)) return '';
+  const yy = Number.isFinite(y) ? y : 0;
+  const mm = Number.isFinite(m) ? m : 0;
+  if (yy === 0 && mm === 0) return '0 months';
+  const parts: string[] = [];
+  if (yy > 0) parts.push(`${yy} ${yy === 1 ? 'year' : 'years'}`);
+  if (mm > 0) parts.push(`${mm} ${mm === 1 ? 'month' : 'months'}`);
+  return parts.join(' ');
+};
+
 const formatAnswerForDisplay = (v: unknown, q?: Question): string => {
   if (v == null) return '';
+  if (isOtherSpecifyAnswer(v)) {
+    return formatChoiceAnswerForExport(v);
+  }
+  // `age` answers are stored as { years, months, totalMonths } — render
+  // them as the natural "3 years 5 months" string the admins expect to
+  // see in the response detail panel and CSV preview.
+  if (q?.type === 'age' && typeof v === 'object' && !Array.isArray(v)) {
+    return formatAgeAnswer(v);
+  }
+  // `computed` answers are stored as the raw number/string the formula
+  // produced, but admins authored the prefix/suffix on the builder side
+  // (e.g. "BDT " / " m²") — re-apply them here so the review screen and
+  // CSV preview line up with what enumerators saw on the device.
+  if (q?.type === 'computed') {
+    const prefix = q.computed?.prefix ?? '';
+    const suffix = q.computed?.suffix ?? '';
+    if (v === '' || v === null || v === undefined) return '';
+    return `${prefix}${String(v)}${suffix}`;
+  }
   if (Array.isArray(v)) {
     if (q) {
       const opts = ensureOpts(q.options);

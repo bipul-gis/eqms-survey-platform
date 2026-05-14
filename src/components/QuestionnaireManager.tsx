@@ -1,7 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthProvider';
 import { AppFooter } from './AppFooter';
+import { ChoiceWithOtherFields } from './ChoiceWithOtherFields';
 import {
+  ComputedOperation,
+  ComputedSpec,
   ConsentGate,
   DefaultValueRule,
   DescriptionBlock,
@@ -21,7 +24,15 @@ import {
   SubmissionGpsCapture,
   ValueRuleMode
 } from '../types';
+import { evaluateComputed } from '../lib/computedAnswers';
+import { isChoiceOptionDisabled, ConsentGateForm } from './QuestionnaireRuntime';
+import {
+  choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
+  choiceAnswerToComparableString
+} from '../lib/choiceAnswers';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
+import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
+import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
   FileText,
   Plus,
@@ -72,7 +83,10 @@ import {
   Satellite,
   Loader2,
   CheckCircle2,
-  Crosshair
+  Crosshair,
+  Sigma,
+  CornerDownRight,
+  CornerUpLeft
 } from 'lucide-react';
 import {
   collection,
@@ -112,6 +126,7 @@ const QUESTION_TYPES: QuestionTypeDef[] = [
   { type: 'email',       label: 'Email',          hint: 'Email-formatted text',              Icon: Mail,        group: 'text' },
   { type: 'phone',       label: 'Phone',          hint: 'Phone number',                      Icon: Phone,       group: 'text' },
   { type: 'number',      label: 'Number',         hint: 'Numeric input',                     Icon: Hash,        group: 'numeric' },
+  { type: 'age',         label: 'Age',            hint: 'Years + months',                    Icon: Clock,       group: 'numeric' },
   { type: 'rating',      label: 'Star Rating',    hint: '1–5 stars',                         Icon: Star,        group: 'numeric' },
   { type: 'scale',       label: 'Linear Scale',   hint: 'Numeric range (e.g. 1–10)',         Icon: Sliders,     group: 'numeric' },
   { type: 'select',      label: 'Dropdown',       hint: 'Single choice — dropdown',          Icon: ChevronDown, group: 'choice', hasOptions: true },
@@ -125,6 +140,7 @@ const QUESTION_TYPES: QuestionTypeDef[] = [
   { type: 'photo',       label: 'Photo',          hint: 'Image upload',                      Icon: Camera,      group: 'media' },
   { type: 'signature',   label: 'Signature',      hint: 'Drawn signature',                   Icon: PenTool,     group: 'media' },
   { type: 'matrix',      label: 'Matrix / Grid',  hint: 'Rows × column options',             Icon: Grid3x3,     group: 'advanced' },
+  { type: 'computed',    label: 'Computed',       hint: 'Auto-calculated from other answers',Icon: Sigma,       group: 'advanced' },
   { type: 'section',     label: 'Section Break',  hint: 'Group questions into a section',    Icon: Layers,      group: 'advanced' }
 ];
 
@@ -625,6 +641,16 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     }
     return [];
   });
+  const [conclusionBlocks, setConclusionBlocks] = useState<DescriptionBlock[]>(() => {
+    if (questionnaire?.conclusionBlocks && questionnaire.conclusionBlocks.length > 0) {
+      return questionnaire.conclusionBlocks;
+    }
+    const plain = (questionnaire?.conclusion || '').trim();
+    if (plain) {
+      return [{ id: uid('b'), type: 'paragraph', text: plain }];
+    }
+    return [];
+  });
   const [version, setVersion] = useState(questionnaire?.version || '1.0');
   const [isActive, setIsActive] = useState(questionnaire?.isActive ?? false);
   const [settings, setSettings] = useState<QuestionnaireSettings>(
@@ -659,7 +685,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       text:
         'Before starting this survey, the enumerator must obtain verbal consent from the respondent. Please explain the purpose of the survey, that participation is voluntary, that the respondent may decline or stop at any time, and that their responses will be kept confidential and used only for the stated research purposes.',
       checkboxLabel:
-        'I confirm that I have obtained verbal consent from the respondent to conduct this survey.'
+        'I confirm that I have obtained verbal consent from the respondent to conduct this survey.',
+      substituteEnumeratorName: true
     };
   });
 
@@ -725,6 +752,17 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   const [showPreview, setShowPreview] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Transient "Saved · just now" indicator shown next to the save
+  // buttons after a `mode === 'save'` write succeeds. We use it
+  // instead of closing the editor so admins can keep editing.
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Once a brand-new questionnaire is saved via the inline "Save"
+  // button (which keeps the editor open) we remember the new
+  // Firestore document id so subsequent saves are `updateDoc` calls
+  // against the same row instead of repeatedly inserting clones.
+  const [persistedId, setPersistedId] = useState<string | null>(
+    questionnaire?.id || null
+  );
   const [paletteFilter, setPaletteFilter] = useState<QuestionTypeDef['group'] | 'all'>('all');
 
   const selectedQuestion = useMemo(
@@ -752,12 +790,97 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
 
   const removeQuestion = (id: string) => {
     setQuestions((prev) => {
-      const next = prev.filter((q) => q.id !== id);
+      // Any sub-questions parented under the one being deleted get
+      // promoted back to top-level so they don't become orphans
+      // pointing at a non-existent parent.
+      const next = prev
+        .filter((q) => q.id !== id)
+        .map((q) => (q.parentId === id ? { ...q, parentId: undefined } : q));
       if (selectedId === id) {
         setSelectedId(next[0]?.id ?? null);
       }
       return next;
     });
+  };
+
+  /**
+   * Set / clear the `parentId` for a single question. Enforces the
+   * single-level nesting rule:
+   * - Sections, computed, and matrix questions never become sub-
+   *   questions (they're structural blocks).
+   * - A question that already has its own children can't itself
+   *   become a child (would make a grandchild).
+   * - The new parent must be a top-level, non-section question
+   *   (otherwise we'd be nesting under another child).
+   *
+   * Pass `null` as `newParentId` to promote a child back to top level.
+   */
+  const setQuestionParent = (id: string, newParentId: string | null) => {
+    setQuestions((prev) => {
+      const target = prev.find((q) => q.id === id);
+      if (!target) return prev;
+      if (target.type === 'section') return prev;
+      // Children can't become parents (single-level only).
+      const hasChildren = prev.some((q) => q.parentId === id);
+      if (newParentId && hasChildren) {
+        alert(
+          'This question already has sub-questions and can\u2019t itself become a sub-question. ' +
+            'Promote its children back to the top level first.'
+        );
+        return prev;
+      }
+      if (newParentId === null) {
+        return prev.map((q) =>
+          q.id === id ? { ...q, parentId: undefined } : q
+        );
+      }
+      if (newParentId === id) return prev;
+      const parent = prev.find((q) => q.id === newParentId);
+      if (!parent) return prev;
+      if (parent.type === 'section') return prev;
+      if (parent.parentId) {
+        alert('Pick a top-level question as the parent (no sub-sub-questions).');
+        return prev;
+      }
+      // Move the child to sit right after its parent's last existing
+      // child in the flat array so the canvas renders it inline.
+      const next = prev.filter((q) => q.id !== id);
+      const updated = { ...target, parentId: newParentId };
+      const parentIdx = next.findIndex((q) => q.id === newParentId);
+      if (parentIdx < 0) return [...next, updated];
+      let insertAt = parentIdx + 1;
+      while (
+        insertAt < next.length &&
+        next[insertAt].parentId === newParentId
+      ) {
+        insertAt += 1;
+      }
+      next.splice(insertAt, 0, updated);
+      return next;
+    });
+  };
+
+  /** Add a new sub-question parented under `parentId`. */
+  const addChildQuestion = (parentId: string, type: QuestionType) => {
+    const parent = questions.find((q) => q.id === parentId);
+    if (!parent || parent.type === 'section' || parent.parentId) return;
+    const child: Question = { ...newDefaultQuestion(type), parentId };
+    setQuestions((prev) => {
+      const next = [...prev];
+      const parentIdx = next.findIndex((q) => q.id === parentId);
+      if (parentIdx < 0) return [...next, child];
+      let insertAt = parentIdx + 1;
+      while (
+        insertAt < next.length &&
+        next[insertAt].parentId === parentId
+      ) {
+        insertAt += 1;
+      }
+      next.splice(insertAt, 0, child);
+      return next;
+    });
+    setSelectedId(child.id);
+    setRightTab('properties');
   };
 
   const duplicateQuestion = (id: string) => {
@@ -782,16 +905,69 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     setQuestions((prev) => {
       const idx = prev.findIndex((q) => q.id === id);
       if (idx < 0) return prev;
-      const swapIdx = idx + dir;
-      if (swapIdx < 0 || swapIdx >= prev.length) return prev;
-      const next = [...prev];
-      [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
-      return next;
+      const target = prev[idx];
+
+      // Children move among siblings of the same parent only, so we
+      // don't accidentally tear them out of their group when the admin
+      // hits the up/down arrow. Top-level questions move among other
+      // top-level entries; their children come along for the ride.
+      if (target.parentId) {
+        const siblings = prev
+          .map((q, i) => ({ q, i }))
+          .filter((x) => x.q.parentId === target.parentId);
+        const order = siblings.findIndex((x) => x.q.id === id);
+        const swap = siblings[order + dir];
+        if (!swap) return prev;
+        const next = [...prev];
+        [next[idx], next[swap.i]] = [next[swap.i], next[idx]];
+        return next;
+      }
+
+      // Top-level move — find the previous / next top-level entry and
+      // swap the whole `[parent, ...its children]` block with the
+      // adjacent block so children travel with their parent.
+      const topLevelPositions = prev
+        .map((q, i) => ({ q, i }))
+        .filter((x) => !x.q.parentId);
+      const tlOrder = topLevelPositions.findIndex((x) => x.q.id === id);
+      if (tlOrder < 0) return prev;
+      const swapTl = topLevelPositions[tlOrder + dir];
+      if (!swapTl) return prev;
+      // Block A = [idx..lastChildOfA], Block B = [swapTl.i..lastChildOfB].
+      const blockOf = (startIdx: number) => {
+        const parent = prev[startIdx];
+        let end = startIdx + 1;
+        while (end < prev.length && prev[end].parentId === parent.id) end += 1;
+        return prev.slice(startIdx, end);
+      };
+      const blockA = blockOf(idx);
+      const blockB = blockOf(swapTl.i);
+      // Whichever is earlier in the array goes first in the splice
+      // reconstruction so we don't mis-order the surrounding entries.
+      const [firstStart, firstBlock, secondStart, secondBlock] =
+        idx < swapTl.i
+          ? [idx, blockA, swapTl.i, blockB]
+          : [swapTl.i, blockB, idx, blockA];
+      const before = prev.slice(0, firstStart);
+      const between = prev.slice(firstStart + firstBlock.length, secondStart);
+      const after = prev.slice(secondStart + secondBlock.length);
+      return [...before, ...secondBlock, ...between, ...firstBlock, ...after];
     });
   };
 
   // ----- Save --------------------------------------------------------------
-  const handleSave = async (publish: boolean) => {
+  /**
+   * Save modes:
+   * - `save`    — persist current edits without changing the publish
+   *               flag. Used by the plain "Save" button so admins can
+   *               edit an active questionnaire without unpublishing it
+   *               (or a draft without accidentally publishing it).
+   * - `draft`   — explicitly mark `isActive=false`. Use when you want
+   *               to pull a questionnaire offline for editing.
+   * - `publish` — explicitly mark `isActive=true` (publish to
+   *               enumerators).
+   */
+  const handleSave = async (mode: 'save' | 'draft' | 'publish') => {
     if (!user) return;
     if (!title.trim()) {
       alert('Please provide a title for the questionnaire.');
@@ -808,6 +984,9 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       key: (q.key && q.key.trim()) || slugify(q.question) || q.id
     }));
 
+    const nextIsActive =
+      mode === 'publish' ? true : mode === 'draft' ? false : isActive;
+
     setSaving(true);
     try {
       const payload = {
@@ -820,6 +999,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         // list card, search, and any legacy reader that ignores blocks).
         description: blocksToPlainText(descriptionBlocks),
         descriptionBlocks,
+        conclusion: blocksToPlainText(conclusionBlocks),
+        conclusionBlocks,
         enumeratorInfo,
         consentGate,
         submissionGps,
@@ -827,27 +1008,51 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         questions: normalized,
         sections,
         settings,
-        isActive: publish ? true : isActive,
+        isActive: nextIsActive,
         createdBy: user.uid,
         updatedAt: serverTimestamp(),
-        ...(questionnaire ? {} : { createdAt: serverTimestamp() })
+        ...(persistedId ? {} : { createdAt: serverTimestamp() })
       };
-      if (questionnaire) {
-        await updateDoc(doc(db, 'questionnaires', questionnaire.id), payload);
+      if (persistedId) {
+        await updateDoc(doc(db, 'questionnaires', persistedId), payload);
       } else {
-        await addDoc(collection(db, 'questionnaires'), payload);
+        const created = await addDoc(collection(db, 'questionnaires'), payload);
+        // Remember the new doc id so subsequent "Save" clicks update
+        // the same row instead of inserting clones.
+        setPersistedId(created.id);
       }
-      onSaved();
+      // Reflect the new publish state locally so the badge in the
+      // toolbar updates immediately (otherwise "Active" / "Draft"
+      // would lag until the parent reloads us).
+      if (nextIsActive !== isActive) setIsActive(nextIsActive);
+
+      if (mode === 'save') {
+        // Inline save — keep the editor open and surface a transient
+        // "Saved · just now" indicator next to the toolbar buttons.
+        // The list view will pick up the change on its next snapshot;
+        // we don't need to close the modal for that.
+        setSavedAt(Date.now());
+      } else {
+        onSaved();
+      }
     } catch (error) {
       handleFirestoreError(
         error,
-        questionnaire ? OperationType.UPDATE : OperationType.CREATE,
+        persistedId ? OperationType.UPDATE : OperationType.CREATE,
         'questionnaires'
       );
     } finally {
       setSaving(false);
     }
   };
+
+  // Auto-dismiss the "Saved · just now" pill after a few seconds so it
+  // doesn't sit there forever and start looking stale.
+  useEffect(() => {
+    if (savedAt === null) return;
+    const t = window.setTimeout(() => setSavedAt(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [savedAt]);
 
   // -------------------------------------------------------------------------
   return (
@@ -892,17 +1097,38 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         >
           <Eye size={16} /> Preview
         </button>
+        {savedAt !== null && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+            <CheckCircle size={12} /> Saved · just now
+          </span>
+        )}
         <button
-          onClick={() => void handleSave(false)}
+          onClick={() => void handleSave('save')}
+          disabled={saving}
+          className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
+          title={
+            persistedId
+              ? isActive
+                ? 'Save edits — keeps the questionnaire published and stays on this page'
+                : 'Save edits — keeps the questionnaire as a draft and stays on this page'
+              : 'Save the current edits and stay on this page'
+          }
+        >
+          <Save size={16} /> {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          onClick={() => void handleSave('draft')}
           disabled={saving}
           className="px-3 py-2 text-sm font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
+          title="Save and mark as draft (hidden from enumerators)"
         >
           <Save size={16} /> {saving ? 'Saving…' : 'Save Draft'}
         </button>
         <button
-          onClick={() => void handleSave(true)}
+          onClick={() => void handleSave('publish')}
           disabled={saving}
           className="px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
+          title="Save and publish to enumerators"
         >
           <CheckCircle size={16} /> {saving ? 'Publishing…' : 'Save & Publish'}
         </button>
@@ -965,6 +1191,17 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
 
             <ConsentGateEditor gate={consentGate} onChange={setConsentGate} />
 
+            <div className="bg-white rounded-xl border border-slate-200 p-5">
+              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                Conclusion
+              </div>
+              <p className="text-[11px] text-slate-500 mb-3">
+                Shown after the last question (before submission GPS if enabled). Use for thank-you
+                text, reminders, or contact details.
+              </p>
+              <DescriptionEditor blocks={conclusionBlocks} onChange={setConclusionBlocks} />
+            </div>
+
             {questions.length === 0 ? (
               <div className="bg-white rounded-xl border-2 border-dashed border-slate-300 p-12 text-center">
                 <FileText size={40} className="mx-auto mb-3 text-slate-300" />
@@ -977,20 +1214,33 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
               </div>
             ) : (
               (() => {
-                // Per-type counters so adding a section doesn't bump the
-                // question number. Sections count as "Section N", non-section
-                // entries count as "Q N", independent of each other.
+                // Hierarchical render: top-level entries first (in their
+                // own order), each followed by their sub-questions in
+                // array order. Numbering is per-type for top-level (Q N
+                // for questions, Section N for dividers) and `parent.a /
+                // .b / …` for children.
+                const rendered: React.ReactNode[] = [];
                 let qNum = 0;
                 let secNum = 0;
-                return questions.map((q, idx) => {
+                const topLevelOrder = questions.filter((x) => !x.parentId);
+                questions.forEach((q, idx) => {
+                  if (q.parentId) return; // children handled inline
                   const isSection = q.type === 'section';
                   const displayNumber = isSection ? ++secNum : ++qNum;
-                  return (
+                  const childrenWithIdx = questions
+                    .map((c, ci) => ({ c, ci }))
+                    .filter((x) => x.c.parentId === q.id);
+                  const topPos = topLevelOrder.findIndex((x) => x.id === q.id);
+                  rendered.push(
                     <QuestionCard
                       key={q.id}
                       index={idx}
                       displayNumber={displayNumber}
+                      displayLabel={String(displayNumber)}
+                      depth={0}
                       question={q}
+                      allQuestions={questions}
+                      hasChildren={childrenWithIdx.length > 0}
                       selected={selectedId === q.id}
                       onSelect={() => {
                         setSelectedId(q.id);
@@ -1001,11 +1251,50 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                       onDuplicate={() => duplicateQuestion(q.id)}
                       onMoveUp={() => moveQuestion(q.id, -1)}
                       onMoveDown={() => moveQuestion(q.id, 1)}
-                      canMoveUp={idx > 0}
-                      canMoveDown={idx < questions.length - 1}
+                      canMoveUp={topPos > 0}
+                      canMoveDown={topPos < topLevelOrder.length - 1}
+                      onAddChild={
+                        isSection
+                          ? undefined
+                          : (type) => addChildQuestion(q.id, type)
+                      }
+                      onChangeParent={(newParentId) =>
+                        setQuestionParent(q.id, newParentId)
+                      }
                     />
                   );
+                  childrenWithIdx.forEach(({ c, ci }, childOrder) => {
+                    const letter = String.fromCharCode(97 + childOrder); // a, b, c…
+                    rendered.push(
+                      <QuestionCard
+                        key={c.id}
+                        index={ci}
+                        displayNumber={displayNumber}
+                        displayLabel={`${displayNumber}.${letter}`}
+                        depth={1}
+                        question={c}
+                        allQuestions={questions}
+                        hasChildren={false}
+                        selected={selectedId === c.id}
+                        onSelect={() => {
+                          setSelectedId(c.id);
+                          setRightTab('properties');
+                        }}
+                        onUpdate={(patch) => updateQuestion(c.id, patch)}
+                        onRemove={() => removeQuestion(c.id)}
+                        onDuplicate={() => duplicateQuestion(c.id)}
+                        onMoveUp={() => moveQuestion(c.id, -1)}
+                        onMoveDown={() => moveQuestion(c.id, 1)}
+                        canMoveUp={childOrder > 0}
+                        canMoveDown={childOrder < childrenWithIdx.length - 1}
+                        onChangeParent={(newParentId) =>
+                          setQuestionParent(c.id, newParentId)
+                        }
+                      />
+                    );
+                  });
                 });
+                return rendered;
               })()
             )}
 
@@ -1044,6 +1333,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                 {rightTab === 'properties' && (
                   <PropertiesPanel
                     question={selectedQuestion}
+                    allQuestions={questions}
                     onUpdate={(patch) => updateQuestion(selectedQuestion.id, patch)}
                   />
                 )}
@@ -1092,6 +1382,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         <PreviewDialog
           title={title}
           descriptionBlocks={descriptionBlocks}
+          conclusionBlocks={conclusionBlocks}
           enumeratorInfo={enumeratorInfo}
           consentGate={consentGate}
           submissionGps={submissionGps}
@@ -1112,9 +1403,17 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
 interface QuestionCardProps {
   /** Position in the raw `questions` array (used for move buttons). */
   index: number;
-  /** Per-type display number: "Q N" for non-section, "Section N" for section. */
+  /** Numeric position of the top-level question this card belongs to. */
   displayNumber: number;
+  /** Pre-formatted label shown on the chip ("3" for parents, "3.a" for children). */
+  displayLabel: string;
+  /** 0 = top level, 1 = sub-question. */
+  depth: number;
   question: Question;
+  /** Full question list — used by the "Move under…" picker. */
+  allQuestions: Question[];
+  /** True when this top-level question has at least one sub-question. */
+  hasChildren: boolean;
   selected: boolean;
   onSelect: () => void;
   onUpdate: (patch: Partial<Question>) => void;
@@ -1124,12 +1423,20 @@ interface QuestionCardProps {
   onMoveDown: () => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  /** Called when admin clicks "Add sub-question" on a top-level card. */
+  onAddChild?: (type: QuestionType) => void;
+  /** Set / clear `parentId` for this card. */
+  onChangeParent: (newParentId: string | null) => void;
 }
 
 const QuestionCard: React.FC<QuestionCardProps> = ({
   index: _index,
   displayNumber,
+  displayLabel,
+  depth,
   question,
+  allQuestions,
+  hasChildren,
   selected,
   onSelect,
   onUpdate,
@@ -1138,22 +1445,49 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
   onMoveUp,
   onMoveDown,
   canMoveUp,
-  canMoveDown
+  canMoveDown,
+  onAddChild,
+  onChangeParent
 }) => {
   const typeDef = QUESTION_TYPE_BY_KEY[question.type];
   const isSection = question.type === 'section';
+  const isChild = depth > 0;
+  const [moveUnderOpen, setMoveUnderOpen] = useState(false);
+
+  // Eligible parents for the "Move under" picker: every other
+  // top-level non-section question. We deliberately allow `computed`
+  // and `matrix` parents — a common pattern is a computed "total"
+  // heading with the operand sub-questions nested directly under it.
+  // Sections never become parents (they're structural dividers).
+  const eligibleParents = allQuestions.filter(
+    (p) =>
+      p.id !== question.id &&
+      !p.parentId &&
+      p.type !== 'section' &&
+      !hasChildren // a parent with children can't itself become a child
+  );
 
   return (
     <div
       onClick={onSelect}
       className={`bg-white rounded-xl border-2 transition-all cursor-pointer ${
         selected ? 'border-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300'
-      } ${isSection ? 'bg-indigo-50/30' : ''}`}
+      } ${isSection ? 'bg-indigo-50/30' : ''} ${
+        isChild ? 'ml-8 border-l-4 border-l-blue-300' : ''
+      }`}
     >
       <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 bg-slate-50/60 rounded-t-xl">
         <GripVertical size={14} className="text-slate-300" />
-        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-          {isSection ? `Section ${displayNumber}` : `Q${displayNumber}`}
+        <span
+          className={`text-[10px] font-bold uppercase tracking-wider ${
+            isChild ? 'text-blue-600' : 'text-slate-500'
+          }`}
+        >
+          {isSection
+            ? `Section ${displayNumber}`
+            : isChild
+              ? `Sub Q ${displayLabel}`
+              : `Q${displayLabel}`}
         </span>
         {typeDef && (
           <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
@@ -1200,6 +1534,67 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
           >
             <ArrowDown size={14} />
           </button>
+          {/* Nesting controls — only available on non-section questions. */}
+          {!isSection && (isChild ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onChangeParent(null);
+              }}
+              className="p-1 text-blue-500 hover:text-blue-700"
+              title="Promote to top-level question"
+            >
+              <CornerUpLeft size={14} />
+            </button>
+          ) : !hasChildren && eligibleParents.length > 0 ? (
+            <div className="relative">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMoveUnderOpen((v) => !v);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-700"
+                title="Move under another question (make this a sub-question)"
+              >
+                <CornerDownRight size={14} />
+              </button>
+              {moveUnderOpen && (
+                <div
+                  className="absolute right-0 top-7 z-20 w-64 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg p-1.5"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2 py-1">
+                    Move under…
+                  </div>
+                  {eligibleParents.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        onChangeParent(p.id);
+                        setMoveUnderOpen(false);
+                      }}
+                      className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-slate-100 truncate"
+                    >
+                      {p.question || p.key || p.id}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null)}
+          {/* Add-sub-question shortcut — top-level non-section only. */}
+          {onAddChild && !isChild && !isSection && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddChild('text');
+              }}
+              className="p-1 text-slate-400 hover:text-slate-700"
+              title="Add a sub-question under this one"
+            >
+              <Plus size={14} />
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1287,6 +1682,30 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
           placeholder={question.placeholder || '0'}
           className={inputClass}
         />
+      );
+    case 'age':
+      return (
+        <div className="flex gap-1.5">
+          <div className={`${inputClass} flex-1 text-xs flex items-center justify-between`}>
+            <span>0</span>
+            <span className="text-[10px] uppercase tracking-wider text-slate-400">Years</span>
+          </div>
+          <div className={`${inputClass} flex-1 text-xs flex items-center justify-between`}>
+            <span>0</span>
+            <span className="text-[10px] uppercase tracking-wider text-slate-400">Months</span>
+          </div>
+        </div>
+      );
+    case 'computed':
+      return (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-violet-300 bg-violet-50/50 text-violet-700 px-2.5 py-1.5 text-xs italic">
+          <span className="truncate min-w-0">
+            {question.computed?.operation
+              ? `Auto: ${computedOpHumanLabel(question.computed.operation)}`
+              : 'Auto-calculated value'}
+          </span>
+          <Sigma size={11} className="shrink-0" />
+        </div>
       );
     case 'date':
       return <input type="date" disabled className={inputClass} />;
@@ -1432,8 +1851,9 @@ const inputCls =
 
 const PropertiesPanel: React.FC<{
   question: Question;
+  allQuestions: Question[];
   onUpdate: (patch: Partial<Question>) => void;
-}> = ({ question, onUpdate }) => {
+}> = ({ question, allQuestions, onUpdate }) => {
   const typeDef = QUESTION_TYPE_BY_KEY[question.type];
 
   return (
@@ -1519,6 +1939,8 @@ const PropertiesPanel: React.FC<{
           options={ensureOptionShape(question.options)}
           allowOther={question.allowOther || false}
           onChange={(options, allowOther) => onUpdate({ options, allowOther })}
+          allQuestions={allQuestions}
+          owningQuestionId={question.id}
         />
       )}
 
@@ -1539,7 +1961,315 @@ const PropertiesPanel: React.FC<{
           onChange={(gpsSettings) => onUpdate({ gpsSettings })}
         />
       )}
+
+      {/* Formula editor — only for computed-type questions */}
+      {question.type === 'computed' && (
+        <ComputedQuestionEditor
+          question={question}
+          allQuestions={allQuestions}
+          onUpdate={onUpdate}
+        />
+      )}
         </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// ComputedQuestionEditor — formula editor for `type === 'computed'`.
+// Lets admins pick an operation (sum / multiply / average / …) plus the
+// operand questions whose answers feed the formula. Enumerators never
+// type a value; the runtime auto-fills it and locks the input.
+// ---------------------------------------------------------------------------
+
+const COMPUTED_OPERATIONS: { value: ComputedOperation; label: string; hint: string }[] = [
+  { value: 'sum',            label: 'Sum',                   hint: 'A + B + C + …' },
+  { value: 'subtract',       label: 'Subtract',              hint: 'A − B − C − …' },
+  { value: 'multiply',       label: 'Multiply',              hint: 'A × B × C × …' },
+  { value: 'divide',         label: 'Divide',                hint: 'A ÷ B ÷ C ÷ …' },
+  { value: 'average',        label: 'Average',               hint: 'Mean of all answered operands' },
+  { value: 'min',            label: 'Minimum',               hint: 'Smallest non-empty value' },
+  { value: 'max',            label: 'Maximum',               hint: 'Largest non-empty value' },
+  { value: 'count_nonempty', label: 'Count answered',        hint: 'Number of operands that have a value' },
+  { value: 'concat',         label: 'Join text',             hint: 'Concatenate answers with a separator' },
+  { value: 'expression',     label: 'Custom expression',     hint: 'Free formula with {{questionId}} placeholders' }
+];
+
+const ComputedQuestionEditor: React.FC<{
+  question: Question;
+  allQuestions: Question[];
+  onUpdate: (patch: Partial<Question>) => void;
+}> = ({ question, allQuestions, onUpdate }) => {
+  const spec: ComputedSpec = question.computed ?? {
+    operation: 'sum',
+    operandQuestionIds: [],
+    decimals: 2
+  };
+  const setSpec = (patch: Partial<ComputedSpec>) =>
+    onUpdate({ computed: { ...spec, ...patch } });
+
+  const eligible = allQuestions.filter(
+    (q) =>
+      q.id !== question.id &&
+      q.type !== 'section' &&
+      q.type !== 'photo' &&
+      q.type !== 'signature' &&
+      q.type !== 'location' &&
+      q.type !== 'matrix' &&
+      q.type !== 'computed'
+  );
+  const operandIds = spec.operandQuestionIds ?? [];
+
+  const addOperand = (id: string) => {
+    if (!id) return;
+    if (operandIds.includes(id)) return;
+    setSpec({ operandQuestionIds: [...operandIds, id] });
+  };
+  const removeOperand = (id: string) =>
+    setSpec({ operandQuestionIds: operandIds.filter((x) => x !== id) });
+  const moveOperand = (id: string, dir: -1 | 1) => {
+    const idx = operandIds.indexOf(id);
+    if (idx < 0) return;
+    const next = [...operandIds];
+    const target = idx + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[idx], next[target]] = [next[target], next[idx]];
+    setSpec({ operandQuestionIds: next });
+  };
+
+  const operandLabel = (id: string): string => {
+    const q = allQuestions.find((x) => x.id === id);
+    if (!q) return id;
+    const stem = q.question || q.key || q.id;
+    return q.key ? `${stem} · {{${q.key}}}` : stem;
+  };
+
+  const isNumericOp =
+    spec.operation !== 'concat' && spec.operation !== 'expression';
+  const isExpression = spec.operation === 'expression';
+  const isConcat = spec.operation === 'concat';
+
+  return (
+    <div className="mb-4 rounded-md border border-violet-200 bg-violet-50/30 overflow-hidden">
+      <div className="px-3 py-2 bg-violet-100/60 border-b border-violet-200 flex items-center gap-2">
+        <Sigma size={14} className="text-violet-700" />
+        <span className="text-[11px] font-bold text-violet-800 uppercase tracking-wider">
+          Computed Formula
+        </span>
+      </div>
+      <div className="p-3 space-y-3">
+        <p className="text-[11px] text-slate-600 leading-snug">
+          The answer is calculated automatically from other questions. The
+          enumerator sees a read-only value that updates as they fill the
+          form.
+        </p>
+
+        <Field label="Operation">
+          <select
+            value={spec.operation}
+            onChange={(e) =>
+              setSpec({ operation: e.target.value as ComputedOperation })
+            }
+            className={inputCls}
+          >
+            {COMPUTED_OPERATIONS.map((op) => (
+              <option key={op.value} value={op.value}>
+                {op.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-slate-400 mt-1">
+            {COMPUTED_OPERATIONS.find((o) => o.value === spec.operation)?.hint}
+          </p>
+        </Field>
+
+        {!isExpression && (
+          <Field
+            label={isConcat ? 'Text operands (in order)' : 'Operands'}
+            hint={
+              isConcat
+                ? 'Each operand contributes its text answer to the joined result.'
+                : 'Operands are read as numbers. Empty / non-numeric answers are skipped (so a partial form still computes a partial result).'
+            }
+          >
+            <div className="space-y-1.5">
+              {operandIds.length === 0 && (
+                <p className="text-[11px] italic text-slate-400">
+                  No operands yet — add one below.
+                </p>
+              )}
+              {operandIds.map((id, i) => (
+                <div
+                  key={id}
+                  className="flex items-center gap-1 bg-white border border-slate-200 rounded px-2 py-1"
+                >
+                  <span className="text-[10px] font-mono text-slate-400 w-5">
+                    {String.fromCharCode(65 + i)}
+                  </span>
+                  <span className="flex-1 min-w-0 text-xs text-slate-700 truncate">
+                    {operandLabel(id)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => moveOperand(id, -1)}
+                    disabled={i === 0}
+                    className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-30"
+                    title="Move up"
+                  >
+                    <ArrowUp size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveOperand(id, 1)}
+                    disabled={i === operandIds.length - 1}
+                    className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-30"
+                    title="Move down"
+                  >
+                    <ArrowDown size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeOperand(id)}
+                    className="p-1 text-red-400 hover:text-red-600"
+                    title="Remove operand"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+              <select
+                value=""
+                onChange={(e) => addOperand(e.target.value)}
+                className={inputCls}
+              >
+                <option value="">+ Add operand…</option>
+                {eligible
+                  .filter((q) => !operandIds.includes(q.id))
+                  .map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.question || q.key || q.id}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </Field>
+        )}
+
+        {isConcat && (
+          <Field label="Separator">
+            <input
+              type="text"
+              value={spec.separator ?? ' '}
+              onChange={(e) => setSpec({ separator: e.target.value })}
+              className={inputCls}
+              placeholder=" "
+            />
+            <p className="text-[10px] text-slate-400 mt-1">
+              Text placed between operand answers (default is a single space).
+            </p>
+          </Field>
+        )}
+
+        {isExpression && (
+          <>
+            <Field
+              label="Expression"
+              hint="Reference other answers with {{questionId}} or {{questionKey}}. Only + − × ÷ and parentheses are allowed."
+            >
+              <textarea
+                value={spec.expression ?? ''}
+                onChange={(e) => setSpec({ expression: e.target.value })}
+                rows={2}
+                className={`${inputCls} font-mono text-xs resize-none`}
+                placeholder="{{income}} * 12 - {{expense_yearly}}"
+              />
+            </Field>
+            <Field
+              label="Referenced questions"
+              hint="Add every operand you use in the expression so the formula recomputes when those answers change."
+            >
+              <div className="space-y-1.5">
+                {operandIds.length === 0 && (
+                  <p className="text-[11px] italic text-slate-400">
+                    Add the questions your expression references.
+                  </p>
+                )}
+                {operandIds.map((id) => (
+                  <div
+                    key={id}
+                    className="flex items-center gap-1 bg-white border border-slate-200 rounded px-2 py-1"
+                  >
+                    <span className="flex-1 min-w-0 text-xs text-slate-700 truncate">
+                      {operandLabel(id)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeOperand(id)}
+                      className="p-1 text-red-400 hover:text-red-600"
+                      title="Remove"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+                <select
+                  value=""
+                  onChange={(e) => addOperand(e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="">+ Reference a question…</option>
+                  {eligible
+                    .filter((q) => !operandIds.includes(q.id))
+                    .map((q) => (
+                      <option key={q.id} value={q.id}>
+                        {q.question || q.key || q.id}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </Field>
+          </>
+        )}
+
+        {(isNumericOp || isExpression) && (
+          <Field label="Decimal places" hint="Round the result to this many decimals.">
+            <input
+              type="number"
+              min={0}
+              max={6}
+              step={1}
+              value={spec.decimals ?? 2}
+              onChange={(e) =>
+                setSpec({
+                  decimals: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                })
+              }
+              className={inputCls}
+            />
+          </Field>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Prefix" hint="e.g. 'BDT '">
+            <input
+              type="text"
+              value={spec.prefix ?? ''}
+              onChange={(e) => setSpec({ prefix: e.target.value })}
+              className={inputCls}
+              placeholder=""
+            />
+          </Field>
+          <Field label="Suffix" hint="e.g. ' m²'">
+            <input
+              type="text"
+              value={spec.suffix ?? ''}
+              onChange={(e) => setSpec({ suffix: e.target.value })}
+              className={inputCls}
+              placeholder=""
+            />
+          </Field>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -1650,6 +2380,204 @@ const GpsQuestionSettingsEditor: React.FC<{
 };
 
 // ---------------------------------------------------------------------------
+// Option-level "disable when" rule editor (reuses same operators as display logic)
+// ---------------------------------------------------------------------------
+
+const OPTION_DISABLE_OPERATORS: { value: LogicOperator; label: string; takesValue: boolean }[] = [
+  { value: 'equals', label: 'equals', takesValue: true },
+  { value: 'notEquals', label: 'does not equal', takesValue: true },
+  { value: 'contains', label: 'contains', takesValue: true },
+  { value: 'notContains', label: 'does not contain', takesValue: true },
+  { value: 'greaterThan', label: 'is greater than', takesValue: true },
+  { value: 'lessThan', label: 'is less than', takesValue: true },
+  { value: 'isEmpty', label: 'is empty', takesValue: false },
+  { value: 'isNotEmpty', label: 'is not empty', takesValue: false }
+];
+
+const OptionDisableWhenEditor: React.FC<{
+  rule: LogicRule | undefined;
+  onChange: (next: LogicRule | undefined) => void;
+  allQuestions: Question[];
+  owningQuestionId: string;
+}> = ({ rule, onChange, allQuestions, owningQuestionId }) => {
+  const referenceable = allQuestions.filter(
+    (q) => q.id !== owningQuestionId && q.type !== 'section'
+  );
+  const active = !!(rule?.enabled && rule.conditions.length > 0);
+  const logic: LogicRule = active
+    ? (rule as LogicRule)
+    : { enabled: true, combinator: 'AND', conditions: [] };
+
+  const setLogic = (patch: Partial<LogicRule>) => {
+    if (!active) return;
+    onChange({ ...logic, ...patch });
+  };
+
+  const addCondition = () => {
+    const first = referenceable[0];
+    if (!first) {
+      alert('Add another question first to reference it in option rules.');
+      return;
+    }
+    const cond: LogicCondition = {
+      id: uid('c'),
+      questionId: first.id,
+      operator: 'equals',
+      value: ''
+    };
+    onChange({
+      enabled: true,
+      combinator: logic.combinator,
+      conditions: [...logic.conditions, cond]
+    });
+  };
+
+  const updateCond = (id: string, patch: Partial<LogicCondition>) => {
+    onChange({
+      ...logic,
+      conditions: logic.conditions.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    });
+  };
+
+  const removeCond = (id: string) => {
+    const nextConds = logic.conditions.filter((c) => c.id !== id);
+    if (nextConds.length === 0) onChange(undefined);
+    else onChange({ ...logic, conditions: nextConds });
+  };
+
+  return (
+    <div className="mt-1.5 pl-2 border-l-2 border-amber-300/90 space-y-1.5">
+      <label className="flex items-center gap-2 text-[10px] text-slate-600 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={active}
+          onChange={(e) => {
+            if (e.target.checked) {
+              const first = referenceable[0];
+              if (!first) {
+                alert('Add another question first to reference it in option rules.');
+                return;
+              }
+              onChange({
+                enabled: true,
+                combinator: 'AND',
+                conditions: [{ id: uid('c'), questionId: first.id, operator: 'equals', value: '' }]
+              });
+            } else {
+              onChange(undefined);
+            }
+          }}
+        />
+        Disable when (based on other answers)
+      </label>
+      {active && (
+        <>
+          <Field label="Match">
+            <div className="inline-flex rounded-md border border-slate-200 overflow-hidden">
+              {(['AND', 'OR'] as const).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setLogic({ combinator: c })}
+                  className={`px-2 py-0.5 text-[10px] font-bold ${
+                    logic.combinator === c
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {c === 'AND' ? 'All (AND)' : 'Any (OR)'}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <div className="space-y-1.5 mb-1">
+            {logic.conditions.map((cond) => {
+              const refQ = allQuestions.find((q) => q.id === cond.questionId);
+              const opDef = OPTION_DISABLE_OPERATORS.find((o) => o.value === cond.operator);
+              const refOpts = refQ ? ensureOptionShape(refQ.options) : [];
+              return (
+                <div
+                  key={cond.id}
+                  className="border border-slate-200 rounded-md p-2 bg-white space-y-1"
+                >
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={cond.questionId}
+                      onChange={(e) => updateCond(cond.id, { questionId: e.target.value })}
+                      className="flex-1 text-[10px] px-1.5 py-1 border border-slate-200 rounded bg-white"
+                    >
+                      {referenceable.map((q) => (
+                        <option key={q.id} value={q.id}>
+                          {(q.question || '').slice(0, 36) || `(unnamed) ${q.id}`}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => removeCond(cond.id)}
+                      className="p-1 text-red-400 hover:text-red-600"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <select
+                    value={cond.operator}
+                    onChange={(e) =>
+                      updateCond(cond.id, { operator: e.target.value as LogicOperator })
+                    }
+                    className="w-full text-[10px] px-1.5 py-1 border border-slate-200 rounded bg-white"
+                  >
+                    {OPTION_DISABLE_OPERATORS.map((op) => (
+                      <option key={op.value} value={op.value}>
+                        {op.label}
+                      </option>
+                    ))}
+                  </select>
+                  {opDef?.takesValue && (
+                    <>
+                      {refQ && isChoiceType(refQ.type) ? (
+                        <select
+                          value={cond.value || ''}
+                          onChange={(e) => updateCond(cond.id, { value: e.target.value })}
+                          className="w-full text-[10px] px-1.5 py-1 border border-slate-200 rounded bg-white"
+                        >
+                          <option value="">— value —</option>
+                          {refOpts.map((o) => (
+                            <option key={o.id} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={cond.value || ''}
+                          onChange={(e) => updateCond(cond.id, { value: e.target.value })}
+                          className="w-full text-[10px] px-1.5 py-1 border border-slate-200 rounded bg-white"
+                          placeholder="Value to compare"
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={addCondition}
+            className="text-[10px] font-semibold text-blue-700 hover:text-blue-900 flex items-center gap-1"
+          >
+            <Plus size={11} /> Add condition
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // OptionsEditor — manage QuestionOption[] for choice-type questions
 // ---------------------------------------------------------------------------
 
@@ -1657,7 +2585,9 @@ const OptionsEditor: React.FC<{
   options: QuestionOption[];
   allowOther: boolean;
   onChange: (options: QuestionOption[], allowOther: boolean) => void;
-}> = ({ options, allowOther, onChange }) => {
+  allQuestions: Question[];
+  owningQuestionId: string;
+}> = ({ options, allowOther, onChange, allQuestions, owningQuestionId }) => {
   const update = (idx: number, patch: Partial<QuestionOption>) => {
     const next = options.map((o, i) => (i === idx ? { ...o, ...patch } : o));
     onChange(next, allowOther);
@@ -1692,7 +2622,8 @@ const OptionsEditor: React.FC<{
       <label className="block text-xs font-semibold text-slate-700 mb-1">Answer Options</label>
       <div className="space-y-1.5">
         {options.map((o, i) => (
-          <div key={o.id} className="flex items-center gap-1">
+          <div key={o.id} className="space-y-0.5">
+            <div className="flex items-center gap-1">
             <input
               type="text"
               value={o.label}
@@ -1723,6 +2654,13 @@ const OptionsEditor: React.FC<{
             >
               <Trash2 size={14} />
             </button>
+          </div>
+            <OptionDisableWhenEditor
+              rule={o.disabledWhen}
+              onChange={(next) => update(i, { disabledWhen: next })}
+              allQuestions={allQuestions}
+              owningQuestionId={owningQuestionId}
+            />
           </div>
         ))}
       </div>
@@ -2424,6 +3362,59 @@ const DefaultRulesPanel: React.FC<{
         />
       );
     }
+    if (question.type === 'age') {
+      // For age, the rule value is stored as a `years,months` string —
+      // surface a two-input editor so admins don't have to remember the
+      // format. `0,6` would mean "six months old" when applied.
+      const parts = (rule.value || '').split(/[,\s/]+/).filter(Boolean);
+      const yrs = parts[0] ?? '';
+      const mos = parts[1] ?? '';
+      const commit = (ny: string, nm: string) => {
+        const yClean = ny.trim();
+        const mClean = nm.trim();
+        if (yClean === '' && mClean === '') {
+          updateRule(rule.id, { value: '' });
+          return;
+        }
+        updateRule(rule.id, { value: `${yClean || 0},${mClean || 0}` });
+      };
+      return (
+        <div className="flex gap-1.5">
+          <div className="flex-1 min-w-0 relative">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={150}
+              step={1}
+              value={yrs}
+              onChange={(e) => commit(e.target.value, mos)}
+              placeholder="0"
+              className="w-full text-xs px-1.5 py-1 pr-9 border border-slate-200 rounded bg-white"
+            />
+            <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] font-semibold text-slate-400 uppercase">
+              yrs
+            </span>
+          </div>
+          <div className="flex-1 min-w-0 relative">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={11}
+              step={1}
+              value={mos}
+              onChange={(e) => commit(yrs, e.target.value)}
+              placeholder="0"
+              className="w-full text-xs px-1.5 py-1 pr-9 border border-slate-200 rounded bg-white"
+            />
+            <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] font-semibold text-slate-400 uppercase">
+              mos
+            </span>
+          </div>
+        </div>
+      );
+    }
     return (
       <input
         type={
@@ -2778,23 +3769,27 @@ const evaluateLogic = (
     const v = c.value ?? '';
     switch (c.operator) {
       case 'equals':
-        return String(a ?? '') === String(v);
+        return choiceAnswerToComparableString(a) === String(v);
       case 'notEquals':
-        return String(a ?? '') !== String(v);
+        return choiceAnswerToComparableString(a) !== String(v);
       case 'contains':
         if (Array.isArray(a)) return a.includes(v);
-        return String(a ?? '').toLowerCase().includes(String(v).toLowerCase());
+        return choiceAnswerToComparableString(a)
+          .toLowerCase()
+          .includes(String(v).toLowerCase());
       case 'notContains':
         if (Array.isArray(a)) return !a.includes(v);
-        return !String(a ?? '').toLowerCase().includes(String(v).toLowerCase());
+        return !choiceAnswerToComparableString(a)
+          .toLowerCase()
+          .includes(String(v).toLowerCase());
       case 'greaterThan':
         return Number(a) > Number(v);
       case 'lessThan':
         return Number(a) < Number(v);
       case 'isEmpty':
-        return a === undefined || a === null || a === '' || (Array.isArray(a) && a.length === 0);
+        return choiceAnswerIsLogicallyEmpty(a);
       case 'isNotEmpty':
-        return !(a === undefined || a === null || a === '' || (Array.isArray(a) && a.length === 0));
+        return !choiceAnswerIsLogicallyEmpty(a);
       default:
         return true;
     }
@@ -2812,6 +3807,17 @@ const coerceRuleValueLocal = (raw: string, target: Question): unknown => {
     case 'number':
       if (raw === '') return '';
       return Number.isFinite(Number(raw)) ? Number(raw) : raw;
+    case 'age': {
+      // Accept "Y" or "Y,M" or "Y M" so admins can author defaults like
+      // "0,6" (six months old) or "5" (exactly five years).
+      if (!raw.trim()) return '';
+      const parts = raw.split(/[,\s/]+/).filter(Boolean);
+      const y = Number(parts[0] ?? 0);
+      const m = Number(parts[1] ?? 0);
+      const yy = Number.isFinite(y) ? Math.max(0, Math.floor(y)) : 0;
+      const mm = Number.isFinite(m) ? Math.min(11, Math.max(0, Math.floor(m))) : 0;
+      return { years: yy, months: mm, totalMonths: yy * 12 + mm };
+    }
     case 'checkbox':
     case 'multiselect':
       return raw
@@ -2859,12 +3865,13 @@ const ruleValueMatchesCurrent = (current: unknown, target: unknown): boolean => 
     if (current.length !== target.length) return false;
     return current.every((v, i) => v === target[i]);
   }
-  return String(current ?? '') === String(target ?? '');
+  return choiceAnswerToComparableString(current) === choiceAnswerToComparableString(target);
 };
 
 const PreviewDialog: React.FC<{
   title: string;
   descriptionBlocks: DescriptionBlock[];
+  conclusionBlocks: DescriptionBlock[];
   enumeratorInfo: EnumeratorInfo;
   consentGate: ConsentGate;
   submissionGps: SubmissionGpsCapture;
@@ -2875,6 +3882,7 @@ const PreviewDialog: React.FC<{
 }> = ({
   title,
   descriptionBlocks,
+  conclusionBlocks,
   enumeratorInfo,
   consentGate,
   submissionGps,
@@ -2883,6 +3891,7 @@ const PreviewDialog: React.FC<{
   settings,
   onClose
 }) => {
+  const { user, userProfile } = useAuth();
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [enumeratorAnswers, setEnumeratorAnswers] = useState<Record<string, unknown>>({});
   const [consentGranted, setConsentGranted] = useState(false);
@@ -2905,6 +3914,12 @@ const PreviewDialog: React.FC<{
     }
     return ids;
   }, [appliedDefaultRules]);
+
+  const previewLogicAnswers = useMemo(
+    () => ({ ...enumeratorAnswers, ...answers }),
+    [enumeratorAnswers, answers]
+  );
+
   useEffect(() => {
     if (appliedDefaultRules.length === 0) return;
     const patch: Record<string, unknown> = {};
@@ -2980,6 +3995,7 @@ const PreviewDialog: React.FC<{
             <EnumeratorInfoTable
               info={enumeratorInfo}
               answers={enumeratorAnswers}
+              logicAnswers={previewLogicAnswers}
               onChange={(id, v) => setEnumeratorAnswers((prev) => ({ ...prev, [id]: v }))}
             />
           )}
@@ -2988,6 +4004,7 @@ const PreviewDialog: React.FC<{
               gate={consentGate}
               granted={consentGranted}
               onChange={setConsentGranted}
+              enumeratorDisplayName={enumeratorResolvedDisplayName(userProfile, user)}
             />
           )}
           {!questionsUnlocked ? (
@@ -2995,36 +4012,67 @@ const PreviewDialog: React.FC<{
               <Lock size={16} />
               Tick the consent checkbox to start the survey.
             </div>
-          ) : visibleQuestions.length === 0 ? (
-            <p className="text-sm text-slate-500 italic">Nothing to preview yet.</p>
           ) : (
             <>
-              {visibleQuestions.map((q, i) => {
-                const locked = lockedQuestionIds.has(q.id);
-                return (
-                  <fieldset
-                    key={q.id}
-                    disabled={locked}
-                    className={
-                      locked
-                        ? '[&_input]:cursor-not-allowed [&_select]:cursor-not-allowed [&_textarea]:cursor-not-allowed [&_input:disabled]:bg-slate-50 [&_select:disabled]:bg-slate-50 [&_textarea:disabled]:bg-slate-50'
-                        : undefined
-                    }
-                  >
-                    <PreviewQuestion
-                      index={i}
-                      question={q}
-                      value={answers[q.id]}
-                      onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
-                    />
-                    {locked && (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
-                        Auto-filled (locked by rule)
-                      </span>
-                    )}
-                  </fieldset>
-                );
-              })}
+              {visibleQuestions.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">Nothing to preview yet.</p>
+              ) : (
+                (() => {
+                  type Slot = { q: Question; label: string; depth: 0 | 1 };
+                  const slots: Slot[] = [];
+                  let topNum = 0;
+                  for (const q of visibleQuestions) {
+                    if (q.parentId) continue;
+                    if (q.type !== 'section') topNum += 1;
+                    slots.push({ q, label: String(topNum), depth: 0 });
+                    if (q.type === 'section') continue;
+                    const children = visibleQuestions.filter(
+                      (c) => c.parentId === q.id && c.type !== 'section'
+                    );
+                    children.forEach((c, ci) => {
+                      const letter = String.fromCharCode(97 + ci);
+                      slots.push({ q: c, label: `${topNum}.${letter}`, depth: 1 });
+                    });
+                  }
+                  return slots.map(({ q, label, depth }) => {
+                    const locked = lockedQuestionIds.has(q.id);
+                    return (
+                      <fieldset
+                        key={q.id}
+                        disabled={locked}
+                        className={`${
+                          locked
+                            ? '[&_input]:cursor-not-allowed [&_select]:cursor-not-allowed [&_textarea]:cursor-not-allowed [&_input:disabled]:bg-slate-50 [&_select:disabled]:bg-slate-50 [&_textarea:disabled]:bg-slate-50 '
+                            : ''
+                        }${depth > 0 ? 'ml-5 pl-4 border-l-2 border-blue-200' : ''}`}
+                      >
+                        <PreviewQuestion
+                          index={0}
+                          numberLabel={q.type === 'section' ? '' : label}
+                          question={q}
+                          value={answers[q.id]}
+                          onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
+                          allAnswers={previewLogicAnswers}
+                          allQuestions={visibleQuestions}
+                        />
+                        {locked && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
+                            Auto-filled (locked by rule)
+                          </span>
+                        )}
+                      </fieldset>
+                    );
+                  });
+                })()
+              )}
+              {conclusionBlocks.length > 0 && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-4 py-3 space-y-2">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    Conclusion
+                  </div>
+                  <DescriptionRenderer blocks={conclusionBlocks} />
+                </div>
+              )}
               {submissionGps.enabled && (
                 <SubmissionGpsCaptureWidget
                   config={submissionGps}
@@ -3050,12 +4098,107 @@ const PreviewDialog: React.FC<{
   );
 };
 
+/**
+ * Read-only chip used by both the preview dialog and the live runtime to
+ * render a `computed` question's auto-calculated value. We show an
+ * explicit "Auto-calculated" badge so enumerators understand they can't
+ * type into the field and admins can spot computed columns in QA
+ * sessions at a glance.
+ */
+const ComputedReadOnlyDisplay: React.FC<{
+  display: string;
+  spec?: ComputedSpec;
+}> = ({ display, spec }) => {
+  const hasValue = display !== '';
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        className={`flex items-center justify-between gap-2 rounded-md border px-3 py-2 ${
+          hasValue
+            ? 'border-violet-200 bg-violet-50 text-violet-900'
+            : 'border-dashed border-slate-300 bg-slate-50 text-slate-400 italic'
+        }`}
+      >
+        <span className="text-sm font-mono break-all min-w-0">
+          {hasValue ? display : 'Waiting for operand answers…'}
+        </span>
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-violet-700 bg-white border border-violet-200 rounded-full px-1.5 py-0.5 shrink-0">
+          <Sigma size={10} /> Auto
+        </span>
+      </div>
+      {spec && spec.operation && (
+        <p className="text-[10px] text-slate-400">
+          Auto-calculated · {computedOpHumanLabel(spec.operation)}
+          {spec.operandQuestionIds && spec.operandQuestionIds.length > 0 &&
+            spec.operation !== 'expression' &&
+            ` of ${spec.operandQuestionIds.length} operand${
+              spec.operandQuestionIds.length === 1 ? '' : 's'
+            }`}
+        </p>
+      )}
+    </div>
+  );
+};
+
+const computedOpHumanLabel = (op: ComputedOperation): string => {
+  switch (op) {
+    case 'sum':
+      return 'Sum';
+    case 'subtract':
+      return 'Subtract';
+    case 'multiply':
+      return 'Multiply';
+    case 'divide':
+      return 'Divide';
+    case 'average':
+      return 'Average';
+    case 'min':
+      return 'Minimum';
+    case 'max':
+      return 'Maximum';
+    case 'count_nonempty':
+      return 'Count of answered';
+    case 'concat':
+      return 'Joined text';
+    case 'expression':
+      return 'Custom formula';
+  }
+};
+
 const PreviewQuestion: React.FC<{
   index: number;
+  numberLabel?: string;
   question: Question;
   value: unknown;
   onChange: (v: unknown) => void;
-}> = ({ index, question, value, onChange }) => {
+  allAnswers?: Record<string, unknown>;
+  allQuestions?: Question[];
+}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions }) => {
+  const opts =
+    question.type === 'section' ? [] : ensureOptionShape(question.options);
+  const cls =
+    'w-full text-sm border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const answersMap = allAnswers ?? {};
+
+  const getOptionDisabled = useCallback(
+    (optValue: string) => {
+      const o = opts.find((x) => x.value === optValue);
+      return o ? isChoiceOptionDisabled(o, answersMap) : false;
+    },
+    [opts, answersMap]
+  );
+
+  useEffect(() => {
+    if (question.type !== 'multiselect' && question.type !== 'checkbox') return;
+    const optionList = ensureOptionShape(question.options);
+    const arr = Array.isArray(value) ? (value as string[]) : [];
+    const filtered = arr.filter((pv) => {
+      const o = optionList.find((x) => x.value === pv);
+      return !o || !isChoiceOptionDisabled(o, answersMap);
+    });
+    if (filtered.length !== arr.length) onChange(filtered);
+  }, [question.type, question.id, question.options, value, answersMap, onChange]);
+
   if (question.type === 'section') {
     return (
       <div className="border-t-2 border-indigo-200 pt-3">
@@ -3067,10 +4210,6 @@ const PreviewQuestion: React.FC<{
       </div>
     );
   }
-
-  const opts = ensureOptionShape(question.options);
-  const cls =
-    'w-full text-sm border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500';
 
   let body: React.ReactNode = null;
   switch (question.type) {
@@ -3122,6 +4261,77 @@ const PreviewQuestion: React.FC<{
         />
       );
       break;
+    case 'age': {
+      const ageVal = (value && typeof value === 'object' ? value : {}) as {
+        years?: number | string;
+        months?: number | string;
+      };
+      const yrs = ageVal.years === undefined ? '' : String(ageVal.years);
+      const mos = ageVal.months === undefined ? '' : String(ageVal.months);
+      const commit = (ny: string, nm: string) => {
+        const y = ny === '' ? undefined : Math.max(0, Number(ny));
+        const mRaw = nm === '' ? undefined : Math.max(0, Number(nm));
+        const m = mRaw === undefined ? undefined : Math.min(11, mRaw);
+        if (y === undefined && m === undefined) {
+          onChange(undefined);
+          return;
+        }
+        const yy = y ?? 0;
+        const mm = m ?? 0;
+        onChange({ years: yy, months: mm, totalMonths: yy * 12 + mm });
+      };
+      body = (
+        <div className="flex items-stretch gap-2">
+          <div className="flex-1 min-w-0 relative">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={150}
+              step={1}
+              value={yrs}
+              onChange={(e) => commit(e.target.value, mos)}
+              placeholder="0"
+              className={`${cls} pr-12`}
+            />
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+              Years
+            </span>
+          </div>
+          <div className="flex-1 min-w-0 relative">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={11}
+              step={1}
+              value={mos}
+              onChange={(e) => commit(yrs, e.target.value)}
+              placeholder="0"
+              className={`${cls} pr-14`}
+            />
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+              Months
+            </span>
+          </div>
+        </div>
+      );
+      break;
+    }
+    case 'computed': {
+      const res = evaluateComputed(
+        question.computed,
+        allAnswers ?? {},
+        allQuestions ?? []
+      );
+      body = (
+        <ComputedReadOnlyDisplay
+          display={res.display}
+          spec={question.computed}
+        />
+      );
+      break;
+    }
     case 'date':
       body = (
         <input type="date" value={(value as string) || ''} onChange={(e) => onChange(e.target.value)} className={cls} />
@@ -3144,18 +4354,16 @@ const PreviewQuestion: React.FC<{
       break;
     case 'select':
       body = (
-                    <select
-          value={(value as string) || ''}
-          onChange={(e) => onChange(e.target.value)}
+        <ChoiceWithOtherFields
+          mode="select"
+          name={question.id}
+          options={opts}
+          allowOther={question.allowOther}
+          value={value}
+          onChange={onChange}
           className={cls}
-        >
-          <option value="">— select —</option>
-          {opts.map((o) => (
-            <option key={o.id} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-                    </select>
+          getOptionDisabled={getOptionDisabled}
+        />
       );
       break;
     case 'multiselect':
@@ -3163,17 +4371,20 @@ const PreviewQuestion: React.FC<{
         <select
           multiple
           value={(value as string[]) || []}
-          onChange={(e) =>
-            onChange(
-              Array.from(e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>).map(
-                (o) => o.value
-              )
-            )
-          }
+          onChange={(e) => {
+            const picked = Array.from(
+              e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>
+            ).map((o) => o.value);
+            const filtered = picked.filter((pv) => {
+              const o = opts.find((x) => x.value === pv);
+              return !o || !isChoiceOptionDisabled(o, answersMap);
+            });
+            onChange(filtered);
+          }}
           className={`${cls} h-32`}
         >
           {opts.map((o) => (
-            <option key={o.id} value={o.value}>
+            <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, answersMap)}>
               {o.label}
             </option>
           ))}
@@ -3182,20 +4393,16 @@ const PreviewQuestion: React.FC<{
       break;
     case 'radio':
       body = (
-        <div className="space-y-1.5">
-          {opts.map((o) => (
-            <label key={o.id} className="flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="radio"
-                name={question.id}
-                value={o.value}
-                checked={value === o.value}
-                onChange={() => onChange(o.value)}
-              />
-              {o.label}
-            </label>
-          ))}
-                    </div>
+        <ChoiceWithOtherFields
+          mode="radio"
+          name={question.id}
+          options={opts}
+          allowOther={question.allowOther}
+          value={value}
+          onChange={onChange}
+          className={cls}
+          getOptionDisabled={getOptionDisabled}
+        />
       );
       break;
     case 'checkbox':
@@ -3204,9 +4411,15 @@ const PreviewQuestion: React.FC<{
           {opts.map((o) => {
             const arr = Array.isArray(value) ? (value as string[]) : [];
             return (
-              <label key={o.id} className="flex items-center gap-2 text-sm text-slate-700">
+              <label
+                key={o.id}
+                className={`flex items-center gap-2 text-sm ${
+                  isChoiceOptionDisabled(o, answersMap) ? 'text-slate-400' : 'text-slate-700'
+                }`}
+              >
                 <input
                   type="checkbox"
+                  disabled={isChoiceOptionDisabled(o, answersMap)}
                   checked={arr.includes(o.value)}
                   onChange={(e) => {
                     onChange(
@@ -3340,10 +4553,12 @@ const PreviewQuestion: React.FC<{
       body = null;
   }
 
+  const prefix = numberLabel !== undefined ? numberLabel : String(index + 1);
   return (
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-slate-800">
-        {index + 1}. {question.question || 'Untitled question'}
+        {prefix !== '' && `${prefix}. `}
+        {question.question || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
       {question.description && (
@@ -3369,6 +4584,7 @@ const ENUMERATOR_INFO_TYPES: QuestionType[] = [
   'text',
   'longtext',
   'number',
+  'age',
   'email',
   'phone',
   'date',
@@ -3678,14 +4894,20 @@ const EnumeratorInfoFieldRow: React.FC<{
 const EnumeratorInfoTable: React.FC<{
   info: EnumeratorInfo;
   answers: Record<string, unknown>;
+  logicAnswers?: Record<string, unknown>;
   onChange: (fieldId: string, value: unknown) => void;
-}> = ({ info, answers, onChange }) => {
+}> = ({ info, answers, logicAnswers, onChange }) => {
   const cls =
     'w-full text-sm border border-slate-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const logicCtx = logicAnswers ?? answers;
 
   const renderInput = (f: Question) => {
     const v = answers[f.id];
     const opts = ensureOptionShape(f.options);
+    const getOptionDisabled = (optValue: string) => {
+      const o = opts.find((x) => x.value === optValue);
+      return o ? isChoiceOptionDisabled(o, logicCtx) : false;
+    };
     switch (f.type) {
       case 'text':
       case 'email':
@@ -3718,6 +4940,62 @@ const EnumeratorInfoTable: React.FC<{
             className={cls}
           />
         );
+      case 'age': {
+        const ageVal = (v && typeof v === 'object' ? v : {}) as {
+          years?: number | string;
+          months?: number | string;
+        };
+        const yrs = ageVal.years === undefined ? '' : String(ageVal.years);
+        const mos = ageVal.months === undefined ? '' : String(ageVal.months);
+        const commit = (ny: string, nm: string) => {
+          const y = ny === '' ? undefined : Math.max(0, Number(ny));
+          const mRaw = nm === '' ? undefined : Math.max(0, Number(nm));
+          const m = mRaw === undefined ? undefined : Math.min(11, mRaw);
+          if (y === undefined && m === undefined) {
+            onChange(f.id, undefined);
+            return;
+          }
+          const yy = y ?? 0;
+          const mm = m ?? 0;
+          onChange(f.id, { years: yy, months: mm, totalMonths: yy * 12 + mm });
+        };
+        return (
+          <div className="flex gap-2">
+            <div className="flex-1 min-w-0 relative">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={150}
+                step={1}
+                value={yrs}
+                onChange={(e) => commit(e.target.value, mos)}
+                placeholder="0"
+                className={`${cls} pr-12`}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                Years
+              </span>
+            </div>
+            <div className="flex-1 min-w-0 relative">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={11}
+                step={1}
+                value={mos}
+                onChange={(e) => commit(yrs, e.target.value)}
+                placeholder="0"
+                className={`${cls} pr-14`}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                Months
+              </span>
+            </div>
+          </div>
+        );
+      }
       case 'date':
         return (
           <input
@@ -3747,44 +5025,44 @@ const EnumeratorInfoTable: React.FC<{
         );
       case 'select':
         return (
-          <select
-            value={(v as string) || ''}
-            onChange={(e) => onChange(f.id, e.target.value)}
+          <ChoiceWithOtherFields
+            mode="select"
+            name={f.id}
+            options={opts}
+            allowOther={f.allowOther}
+            value={v}
+            onChange={(next) => onChange(f.id, next)}
             className={cls}
-          >
-            <option value="">— select —</option>
-            {opts.map((o) => (
-              <option key={o.id} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            getOptionDisabled={getOptionDisabled}
+          />
         );
       case 'radio':
         return (
-          <div className="flex flex-wrap gap-3">
-            {opts.map((o) => (
-              <label key={o.id} className="flex items-center gap-1.5 text-xs text-slate-700">
-                <input
-                  type="radio"
-                  name={f.id}
-                  value={o.value}
-                  checked={v === o.value}
-                  onChange={() => onChange(f.id, o.value)}
-                />
-                {o.label}
-              </label>
-            ))}
-      </div>
+          <ChoiceWithOtherFields
+            mode="radio"
+            name={f.id}
+            options={opts}
+            allowOther={f.allowOther}
+            value={v}
+            onChange={(next) => onChange(f.id, next)}
+            className={cls}
+            getOptionDisabled={getOptionDisabled}
+          />
         );
       case 'checkbox': {
         const arr = Array.isArray(v) ? (v as string[]) : [];
         return (
           <div className="flex flex-wrap gap-3">
             {opts.map((o) => (
-              <label key={o.id} className="flex items-center gap-1.5 text-xs text-slate-700">
+              <label
+                key={o.id}
+                className={`flex items-center gap-1.5 text-xs ${
+                  isChoiceOptionDisabled(o, logicCtx) ? 'text-slate-400' : 'text-slate-700'
+                }`}
+              >
                 <input
                   type="checkbox"
+                  disabled={isChoiceOptionDisabled(o, logicCtx)}
                   checked={arr.includes(o.value)}
                   onChange={(e) =>
                     onChange(
@@ -3809,13 +5087,18 @@ const EnumeratorInfoTable: React.FC<{
                 f.id,
                 Array.from(
                   e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>
-                ).map((o) => o.value)
+                )
+                  .map((o) => o.value)
+                  .filter((pv) => {
+                    const o = opts.find((x) => x.value === pv);
+                    return !o || !isChoiceOptionDisabled(o, logicCtx);
+                  })
               )
             }
             className={`${cls} h-24`}
           >
             {opts.map((o) => (
-              <option key={o.id} value={o.value}>
+              <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, logicCtx)}>
                 {o.label}
               </option>
             ))}
@@ -4404,6 +5687,20 @@ const ConsentGateEditor: React.FC<{
   gate: ConsentGate;
   onChange: (gate: ConsentGate) => void;
 }> = ({ gate, onChange }) => {
+  const { user, userProfile } = useAuth();
+  const previewName =
+    enumeratorResolvedDisplayName(userProfile, user) || '(sign in to preview your name here)';
+  const sub = gate.substituteEnumeratorName !== false;
+  const previewText = formatConsentGateTemplate(gate.text, previewName, sub);
+  const previewCheckbox = formatConsentGateTemplate(gate.checkboxLabel, previewName, sub);
+
+  const insertNameToken = () => {
+    const token = '{{enumeratorName}}';
+    const t = gate.text;
+    const spacer = t && !/\s$/.test(t) ? ' ' : '';
+    onChange({ ...gate, text: t ? `${t}${spacer}${token}` : token });
+  };
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-5 py-3 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-slate-200">
@@ -4456,8 +5753,29 @@ const ConsentGateEditor: React.FC<{
               rows={5}
               className="w-full text-sm px-2.5 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 resize-y"
             />
+            <div className="flex flex-wrap items-center gap-2 mt-1.5">
+              <button
+                type="button"
+                onClick={insertNameToken}
+                className="text-[10px] font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-200 rounded px-2 py-1"
+              >
+                Insert {'{{enumeratorName}}'}
+              </button>
+              <label className="flex items-center gap-1.5 text-[10px] text-slate-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sub}
+                  onChange={(e) => onChange({ ...gate, substituteEnumeratorName: e.target.checked })}
+                />
+                {"Replace placeholder with the signed-in enumerator's name when shown"}
+              </label>
+            </div>
             <p className="text-[10px] text-slate-400 mt-1">
-              Shown to the enumerator as a paragraph above the consent checkbox.
+              Shown to the enumerator as a paragraph above the consent checkbox. Use{' '}
+              <code className="text-[10px] bg-slate-100 px-0.5 rounded">{'{{enumeratorName}}'}</code>{' '}
+              (or <code className="text-[10px] bg-slate-100 px-0.5 rounded">{'{{enumerator_name}}'}</code>) where
+              their name should appear, for example:{' '}
+              <span className="italic">I, {'{{enumeratorName}}'}, confirm…</span>
             </p>
           </div>
 
@@ -4482,12 +5800,12 @@ const ConsentGateEditor: React.FC<{
             </div>
             <div className="p-4 space-y-3">
               <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">
-                {gate.text || '(empty consent text)'}
+                {previewText || '(empty consent text)'}
               </p>
               <label className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer">
                 <input type="checkbox" disabled className="mt-0.5" />
                 <span className="font-semibold">
-                  {gate.checkboxLabel || '(empty checkbox label)'}
+                  {previewCheckbox || '(empty checkbox label)'}
                   <span className="text-red-500 ml-1">*</span>
                 </span>
               </label>
@@ -4498,48 +5816,6 @@ const ConsentGateEditor: React.FC<{
           </div>
         </div>
       )}
-    </div>
-  );
-};
-
-// ===========================================================================
-// ConsentGateForm — preview-side display: paragraph + checkbox
-// ===========================================================================
-
-const ConsentGateForm: React.FC<{
-  gate: ConsentGate;
-  granted: boolean;
-  onChange: (granted: boolean) => void;
-}> = ({ gate, granted, onChange }) => {
-  return (
-    <div
-      className={`rounded-lg overflow-hidden border ${
-        granted ? 'border-emerald-200 bg-emerald-50/40' : 'border-amber-200 bg-amber-50/40'
-      }`}
-    >
-      <div
-        className={`px-4 py-2.5 text-white flex items-center gap-2 ${
-          granted ? 'bg-emerald-600' : 'bg-amber-600'
-        }`}
-      >
-        {granted ? <ShieldCheck size={16} /> : <Lock size={16} />}
-        <div className="text-sm font-bold">{gate.title || 'Permission Grant'}</div>
-      </div>
-      <div className="p-4 space-y-3">
-        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{gate.text}</p>
-        <label className="flex items-start gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={granted}
-            onChange={(e) => onChange(e.target.checked)}
-            className="mt-0.5 w-4 h-4 accent-emerald-600"
-          />
-          <span className="text-sm font-semibold text-slate-800">
-            {gate.checkboxLabel}
-            <span className="text-red-500 ml-1">*</span>
-          </span>
-        </label>
-      </div>
     </div>
   );
 };

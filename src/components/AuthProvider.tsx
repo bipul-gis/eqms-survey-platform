@@ -3,6 +3,7 @@ import { User, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEma
 import { auth, db } from '../lib/firebase';
 import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { UserProfile } from '../types';
+import { normalizedFullName } from '../lib/userDisplayName';
 
 interface AuthContextType {
   user: User | null;
@@ -47,7 +48,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const optimisticProfile: UserProfile = {
         uid: user.uid,
         email: user.email || '',
-        displayName: user.displayName || user.email?.split('@')[0] || 'User',
+        displayName:
+          normalizedFullName(user.displayName || undefined, user.email || '').trim() || 'User',
         role: isWhitelistedAdmin ? 'admin' : 'enumerator',
         status: isWhitelistedAdmin ? 'approved' : 'pending'
       };

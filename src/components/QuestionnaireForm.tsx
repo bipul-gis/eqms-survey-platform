@@ -43,6 +43,9 @@ import {
   updateDoc
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
+import { evaluateComputed } from '../lib/computedAnswers';
+import { choiceAnswerIsEmpty, choiceAnswerIsFilled } from '../lib/choiceAnswers';
 import {
   ConsentGateForm,
   DescriptionRenderer,
@@ -50,7 +53,9 @@ import {
   RuntimeQuestion,
   SubmissionGpsCaptureWidget,
   computeAppliedDefaultRules,
+  ensureOptionShape,
   evaluateLogic,
+  isChoiceOptionDisabled,
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
 
@@ -237,14 +242,51 @@ const phoneDigitCount = (value: string): number => value.replace(/\D/g, '').leng
  * never require a value; everything else honours `required` + numeric/text
  * validation rules.
  */
-const validateQuestion = (q: Question, value: unknown): string | null => {
+const validateQuestion = (
+  q: Question,
+  value: unknown,
+  answers: Record<string, unknown>
+): string | null => {
   if (q.type === 'section') return null;
   const isEmpty =
-    value === undefined ||
-    value === null ||
-    value === '' ||
-    (Array.isArray(value) && value.length === 0);
+    q.type === 'select' || q.type === 'radio'
+      ? choiceAnswerIsEmpty(value)
+      : value === undefined ||
+        value === null ||
+        value === '' ||
+        (Array.isArray(value) && value.length === 0);
+  // `computed` answers are auto-filled by the form layer from the
+  // operand answers. Showing a "This field is required" warning on
+  // them would be confusing because the enumerator can't type into
+  // the field anyway — the right cue is "fill the operands". Surface
+  // a friendlier message instead.
+  if (q.type === 'computed') {
+    if (q.required && isEmpty) {
+      return 'Fill the questions that feed this calculation.';
+    }
+    return null;
+  }
   if (q.required && isEmpty) return 'This field is required';
+
+  if (q.type === 'select' || q.type === 'radio') {
+    if (typeof value === 'string' && value) {
+      const opts = ensureOptionShape(q.options);
+      const opt = opts.find((o) => o.value === value);
+      if (opt && isChoiceOptionDisabled(opt, answers)) {
+        return 'This option is not available given your other answers. Please choose again.';
+      }
+    }
+  }
+  if (q.type === 'multiselect' || q.type === 'checkbox') {
+    const arr = Array.isArray(value) ? (value as string[]) : [];
+    const opts = ensureOptionShape(q.options);
+    for (const s of arr) {
+      const opt = opts.find((o) => o.value === s);
+      if (opt && isChoiceOptionDisabled(opt, answers)) {
+        return 'One or more selected options are not available given your other answers.';
+      }
+    }
+  }
 
   if (isEmpty) return null;
 
@@ -373,6 +415,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
 
   // Questionnaire-level config — preserve old default behaviour when missing.
   const descriptionBlocks = questionnaire.descriptionBlocks || [];
+  const conclusionBlocks = questionnaire.conclusionBlocks || [];
   const enumeratorInfoConfig = questionnaire.enumeratorInfo;
   const consentGate = questionnaire.consentGate;
   const submissionGpsConfig: SubmissionGpsCapture | undefined = questionnaire.submissionGps;
@@ -382,9 +425,28 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const questionsUnlocked = !consentGate?.enabled || consentGranted;
 
   // Visible questions respect display logic AND the consent gate.
-  const visibleQuestions = useMemo(
-    () => (questionnaire.questions || []).filter((q) => evaluateLogic(q.logic, responses)),
-    [questionnaire.questions, responses]
+  const visibleQuestions = useMemo(() => {
+    const all = questionnaire.questions || [];
+    // Compute logic visibility per question first.
+    const visibleById = new Map<string, boolean>();
+    for (const q of all) visibleById.set(q.id, evaluateLogic(q.logic, responses));
+    // A sub-question is hidden whenever its parent is hidden — saves
+    // admins from having to mirror the parent's logic rule on every
+    // child. Top-level questions follow their own rule only.
+    return all.filter((q) => {
+      if (!visibleById.get(q.id)) return false;
+      if (q.parentId) {
+        const parentVisible = visibleById.get(q.parentId);
+        if (parentVisible === false) return false;
+      }
+      return true;
+    });
+  }, [questionnaire.questions, responses]);
+
+  /** Merged map for cross-field rules (enumerator info + survey answers). */
+  const answersForOptionLogic = useMemo(
+    () => ({ ...enumeratorInfo, ...responses }),
+    [enumeratorInfo, responses]
   );
 
   // Auto-fill / lock — evaluate every question's `defaultValueRules`
@@ -398,6 +460,33 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     () => computeAppliedDefaultRules(visibleQuestions, responses),
     [visibleQuestions, responses]
   );
+
+  // Auto-write `computed`-question results into `responses` so the
+  // calculated value is what we save (CSV export, admin review) and
+  // not "blank". Recomputed every render but the actual setState only
+  // fires when a value drifts, preventing render loops with the
+  // operand inputs.
+  useEffect(() => {
+    if (readOnly) return;
+    const computedQuestions = visibleQuestions.filter(
+      (q) => q.type === 'computed' && q.computed
+    );
+    if (computedQuestions.length === 0) return;
+    const patch: Record<string, unknown> = {};
+    for (const q of computedQuestions) {
+      const res = evaluateComputed(q.computed, responses, visibleQuestions);
+      const next = res.value;
+      const current = responses[q.id];
+      const same =
+        (next === null && (current === undefined || current === null || current === '')) ||
+        (next !== null && current === next);
+      if (!same) {
+        patch[q.id] = next === null ? '' : next;
+      }
+    }
+    if (Object.keys(patch).length === 0) return;
+    setResponses((prev) => ({ ...prev, ...patch }));
+  }, [visibleQuestions, responses, readOnly]);
 
   // Lock-mode rules disable the corresponding input so enumerators can't
   // edit a value the admin has explicitly tied to another answer. Held
@@ -458,6 +547,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     const required = visibleQuestions.filter((q) => q.required && q.type !== 'section');
     const answered = required.filter((q) => {
       const v = responses[q.id];
+      if (q.type === 'select' || q.type === 'radio') return choiceAnswerIsFilled(v);
       return v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0);
     }).length;
     const pct = !questionsUnlocked || required.length === 0
@@ -501,13 +591,13 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     const newE: Record<string, string> = {};
 
     for (const f of enumeratorInfoConfig?.fields || []) {
-      const err = validateQuestion(f, enumeratorInfo[f.id]);
+      const err = validateQuestion(f, enumeratorInfo[f.id], answersForOptionLogic);
       if (err) newE[f.id] = err;
     }
 
     if (questionsUnlocked) {
       for (const q of visibleQuestions) {
-        const err = validateQuestion(q, responses[q.id]);
+        const err = validateQuestion(q, responses[q.id], answersForOptionLogic);
         if (err) newQ[q.id] = err;
       }
     }
@@ -538,8 +628,9 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       responses,
       status
     };
-    if (userProfile?.displayName) base.respondentName = userProfile.displayName;
     if (userProfile?.email) base.respondentEmail = userProfile.email;
+    const respondentLabel = enumeratorResolvedDisplayName(userProfile, user);
+    if (respondentLabel) base.respondentName = respondentLabel;
     if (currentLocation) base.location = stripUndefined(currentLocation);
     if (enumeratorInfoConfig?.enabled && Object.keys(enumeratorInfo).length > 0)
       base.enumeratorInfo = enumeratorInfo;
@@ -779,6 +870,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
             <EnumeratorInfoTable
               info={enumeratorInfoConfig}
               answers={enumeratorInfo}
+              logicAnswers={answersForOptionLogic}
               onChange={handleEnumeratorChange}
             />
             {Object.keys(enumeratorErrors).length > 0 && (
@@ -796,6 +888,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
             gate={consentGate}
             granted={consentGranted}
             onChange={handleConsentChange}
+            enumeratorDisplayName={enumeratorResolvedDisplayName(userProfile, user)}
           />
         )}
 
@@ -809,25 +902,34 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           <p className="text-sm text-slate-500 italic">No questions to show.</p>
         ) : (
           <>
-            {/* Per-type counter so the number prefix in front of each question
-                ignores `section` dividers (those render their own heading and
-                don't take a Q number). */}
+            {/* Hierarchical render: top-level questions first, each
+                followed by their sub-questions inline (indented). The
+                numbering pre-computed here mirrors what the builder
+                shows (Q 1, then 1.a / 1.b under Q 1). */}
             {(() => {
-              let qIndex = -1;
-              return visibleQuestions.map((q) => {
-                if (q.type !== 'section') qIndex += 1;
+              type Slot = { q: Question; label: string; depth: 0 | 1 };
+              const slots: Slot[] = [];
+              let topNum = 0;
+              for (const q of visibleQuestions) {
+                if (q.parentId) continue;
+                if (q.type !== 'section') topNum += 1;
+                slots.push({ q, label: String(topNum), depth: 0 });
+                if (q.type === 'section') continue;
+                const children = visibleQuestions.filter(
+                  (c) => c.parentId === q.id && c.type !== 'section'
+                );
+                children.forEach((c, ci) => {
+                  const letter = String.fromCharCode(97 + ci);
+                  slots.push({ q: c, label: `${topNum}.${letter}`, depth: 1 });
+                });
+              }
+              return slots.map(({ q, label, depth }) => {
                 const locked = lockedQuestionIds.has(q.id);
                 return (
-                  <div key={q.id}>
-                    {/* Lock-mode default-value rule is active for this
-                        question — disable inputs so the value can't be
-                        edited, and surface a small "Auto" hint so it's
-                        clear *why* the field doesn't accept input. The
-                        existing `RuntimeQuestion` doesn't take a
-                        disabled prop, but `<fieldset disabled>` cleanly
-                        cascades the disabled state to every nested
-                        native input/select/textarea (same trick the
-                        admin-side read-only mode uses). */}
+                  <div
+                    key={q.id}
+                    className={depth > 0 ? 'ml-5 pl-4 border-l-2 border-blue-200' : undefined}
+                  >
                     <fieldset
                       disabled={locked}
                       className={
@@ -837,10 +939,13 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                       }
                     >
                       <RuntimeQuestion
-                        index={qIndex}
+                        index={0}
+                        numberLabel={q.type === 'section' ? '' : label}
                         question={q}
                         value={responses[q.id]}
                         onChange={(v) => handleAnswer(q.id, v)}
+                        allAnswers={answersForOptionLogic}
+                        allQuestions={visibleQuestions}
                       />
                       {locked && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
@@ -858,6 +963,22 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                 );
               });
             })()}
+
+            {questionsUnlocked &&
+              (conclusionBlocks.length > 0 || questionnaire.conclusion?.trim()) && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-4 py-3 space-y-2">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    Conclusion
+                  </div>
+                  {conclusionBlocks.length > 0 ? (
+                    <DescriptionRenderer blocks={conclusionBlocks} />
+                  ) : (
+                    <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+                      {questionnaire.conclusion}
+                    </p>
+                  )}
+                </div>
+              )}
 
             {/* End-of-survey GPS capture. In read-only mode we show a
                 static summary of the captured point instead of the live
