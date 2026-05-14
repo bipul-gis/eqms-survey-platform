@@ -945,7 +945,7 @@ export const UserManagement: React.FC<{
 
   return (
     <div className="flex flex-col h-full bg-white shadow-2xl border-l border-gray-200 w-full md:w-96">
-      <div className="p-4 border-b border-gray-100 bg-gray-50/50">
+      <div className="border-b border-gray-100 bg-gray-50/50 pt-[calc(env(safe-area-inset-top,0px)+1rem)] px-4 pb-4">
         <div className="flex items-center justify-between gap-2">
           <h2 className="font-semibold text-gray-800 flex items-center gap-2">
             <UserPlus size={20} className="text-blue-600" />

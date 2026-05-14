@@ -426,7 +426,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-white shadow-2xl border-l border-gray-200 w-full md:w-96">
-      <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+      <div className="border-b border-gray-100 flex items-center justify-between bg-gray-50/50 pt-[calc(env(safe-area-inset-top,0px)+1rem)] px-4 pb-4">
         <h2 className="font-semibold text-gray-800 flex items-center gap-2">
           {feature.type === 'point' ? 'Landmark' : feature.type === 'line' ? 'Road' : 'Slum Boundary'}
           <span className="text-xs font-normal text-gray-400">#{feature.id.slice(0, 8)}</span>

@@ -2310,7 +2310,7 @@ const AppContent: React.FC = () => {
   if (isAdmin && adminMode === 'home') {
     return (
       <div className="flex h-[100dvh] flex-col bg-gradient-to-br from-slate-50 via-blue-50/40 to-indigo-50/30 font-sans text-slate-800">
-        <header className="bg-white/80 backdrop-blur border-b border-slate-200 px-4 py-2.5 flex flex-col gap-1 shadow-sm">
+        <header className="bg-white/80 backdrop-blur border-b border-slate-200 px-4 pt-[calc(env(safe-area-inset-top,0px)+0.625rem)] pb-2.5 flex flex-col gap-1 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-200">
@@ -2517,8 +2517,9 @@ const AppContent: React.FC = () => {
   return (
     <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col bg-slate-50 font-sans text-slate-800">
       {/* Header */}
-      <header className="h-16 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-sm z-[1001]">
-        <div className="flex items-center gap-3">
+      <header className="bg-white border-b border-slate-200 shadow-sm z-[1001] shrink-0 pt-[env(safe-area-inset-top,0px)]">
+        <div className="h-16 px-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
           <div>
             <h1 className="text-lg font-bold text-slate-900 leading-tight flex items-center gap-2">
               <img
@@ -2611,6 +2612,7 @@ const AppContent: React.FC = () => {
               <LogOut size={20} />
             </button>
           </div>
+        </div>
         </div>
       </header>
 
@@ -2920,7 +2922,7 @@ const AppContent: React.FC = () => {
 
         {/* Quick Stats Floating (Admin) */}
         {isAdmin && (
-          <div className="absolute top-4 left-4 z-[1000] flex flex-col gap-2">
+          <div className="absolute left-4 z-[1000] flex flex-col gap-2 top-[calc(1rem+env(safe-area-inset-top,0px))]">
             <div
               className="qc-panel-scroll bg-white/90 backdrop-blur-md p-3 pr-2 rounded-2xl shadow-lg border border-white/50 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] overflow-y-scroll overscroll-contain"
             >

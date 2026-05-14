@@ -101,6 +101,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   } | null>(null);
   /** Currently-open "My Responses" panel for one questionnaire. */
   const [responsesPanel, setResponsesPanel] = useState<Questionnaire | null>(null);
+  /** Bumps to reload questionnaire docs + response stats (Refresh, form close/submit, draft delete). */
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const assignedIds = useMemo(() => {
     const list = userProfile.assignedQuestionnaireIds || [];
@@ -112,7 +114,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   // whole org, not the user's task list) by issuing one `getDoc` per assigned
   // id in parallel. Re-runs whenever `assignedIds` change (which itself is
   // driven by the live user profile in AuthProvider, so admin edits flow
-  // through without manual refresh).
+  // through without manual refresh) or when `refreshTick` increments (header
+  // Refresh button, form close/submit).
   useEffect(() => {
     let cancelled = false;
     if (assignedIds.length === 0) {
@@ -147,7 +150,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     return () => {
       cancelled = true;
     };
-  }, [assignedIds]);
+  }, [assignedIds, refreshTick]);
 
   // Project lookup so we can render the project name on each card. We only
   // need to read the project ids referenced by our questionnaires — full
@@ -192,7 +195,6 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   // (sorted newest first) so the panel never has to issue a second query.
   // Re-fetched whenever the form closes so counters/lists stay in sync
   // after the enumerator saves, submits, or deletes a draft.
-  const [refreshTick, setRefreshTick] = useState(0);
   useEffect(() => {
     if (!user?.uid) return;
     let cancelled = false;
@@ -380,10 +382,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             />
           </div>
           <button
-            onClick={() => {
-              setLoading(true);
-              setQuestionnaires([]);
-            }}
+            onClick={() => setRefreshTick((t) => t + 1)}
             className="text-xs font-semibold px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1.5"
             title="Refresh"
           >
