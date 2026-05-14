@@ -4,9 +4,9 @@
  * Output format:
  * - CSV: one row per response, columns auto-derived from the questionnaire
  *   definition (so enumerator-info fields and questions become columns).
- *   Multi-value answers are joined with `; ` inside the cell; objects fall
- *   back to compact JSON. No third-party deps — kept dependency-free so the
- *   admin bundle stays small.
+ *   Matrix / grid questions expand to one column per row (selected column
+ *   value per cell). Other multi-value answers use `; ` inside a single cell;
+ *   unknown objects fall back to compact JSON. No third-party deps.
  */
 
 import {
@@ -163,6 +163,49 @@ const stringifyAnswer = (v: unknown, q?: Question): string => {
   return String(v);
 };
 
+/** One exported column: whole question, or one matrix row as its own column. */
+type ResponsesExportColumn =
+  | { kind: 'question'; question: Question }
+  | { kind: 'matrixRow'; question: Question; row: string };
+
+const buildResponsesExportColumns = (questions: Question[]): ResponsesExportColumn[] => {
+  const cols: ResponsesExportColumn[] = [];
+  for (const qq of questions) {
+    if (qq.type === 'matrix' && Array.isArray(qq.rows) && qq.rows.length > 0) {
+      for (const row of qq.rows) {
+        cols.push({ kind: 'matrixRow', question: qq, row });
+      }
+    } else {
+      cols.push({ kind: 'question', question: qq });
+    }
+  }
+  return cols;
+};
+
+const responsesExportColumnHeader = (col: ResponsesExportColumn): string => {
+  if (col.kind === 'question') {
+    const qq = col.question;
+    return qq.question || qq.key || qq.id;
+  }
+  const qq = col.question;
+  const base = qq.question || qq.key || qq.id;
+  return `${base} — ${col.row}`;
+};
+
+const responsesExportColumnCell = (
+  col: ResponsesExportColumn,
+  r: QuestionnaireResponse
+): string => {
+  const raw = r.responses?.[col.question.id];
+  if (col.kind === 'question') {
+    return stringifyAnswer(raw, col.question);
+  }
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return '';
+  const cell = (raw as Record<string, unknown>)[col.row];
+  if (cell == null) return '';
+  return String(cell);
+};
+
 const slugify = (s: string): string =>
   s
     .toLowerCase()
@@ -210,6 +253,7 @@ export const buildResponsesTable = (
 ): ResponsesTable => {
   const enumFields = q.enumeratorInfo?.fields || [];
   const questions = (q.questions || []).filter((qq) => qq.type !== 'section');
+  const exportColumns = buildResponsesExportColumns(questions);
 
   const header: string[] = [
     'Response ID',
@@ -229,16 +273,14 @@ export const buildResponsesTable = (
     'Submission GPS Captured At',
     'Submission GPS Duration (s)',
     ...enumFields.map((f) => `Info: ${f.question || f.key || f.id}`),
-    ...questions.map((qq) => qq.question || qq.key || qq.id)
+    ...exportColumns.map(responsesExportColumnHeader)
   ];
 
   const rows: string[][] = responses.map((r) => {
     const enumValues = enumFields.map((f) =>
       stringifyAnswer(r.enumeratorInfo?.[f.id], f)
     );
-    const answerValues = questions.map((qq) =>
-      stringifyAnswer(r.responses?.[qq.id], qq)
-    );
+    const answerValues = exportColumns.map((col) => responsesExportColumnCell(col, r));
     const sub = r.submissionLocation;
     return [
       r.id,
