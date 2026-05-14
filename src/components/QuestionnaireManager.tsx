@@ -167,6 +167,37 @@ const slugify = (s: string) =>
     .replace(/^_+|_+$/g, '')
     .slice(0, 48);
 
+/** True for plain JSON-like objects; false for Date, Firestore FieldValue, Timestamp, etc. */
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return false;
+  const p = Object.getPrototypeOf(value);
+  return p === Object.prototype || p === null;
+};
+
+/**
+ * Firestore rejects `undefined` anywhere in document data. React state often
+ * carries explicit `undefined` optional fields — strip them recursively while
+ * leaving Firestore sentinels and class instances untouched.
+ */
+const sanitizeForFirestore = (value: unknown): unknown => {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(sanitizeForFirestore)
+      .filter((v) => v !== undefined);
+  }
+  if (!isPlainRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v === undefined) continue;
+    const s = sanitizeForFirestore(v);
+    if (s !== undefined) out[k] = s;
+  }
+  return out;
+};
+
 /**
  * Convert any Firestore-ish timestamp into milliseconds for sorting.
  * Tolerates ISO strings, numbers, JS Dates, Firestore `Timestamp` instances
@@ -968,7 +999,10 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
    *               enumerators).
    */
   const handleSave = async (mode: 'save' | 'draft' | 'publish') => {
-    if (!user) return;
+    if (!user) {
+      alert('You must be signed in to save. Please refresh and sign in again.');
+      return;
+    }
     if (!title.trim()) {
       alert('Please provide a title for the questionnaire.');
       return;
@@ -989,7 +1023,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
 
     setSaving(true);
     try {
-      const payload = {
+      const payload = sanitizeForFirestore({
         title: title.trim(),
         // Stamp the active project so list filtering + per-project user task
         // assignment can reference it. Falls back to the canonical default
@@ -1012,7 +1046,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         createdBy: user.uid,
         updatedAt: serverTimestamp(),
         ...(persistedId ? {} : { createdAt: serverTimestamp() })
-      };
+      }) as Record<string, unknown>;
       if (persistedId) {
         await updateDoc(doc(db, 'questionnaires', persistedId), payload);
       } else {
@@ -1036,11 +1070,23 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         onSaved();
       }
     } catch (error) {
-      handleFirestoreError(
-        error,
-        persistedId ? OperationType.UPDATE : OperationType.CREATE,
-        'questionnaires'
-      );
+      console.error('Questionnaire save failed:', error);
+      try {
+        handleFirestoreError(
+          error,
+          persistedId ? OperationType.UPDATE : OperationType.CREATE,
+          'questionnaires'
+        );
+      } catch {
+        /* handleFirestoreError rethrows after logging */
+      }
+      const msg =
+        error instanceof Error
+          ? error.message
+          : typeof error === 'string'
+            ? error
+            : 'Save failed (see console for details).';
+      alert(`Could not save questionnaire: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -1058,7 +1104,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   return (
     <div className="fixed inset-0 z-[1005] bg-slate-100 flex flex-col pt-[env(safe-area-inset-top,0px)]">
       {/* Top toolbar */}
-      <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 shadow-sm">
+      <header className="bg-white border-b border-slate-200 px-4 py-3 flex flex-nowrap items-center gap-2 overflow-x-auto overscroll-x-contain shadow-sm">
         <button
           onClick={onClose}
           className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
