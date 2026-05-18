@@ -25,6 +25,7 @@ import {
   ValueRuleMode
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
+import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
 import { isChoiceOptionDisabled, ConsentGateForm } from './QuestionnaireRuntime';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
@@ -3986,14 +3987,16 @@ const PreviewDialog: React.FC<{
   }, [appliedDefaultRules, answers]);
 
   const totalRequired = visibleQuestions.filter((q) => q.required && q.type !== 'section').length;
-  const answered = visibleQuestions.filter(
-    (q) =>
-      q.required &&
-      q.type !== 'section' &&
-      answers[q.id] !== undefined &&
-      answers[q.id] !== '' &&
-      !(Array.isArray(answers[q.id]) && (answers[q.id] as unknown[]).length === 0)
-  ).length;
+  const answered = visibleQuestions.filter((q) => {
+    if (!q.required || q.type === 'section') return false;
+    const v = answers[q.id];
+    if (q.type === 'matrix') return matrixAllRowsAnswered(v, q.rows);
+    return (
+      v !== undefined &&
+      v !== '' &&
+      !(Array.isArray(v) && (v as unknown[]).length === 0)
+    );
+  }).length;
   // Until consent is granted, progress stays at 0% to make the gate state obvious.
   const progress = !questionsUnlocked
     ? 0

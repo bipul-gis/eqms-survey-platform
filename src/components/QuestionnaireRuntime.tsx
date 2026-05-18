@@ -1493,7 +1493,11 @@ export const RuntimeQuestion: React.FC<{
     }
     case 'matrix':
       body = (
-        <div className="overflow-x-auto">
+        <div className="space-y-1">
+          <p className="text-[11px] text-slate-500">
+            Select one option in each row — every row is required (e.g. হ্যাঁ or না).
+          </p>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr>
@@ -1526,6 +1530,7 @@ export const RuntimeQuestion: React.FC<{
               })}
             </tbody>
           </table>
+          </div>
         </div>
       );
       break;

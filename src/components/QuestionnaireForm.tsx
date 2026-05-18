@@ -47,6 +47,10 @@ import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled } from '../lib/choiceAnswers';
 import {
+  matrixAllRowsAnswered,
+  validateMatrixQuestion
+} from '../lib/matrixAnswers';
+import {
   ConsentGateForm,
   DescriptionRenderer,
   EnumeratorInfoTable,
@@ -248,6 +252,10 @@ const validateQuestion = (
   answers: Record<string, unknown>
 ): string | null => {
   if (q.type === 'section') return null;
+
+  const matrixErr = validateMatrixQuestion(q, value);
+  if (matrixErr) return matrixErr;
+
   const isEmpty =
     q.type === 'select' || q.type === 'radio'
       ? choiceAnswerIsEmpty(value)
@@ -547,6 +555,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     const required = visibleQuestions.filter((q) => q.required && q.type !== 'section');
     const answered = required.filter((q) => {
       const v = responses[q.id];
+      if (q.type === 'matrix') return matrixAllRowsAnswered(v, q.rows);
       if (q.type === 'select' || q.type === 'radio') return choiceAnswerIsFilled(v);
       return v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0);
     }).length;
