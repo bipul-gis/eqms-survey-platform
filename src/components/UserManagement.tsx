@@ -247,18 +247,18 @@ const EnumeratorWardRow: React.FC<{
  * Per-enumerator slum assignment for questionnaire surveys (from SLUM Info.csv).
  * Each slum can only be held by one enumerator at a time.
  */
-const EnumeratorSlumRow: React.FC<{
-  entry: EnumeratorEntry;
+const EnumeratorSlumAssignmentSection: React.FC<{
+  assignedSlumIds: string[];
   slums: SlumRecord[];
   saving: boolean;
   slumHeldByOther: Map<string, { displayName: string; email: string }>;
   onSave: (slumIds: string[]) => void;
-}> = ({ entry, slums, saving, slumHeldByOther, onSave }) => {
-  const [value, setValue] = useState<string[]>(() => [...entry.assignedSlumIds]);
+}> = ({ assignedSlumIds, slums, saving, slumHeldByOther, onSave }) => {
+  const [value, setValue] = useState<string[]>(() => [...assignedSlumIds]);
 
   useEffect(() => {
-    setValue([...entry.assignedSlumIds]);
-  }, [entry.assignedSlumIds, entry.email]);
+    setValue([...assignedSlumIds]);
+  }, [assignedSlumIds]);
 
   const toggle = (slumId: string) => {
     setValue((prev) =>
@@ -267,9 +267,9 @@ const EnumeratorSlumRow: React.FC<{
   };
 
   return (
-    <div className="bg-emerald-50/40 border border-emerald-100 rounded-xl p-3 space-y-2">
+    <div className="space-y-2 pt-3 border-t border-gray-200">
       <div className="flex items-center justify-between gap-2">
-        <label className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
           Assigned slum(s)
         </label>
         <button
@@ -281,7 +281,7 @@ const EnumeratorSlumRow: React.FC<{
           Clear slums
         </button>
       </div>
-      <div className="max-h-40 overflow-y-auto border border-emerald-200 rounded-lg p-2 space-y-1.5 bg-white">
+      <div className="max-h-36 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
         {slums.length === 0 ? (
           <p className="text-[11px] text-gray-400 italic">No slums in reference data.</p>
         ) : (
@@ -324,7 +324,7 @@ const EnumeratorSlumRow: React.FC<{
         type="button"
         disabled={saving}
         onClick={() => onSave(value)}
-        className="w-full text-xs font-bold py-2 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50 transition-colors"
+        className="w-full text-xs font-bold py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
       >
         {saving ? 'Saving…' : 'Save slum assignment'}
       </button>
@@ -340,9 +340,12 @@ const EnumeratorSlumRow: React.FC<{
 const EnumeratorQuestionnaireRow: React.FC<{
   entry: EnumeratorEntry;
   questionnaires: Questionnaire[];
+  slums: SlumRecord[];
+  slumHeldByOther: Map<string, { displayName: string; email: string }>;
   saving: boolean;
-  onSave: (ids: string[]) => void;
-}> = ({ entry, questionnaires, saving, onSave }) => {
+  onSaveQuestionnaires: (ids: string[]) => void;
+  onSaveSlums: (slumIds: string[]) => void;
+}> = ({ entry, questionnaires, slums, slumHeldByOther, saving, onSaveQuestionnaires, onSaveSlums }) => {
   // Only project questionnaires participate in this picker; the saved value
   // is the intersection so we don't accidentally drop other projects' ids.
   const projectIds = useMemo(() => new Set(questionnaires.map((q) => q.id)), [questionnaires]);
@@ -364,14 +367,23 @@ const EnumeratorQuestionnaireRow: React.FC<{
   const allOnFlag = questionnaires.length > 0 && value.length === questionnaires.length;
 
   return (
-    <div className="bg-gray-50 border border-gray-100 rounded-xl p-3 space-y-2">
+    <div className="bg-gray-50 border border-gray-100 rounded-xl p-3 space-y-0">
       <div className="min-w-0">
         <p className="text-xs font-semibold text-gray-800 truncate">{entry.displayName}</p>
         <p className="text-[10px] text-gray-500 truncate">{entry.email}</p>
         <p className="text-[10px] text-gray-500 truncate">{entry.mobileNumber || 'No mobile number'}</p>
         <EnumeratorUidLines uids={entry.uids} />
       </div>
-      <div className="flex flex-col gap-2">
+
+      <EnumeratorSlumAssignmentSection
+        assignedSlumIds={entry.assignedSlumIds}
+        slums={slums}
+        saving={saving}
+        slumHeldByOther={slumHeldByOther}
+        onSave={onSaveSlums}
+      />
+
+      <div className="flex flex-col gap-2 pt-3 border-t border-gray-200">
         <div className="flex items-center justify-between gap-2">
           <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
             Questionnaires (multi)
@@ -444,7 +456,7 @@ const EnumeratorQuestionnaireRow: React.FC<{
         <button
           type="button"
           disabled={saving}
-          onClick={() => onSave(value)}
+          onClick={() => onSaveQuestionnaires(value)}
           className="w-full text-xs font-bold py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
         >
           {saving ? 'Saving…' : 'Save questionnaire assignment'}
@@ -1678,23 +1690,18 @@ export const UserManagement: React.FC<{
                       {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
                     </p>
                     {filteredEnumeratorsForTasks.map((entry) => (
-                      <div key={entry.email} className="space-y-2">
-                        <EnumeratorSlumRow
-                          entry={entry}
-                          slums={slumOptions}
-                          slumHeldByOther={slumLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
-                          saving={taskSavingEmail === entry.email || clearingAllAssignments}
-                          onSave={(ids) => void saveEnumeratorSlumAssignment(entry, ids)}
-                        />
-                        <EnumeratorQuestionnaireRow
-                          entry={entry}
-                          questionnaires={projectQuestionnaires}
-                          saving={taskSavingEmail === entry.email || clearingAllAssignments}
-                          onSave={(ids) =>
-                            void saveEnumeratorQuestionnaireAssignment(entry, ids)
-                          }
-                        />
-                      </div>
+                      <EnumeratorQuestionnaireRow
+                        key={entry.email}
+                        entry={entry}
+                        questionnaires={projectQuestionnaires}
+                        slums={slumOptions}
+                        slumHeldByOther={slumLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
+                        saving={taskSavingEmail === entry.email || clearingAllAssignments}
+                        onSaveSlums={(ids) => void saveEnumeratorSlumAssignment(entry, ids)}
+                        onSaveQuestionnaires={(ids) =>
+                          void saveEnumeratorQuestionnaireAssignment(entry, ids)
+                        }
+                      />
                     ))}
                   </div>
                 )}
