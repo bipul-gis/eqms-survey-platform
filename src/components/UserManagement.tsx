@@ -25,6 +25,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import { db } from '../lib/firebase';
 import { Project, Questionnaire, UserProfile } from '../types';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
+import { findSlumById, getAllSlums, slumDisplayLabel, SlumRecord } from '../lib/slumRegistry';
 
 type EnumeratorEntry = {
   email: string;
@@ -36,6 +37,10 @@ type EnumeratorEntry = {
   assignedWardNames: string[];
   /** Union of `assignedQuestionnaireIds` across all UIDs sharing this email. */
   assignedQuestionnaireIds: string[];
+  /** Slum IDs (`SLUMID`) assigned for the active project. */
+  assignedSlumIds: string[];
+  /** Full per-project slum map (preserved when saving one project). */
+  projectSlumAssignments: Record<string, string[]>;
 };
 
 const normalizeUserSearch = (q: string) => q.trim().toLowerCase();
@@ -94,6 +99,52 @@ const questionnaireIdsFromUserProfile = (data: UserProfile): string[] => {
     return [...new Set(list.map((w) => String(w).trim()).filter(Boolean))].sort();
   }
   return [];
+};
+
+const mergeProjectSlumAssignmentMaps = (
+  a: Record<string, string[]>,
+  b: Record<string, string[]>
+): Record<string, string[]> => {
+  const out: Record<string, string[]> = { ...a };
+  for (const [pid, ids] of Object.entries(b)) {
+    out[pid] = [...new Set([...(out[pid] ?? []), ...(ids ?? []).map((x) => String(x).trim()).filter(Boolean)])].sort();
+  }
+  return out;
+};
+
+const slumIdsForProject = (data: UserProfile, projectId: string | undefined): string[] => {
+  if (projectId) {
+    const fromProject = data.projectSlumAssignments?.[projectId];
+    if (Array.isArray(fromProject) && fromProject.length > 0) {
+      return [...new Set(fromProject.map((id) => String(id).trim()).filter(Boolean))].sort();
+    }
+  }
+  const list = data.assignedSlumIds;
+  if (Array.isArray(list) && list.length > 0) {
+    return [...new Set(list.map((id) => String(id).trim()).filter(Boolean))].sort();
+  }
+  return [];
+};
+
+const unionSlumIdsFromMap = (map: Record<string, string[]>): string[] =>
+  [
+    ...new Set(
+      Object.values(map)
+        .flat()
+        .map((id) => String(id).trim())
+        .filter(Boolean)
+    )
+  ].sort();
+
+const projectSlumAssignmentsFromProfile = (data: UserProfile): Record<string, string[]> => {
+  const raw = data.projectSlumAssignments;
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, string[]> = {};
+  for (const [pid, ids] of Object.entries(raw)) {
+    if (!Array.isArray(ids)) continue;
+    out[pid] = [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))].sort();
+  }
+  return out;
 };
 
 const EnumeratorWardRow: React.FC<{
@@ -188,6 +239,95 @@ const EnumeratorWardRow: React.FC<{
           {saving ? 'Saving…' : 'Save assignment'}
         </button>
       </div>
+    </div>
+  );
+};
+
+/**
+ * Per-enumerator slum assignment for questionnaire surveys (from SLUM Info.csv).
+ * Each slum can only be held by one enumerator at a time.
+ */
+const EnumeratorSlumRow: React.FC<{
+  entry: EnumeratorEntry;
+  slums: SlumRecord[];
+  saving: boolean;
+  slumHeldByOther: Map<string, { displayName: string; email: string }>;
+  onSave: (slumIds: string[]) => void;
+}> = ({ entry, slums, saving, slumHeldByOther, onSave }) => {
+  const [value, setValue] = useState<string[]>(() => [...entry.assignedSlumIds]);
+
+  useEffect(() => {
+    setValue([...entry.assignedSlumIds]);
+  }, [entry.assignedSlumIds, entry.email]);
+
+  const toggle = (slumId: string) => {
+    setValue((prev) =>
+      prev.includes(slumId) ? prev.filter((x) => x !== slumId) : [...prev, slumId].sort()
+    );
+  };
+
+  return (
+    <div className="bg-emerald-50/40 border border-emerald-100 rounded-xl p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+          Assigned slum(s)
+        </label>
+        <button
+          type="button"
+          disabled={saving || value.length === 0}
+          onClick={() => setValue([])}
+          className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
+        >
+          Clear slums
+        </button>
+      </div>
+      <div className="max-h-40 overflow-y-auto border border-emerald-200 rounded-lg p-2 space-y-1.5 bg-white">
+        {slums.length === 0 ? (
+          <p className="text-[11px] text-gray-400 italic">No slums in reference data.</p>
+        ) : (
+          slums.map((s) => {
+            const mine = value.includes(s.slumId);
+            const holder = slumHeldByOther.get(s.slumId);
+            const blocked = !!holder && !mine;
+            return (
+              <label
+                key={s.slumId}
+                className={`flex items-start gap-2 text-xs select-none ${
+                  blocked ? 'text-gray-400 cursor-not-allowed' : 'text-gray-700 cursor-pointer'
+                }`}
+                title={blocked && holder ? `Assigned to ${holder.displayName}` : undefined}
+              >
+                <input
+                  type="checkbox"
+                  checked={mine}
+                  disabled={saving || blocked}
+                  onChange={() => toggle(s.slumId)}
+                  className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 mt-0.5 shrink-0"
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium truncate">{s.slumName}</span>
+                  <span className="block text-[10px] text-gray-400 truncate">
+                    {slumDisplayLabel(s)} · ID {s.slumId}
+                  </span>
+                </span>
+              </label>
+            );
+          })
+        )}
+      </div>
+      <p className="text-[10px] text-gray-500">
+        {value.length === 0
+          ? 'No slum — enumerator will not get slum / dwelling auto-fill.'
+          : `${value.length} slum(s) selected. Slum name and Dwelling ID auto-fill on new forms.`}
+      </p>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => onSave(value)}
+        className="w-full text-xs font-bold py-2 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50 transition-colors"
+      >
+        {saving ? 'Saving…' : 'Save slum assignment'}
+      </button>
     </div>
   );
 };
@@ -377,6 +517,19 @@ export const UserManagement: React.FC<{
     [landmarkWardOptions]
   );
 
+  const slumOptions = useMemo(
+    () =>
+      [...getAllSlums()].sort((a, b) => {
+        const an = parseWardNumber(a.wardName);
+        const bn = parseWardNumber(b.wardName);
+        if (an !== null && bn !== null && an !== bn) return an - bn;
+        if (an !== null) return -1;
+        if (bn !== null) return 1;
+        return a.slumName.localeCompare(b.slumName);
+      }),
+    []
+  );
+
   /** For each enumerator row: wards already assigned to someone else (normalized ward key -> holder). */
   const wardLocksByEnumeratorEmail = useMemo(() => {
     const result = new Map<string, Map<string, { displayName: string; email: string }>>();
@@ -387,6 +540,22 @@ export const UserManagement: React.FC<{
         if (e.email.trim().toLowerCase() === myKey) continue;
         for (const w of e.assignedWardNames) {
           m.set(normalizeWardKey(w), { displayName: e.displayName, email: e.email });
+        }
+      }
+      result.set(target.email, m);
+    }
+    return result;
+  }, [activeEnumerators]);
+
+  const slumLocksByEnumeratorEmail = useMemo(() => {
+    const result = new Map<string, Map<string, { displayName: string; email: string }>>();
+    for (const target of activeEnumerators) {
+      const myKey = target.email.trim().toLowerCase();
+      const m = new Map<string, { displayName: string; email: string }>();
+      for (const e of activeEnumerators) {
+        if (e.email.trim().toLowerCase() === myKey) continue;
+        for (const sid of e.assignedSlumIds) {
+          m.set(sid, { displayName: e.displayName, email: e.email });
         }
       }
       result.set(target.email, m);
@@ -525,8 +694,15 @@ export const UserManagement: React.FC<{
       q,
       (querySnapshot) => {
         const users: UserProfile[] = [];
-        querySnapshot.forEach((doc) => {
-          users.push(doc.data() as UserProfile);
+        querySnapshot.forEach((docSnap) => {
+          const data = docSnap.data() as UserProfile;
+          if (data.role && data.role !== 'enumerator') return;
+          users.push({
+            ...data,
+            uid: data.uid || docSnap.id,
+            role: data.role || 'enumerator',
+            status: data.status || 'pending'
+          });
         });
         setPendingUsers(users);
         // Clear any previous "pending load" errors when we successfully load data.
@@ -589,6 +765,8 @@ export const UserManagement: React.FC<{
 
           const wn = wardsFromUserProfile(data);
           const qids = questionnaireIdsFromUserProfile(data);
+          const slumMap = projectSlumAssignmentsFromProfile(data);
+          const projectId = project?.id;
 
           if (!existing) {
             byEmail.set(emailKey, {
@@ -597,7 +775,9 @@ export const UserManagement: React.FC<{
               mobileNumber: data.mobileNumber,
               uids: [uid],
               assignedWardNames: wn,
-              assignedQuestionnaireIds: qids
+              assignedQuestionnaireIds: qids,
+              projectSlumAssignments: slumMap,
+              assignedSlumIds: slumIdsForProject(data, projectId)
             });
           } else {
             if (uid && !existing.uids.includes(uid)) {
@@ -615,6 +795,14 @@ export const UserManagement: React.FC<{
                 ...new Set([...existing.assignedQuestionnaireIds, ...qids])
               ].sort();
             }
+            existing.projectSlumAssignments = mergeProjectSlumAssignmentMaps(
+              existing.projectSlumAssignments,
+              slumMap
+            );
+            existing.assignedSlumIds = slumIdsForProject(
+              { ...data, projectSlumAssignments: existing.projectSlumAssignments },
+              projectId
+            );
           }
         });
 
@@ -628,7 +816,7 @@ export const UserManagement: React.FC<{
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [project?.id]);
 
   useEffect(() => {
     const q = query(collection(db, 'users'), where('status', '==', 'rejected'));
@@ -653,7 +841,9 @@ export const UserManagement: React.FC<{
               mobileNumber: data.mobileNumber,
               uids: [uid],
               assignedWardNames: [],
-              assignedQuestionnaireIds: []
+              assignedQuestionnaireIds: [],
+              assignedSlumIds: [],
+              projectSlumAssignments: {}
             });
           } else if (uid && !existing.uids.includes(uid)) {
             existing.uids.push(uid);
@@ -811,6 +1001,90 @@ export const UserManagement: React.FC<{
    * different project task panels), and only writes the union for ids that
    * belong to the currently active project.
    */
+  const saveEnumeratorSlumAssignment = async (entry: EnumeratorEntry, selectedSlumIds: string[]) => {
+    const projectId = project?.id ?? DEFAULT_PROJECT_ID;
+    try {
+      setTaskSavingEmail(entry.email);
+      setError(null);
+      const normalized = [...new Set(selectedSlumIds.map((id) => String(id).trim()).filter(Boolean))].sort();
+
+      const myKey = entry.email.trim().toLowerCase();
+      for (const sid of normalized) {
+        const conflict = activeEnumerators.find(
+          (e) =>
+            e.email.trim().toLowerCase() !== myKey && e.assignedSlumIds.includes(sid)
+        );
+        const slum = findSlumById(sid);
+        if (conflict) {
+          setError(
+            `Cannot save: slum "${slum?.slumName ?? sid}" is already assigned to ${conflict.displayName}.`
+          );
+          setTaskSavingEmail(null);
+          return;
+        }
+      }
+
+      const nextMap = { ...entry.projectSlumAssignments };
+      if (normalized.length) nextMap[projectId] = normalized;
+      else delete nextMap[projectId];
+
+      const union = unionSlumIdsFromMap(nextMap);
+      const mapPayload =
+        Object.keys(nextMap).length > 0 ? nextMap : deleteField();
+
+      await Promise.all(
+        entry.uids.map((uid) =>
+          updateDoc(doc(db, 'users', uid), {
+            projectSlumAssignments: mapPayload,
+            ...(union.length ? { assignedSlumIds: union } : { assignedSlumIds: deleteField() })
+          })
+        )
+      );
+    } catch (e) {
+      console.error('Error saving slum assignment:', e);
+      setError('Failed to save slum assignment');
+    } finally {
+      setTaskSavingEmail(null);
+    }
+  };
+
+  const clearAllEnumeratorSlumAssignmentsForProject = async () => {
+    if (activeEnumerators.length === 0) return;
+    if (
+      !confirm(
+        `Clear slum assignments for ALL active enumerators in this project?\n\n` +
+          `Slum assignments in other projects are preserved.`
+      )
+    )
+      return;
+
+    try {
+      setClearingAllAssignments(true);
+      setError(null);
+      const projectId = project?.id ?? DEFAULT_PROJECT_ID;
+      await Promise.all(
+        activeEnumerators.flatMap((entry) => {
+          const nextMap = { ...entry.projectSlumAssignments };
+          delete nextMap[projectId];
+          const union = unionSlumIdsFromMap(nextMap);
+          const mapPayload =
+            Object.keys(nextMap).length > 0 ? nextMap : deleteField();
+          return entry.uids.map((uid) =>
+            updateDoc(doc(db, 'users', uid), {
+              projectSlumAssignments: mapPayload,
+              ...(union.length ? { assignedSlumIds: union } : { assignedSlumIds: deleteField() })
+            })
+          );
+        })
+      );
+    } catch (e) {
+      console.error('Error clearing slum assignments:', e);
+      setError('Failed to clear slum assignments');
+    } finally {
+      setClearingAllAssignments(false);
+    }
+  };
+
   const saveEnumeratorQuestionnaireAssignment = async (
     entry: EnumeratorEntry,
     selectedIdsForProject: string[]
@@ -971,11 +1245,16 @@ export const UserManagement: React.FC<{
         <button
           type="button"
           onClick={() => setActiveTab('pending')}
-          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors ${
+          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
             activeTab === 'pending' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
           }`}
         >
           Manage
+          {pendingUsers.length > 0 && (
+            <span className="min-w-[1.125rem] h-[1.125rem] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold leading-none flex items-center justify-center">
+              {pendingUsers.length}
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -1006,13 +1285,17 @@ export const UserManagement: React.FC<{
             <span className="text-blue-700 font-bold">{totalEnumeratorsCount}</span>
           </div>
           <div className="text-[11px] text-gray-500">
-            Active: {activeEnumeratorsCount} • Deactivated: {deactivatedEnumeratorsCount}
+            Pending approval: {pendingUsers.length} • Active: {activeEnumeratorsCount} • Deactivated:{' '}
+            {deactivatedEnumeratorsCount}
           </div>
         </div>
         )}
 
         {activeTab === 'pending' && (
           <>
+        {error && (
+          <div className="bg-red-50 text-red-600 p-3 rounded-xl text-xs border border-red-100">{error}</div>
+        )}
         {deleteNotice && (
           <div className="bg-amber-50 text-amber-800 p-3 rounded-xl text-xs border border-amber-100">
             {deleteNotice}
@@ -1029,6 +1312,58 @@ export const UserManagement: React.FC<{
             aria-label="Search enumerators"
           />
         </div>
+
+        <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-4">
+          <h3 className="text-sm font-bold text-amber-900 mb-3">
+            Pending Enumerator Sign-ups ({filteredPendingForManage.length}
+            {manageTabSearch.trim() && pendingUsers.length > 0 ? ` / ${pendingUsers.length}` : ''})
+          </h3>
+          {pendingUsers.length === 0 ? (
+            <p className="text-amber-900/70 text-sm">
+              No pending sign-ups. New registrations appear here for approval.
+            </p>
+          ) : filteredPendingForManage.length === 0 ? (
+            <p className="text-amber-900/70 text-sm">No users match your search.</p>
+          ) : (
+            <div className="space-y-3 max-h-80 overflow-y-auto overscroll-contain pr-1">
+              {filteredPendingForManage.map((user) => (
+                <div key={user.uid} className="bg-white p-4 rounded-xl border border-amber-100 shadow-sm">
+                  <div className="flex items-center justify-between mb-3 gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-800 truncate">{user.displayName}</p>
+                      <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                      <p className="text-xs text-gray-500 truncate">
+                        {user.mobileNumber || 'No mobile number'}
+                      </p>
+                      <EnumeratorUidLines uids={user.uid ? [user.uid] : []} />
+                    </div>
+                    <div className="flex items-center gap-1 text-amber-600 shrink-0">
+                      <Clock size={14} />
+                      <span className="text-xs font-medium">Pending</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleApproveUser(user.uid)}
+                      className="flex-1 bg-green-600 text-white text-xs font-bold py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Check size={14} /> Approve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRejectUser(user.uid)}
+                      className="flex-1 bg-red-600 text-white text-xs font-bold py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Ban size={14} /> Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
           <h3 className="text-xs font-bold text-gray-700 mb-3">
             Active Enumerators ({filteredActiveForManage.length}
@@ -1289,11 +1624,20 @@ export const UserManagement: React.FC<{
                     Questionnaire task distribution
                   </h3>
                   <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-                    Pick the questionnaires each enumerator can fill in this project. Unlike wards,
-                    a single questionnaire can be assigned to several enumerators simultaneously.
-                    Assignments in other projects are not affected.
+                    Assign slums from SLUM Info.csv, then pick questionnaires. Slum name and Dwelling ID
+                    (e.g. <span className="font-mono text-gray-600">20151612364_1</span>,{' '}
+                    <span className="font-mono text-gray-600">20151612364_2</span>) auto-fill on new forms.
+                    Each slum can only be assigned to one enumerator; questionnaires can be shared.
                   </p>
-                  <div className="mt-3">
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={clearingAllAssignments || activeEnumerators.length === 0}
+                      onClick={() => void clearAllEnumeratorSlumAssignmentsForProject()}
+                      className="text-xs font-bold px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 disabled:opacity-50"
+                    >
+                      {clearingAllAssignments ? 'Clearing…' : 'Clear all slums (this project)'}
+                    </button>
                     <button
                       type="button"
                       disabled={
@@ -1334,66 +1678,27 @@ export const UserManagement: React.FC<{
                       {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
                     </p>
                     {filteredEnumeratorsForTasks.map((entry) => (
-                      <EnumeratorQuestionnaireRow
-                        key={entry.email}
-                        entry={entry}
-                        questionnaires={projectQuestionnaires}
-                        saving={taskSavingEmail === entry.email || clearingAllAssignments}
-                        onSave={(ids) =>
-                          void saveEnumeratorQuestionnaireAssignment(entry, ids)
-                        }
-                      />
+                      <div key={entry.email} className="space-y-2">
+                        <EnumeratorSlumRow
+                          entry={entry}
+                          slums={slumOptions}
+                          slumHeldByOther={slumLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
+                          saving={taskSavingEmail === entry.email || clearingAllAssignments}
+                          onSave={(ids) => void saveEnumeratorSlumAssignment(entry, ids)}
+                        />
+                        <EnumeratorQuestionnaireRow
+                          entry={entry}
+                          questionnaires={projectQuestionnaires}
+                          saving={taskSavingEmail === entry.email || clearingAllAssignments}
+                          onSave={(ids) =>
+                            void saveEnumeratorQuestionnaireAssignment(entry, ids)
+                          }
+                        />
+                      </div>
                     ))}
                   </div>
                 )}
               </>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'pending' && (
-          <div>
-            <h3 className="text-sm font-bold text-gray-700 mb-4">
-              Pending Enumerator Sign-ups ({filteredPendingForManage.length}
-              {manageTabSearch.trim() && pendingUsers.length > 0 ? ` / ${pendingUsers.length}` : ''})
-            </h3>
-            {pendingUsers.length === 0 ? (
-              <p className="text-gray-500 text-sm">{error ? error : 'No pending approvals'}</p>
-            ) : filteredPendingForManage.length === 0 ? (
-              <p className="text-gray-500 text-sm">No users match your search.</p>
-            ) : (
-              <div className="space-y-3">
-                {filteredPendingForManage.map(user => (
-                  <div key={user.uid} className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <p className="font-semibold text-gray-800">{user.displayName}</p>
-                        <p className="text-xs text-gray-500">{user.email}</p>
-                        <p className="text-xs text-gray-500">{user.mobileNumber || 'No mobile number'}</p>
-                        <EnumeratorUidLines uids={user.uid ? [user.uid] : []} />
-                      </div>
-                      <div className="flex items-center gap-1 text-amber-600">
-                        <Clock size={14} />
-                        <span className="text-xs font-medium">Pending</span>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleApproveUser(user.uid)}
-                        className="flex-1 bg-green-600 text-white text-xs font-bold py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-1"
-                      >
-                        <Check size={14} /> Approve
-                      </button>
-                      <button
-                        onClick={() => handleRejectUser(user.uid)}
-                        className="flex-1 bg-red-600 text-white text-xs font-bold py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-1"
-                      >
-                        <Ban size={14} /> Reject
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
             )}
           </div>
         )}

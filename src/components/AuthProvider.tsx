@@ -69,13 +69,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             void (async () => {
               try {
-                const deletedByUidSnap = await getDoc(doc(db, 'deleted_users', user.uid));
-                const emailKey = user.email ? encodeURIComponent(user.email.trim().toLowerCase()) : null;
-                const deletedByEmailSnap = emailKey
-                  ? await getDoc(doc(db, 'deleted_user_emails', emailKey))
-                  : null;
+                let blocked = false;
+                try {
+                  const deletedByUidSnap = await getDoc(doc(db, 'deleted_users', user.uid));
+                  const emailKey = user.email
+                    ? encodeURIComponent(user.email.trim().toLowerCase())
+                    : null;
+                  const deletedByEmailSnap = emailKey
+                    ? await getDoc(doc(db, 'deleted_user_emails', emailKey))
+                    : null;
+                  blocked = deletedByUidSnap.exists() || Boolean(deletedByEmailSnap?.exists());
+                } catch (deletedCheckErr) {
+                  // Missing rules or offline — still create the profile so admins can approve.
+                  console.warn('AuthProvider: deleted-user check skipped', deletedCheckErr);
+                }
 
-                if (deletedByUidSnap.exists() || deletedByEmailSnap?.exists()) {
+                if (blocked) {
                   const blockedProfile: UserProfile = {
                     ...optimisticProfile,
                     role: 'enumerator',
@@ -115,9 +124,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         },
         (err) => {
           console.error('AuthProvider: onSnapshot user doc failed', err);
-          // Keep the optimistic profile so user sees correct gating (pending/approved).
-          setUserProfile(optimisticProfile);
-          setLoading(false);
+          void (async () => {
+            try {
+              const snap = await getDoc(userDocRef);
+              if (snap.exists()) {
+                setUserProfile(snap.data() as UserProfile);
+              } else {
+                await setDoc(userDocRef, optimisticProfile);
+                setUserProfile(optimisticProfile);
+              }
+            } catch (recoverErr) {
+              console.warn('AuthProvider: profile recovery failed', recoverErr);
+              setUserProfile(optimisticProfile);
+            } finally {
+              setLoading(false);
+            }
+          })();
         }
       );
     });

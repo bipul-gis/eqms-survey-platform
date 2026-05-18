@@ -16,7 +16,7 @@
  * state, validation, and Firestore I/O.
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthProvider';
 import {
   Questionnaire,
@@ -42,6 +42,14 @@ import {
   serverTimestamp,
   updateDoc
 } from 'firebase/firestore';
+import { DEFAULT_PROJECT_ID } from '../lib/projects';
+import { resolveAssignedSlumRecords } from '../lib/assignedSlums';
+import {
+  collectDwellingIdFieldIds,
+  collectSlumNameFieldIds
+} from '../lib/questionnaireSlumFields';
+import { formatDwellingId, nextDwellingSequenceFromValues } from '../lib/slumRegistry';
+import { loadDwellingIdValuesForQuestionnaire } from '../lib/slumDwellingSequence';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import { evaluateComputed } from '../lib/computedAnswers';
@@ -87,6 +95,8 @@ interface QuestionnaireFormProps {
    * input and hides Save Draft / Submit buttons. Has no effect on data.
    */
   readOnly?: boolean;
+  /** Used to resolve slum task assignment (`projectSlumAssignments`). */
+  projectId?: string;
 }
 
 interface CapturedGps {
@@ -367,9 +377,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   initialLocation,
   variant = 'drawer',
   existingResponse,
-  readOnly = false
+  readOnly = false,
+  projectId: projectIdProp
 }) => {
   const { user, userProfile } = useAuth();
+  const projectId = projectIdProp || questionnaire.projectId || DEFAULT_PROJECT_ID;
   const isFullscreen = variant === 'fullscreen';
   const isResuming = !!existingResponse;
   const existingId = existingResponse?.id;
@@ -499,13 +511,130 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   // Lock-mode rules disable the corresponding input so enumerators can't
   // edit a value the admin has explicitly tied to another answer. Held
   // as a Set so the JSX render path can do an O(1) lookup per question.
+  const assignedSlumRecords = useMemo(
+    () => resolveAssignedSlumRecords(userProfile, projectId),
+    [userProfile, projectId]
+  );
+  const primaryAssignedSlum = assignedSlumRecords.length > 0 ? assignedSlumRecords[0] : null;
+
+  const slumAutoFieldIds = useMemo(() => {
+    if (!primaryAssignedSlum) return new Set<string>();
+    const ids = [
+      ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectSlumNameFieldIds(questionnaire.questions),
+      ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectDwellingIdFieldIds(questionnaire.questions)
+    ];
+    return new Set(ids);
+  }, [primaryAssignedSlum, questionnaire.enumeratorInfo?.fields, questionnaire.questions]);
+
+  const slumAutoInitRef = useRef(false);
+  useEffect(() => {
+    slumAutoInitRef.current = false;
+  }, [questionnaire.id, existingId]);
+
+  useEffect(() => {
+    if (readOnly || existingResponse || !primaryAssignedSlum || slumAutoInitRef.current) return;
+
+    const slumName = primaryAssignedSlum.slumName;
+    const slumNameFieldIds = [
+      ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectSlumNameFieldIds(questionnaire.questions)
+    ];
+    const dwellingFieldIds = [
+      ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectDwellingIdFieldIds(questionnaire.questions)
+    ];
+
+    if (slumNameFieldIds.length === 0 && dwellingFieldIds.length === 0) return;
+
+    slumAutoInitRef.current = true;
+
+    const applySlumName = (prev: Record<string, unknown>, fieldIds: string[]) => {
+      const next = { ...prev };
+      for (const id of fieldIds) {
+        if (next[id] === undefined || next[id] === null || next[id] === '') {
+          next[id] = slumName;
+        }
+      }
+      return next;
+    };
+
+    if (slumNameFieldIds.length > 0) {
+      const enumIds = collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields);
+      const qIds = collectSlumNameFieldIds(questionnaire.questions);
+      if (enumIds.length > 0) {
+        setEnumeratorInfo((prev) => applySlumName(prev, enumIds));
+      }
+      if (qIds.length > 0) {
+        setResponses((prev) => applySlumName(prev, qIds));
+      }
+    }
+
+    if (dwellingFieldIds.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const values = await loadDwellingIdValuesForQuestionnaire(
+          questionnaire.id,
+          primaryAssignedSlum.slumId
+        );
+        if (cancelled) return;
+        const seq = nextDwellingSequenceFromValues(values, primaryAssignedSlum.slumId);
+        const dwellingValue = formatDwellingId(primaryAssignedSlum.slumId, seq);
+
+        const applyDwelling = (prev: Record<string, unknown>, fieldIds: string[]) => {
+          const next = { ...prev };
+          for (const id of fieldIds) {
+            if (next[id] === undefined || next[id] === null || next[id] === '') {
+              next[id] = dwellingValue;
+            }
+          }
+          return next;
+        };
+
+        const enumDw = collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields);
+        const qDw = collectDwellingIdFieldIds(questionnaire.questions);
+        if (enumDw.length > 0) {
+          setEnumeratorInfo((prev) => applyDwelling(prev, enumDw));
+        }
+        if (qDw.length > 0) {
+          setResponses((prev) => applyDwelling(prev, qDw));
+        }
+      } catch (e) {
+        console.warn('QuestionnaireForm: dwelling id auto-fill failed', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    readOnly,
+    existingResponse,
+    primaryAssignedSlum,
+    questionnaire.id,
+    questionnaire.enumeratorInfo?.fields,
+    questionnaire.questions
+  ]);
+
   const lockedQuestionIds = useMemo(() => {
-    const ids = new Set<string>();
+    const ids = new Set<string>(slumAutoFieldIds);
     for (const r of appliedDefaultRules) {
       if (r.mode === 'lock') ids.add(r.questionId);
     }
     return ids;
-  }, [appliedDefaultRules]);
+  }, [appliedDefaultRules, slumAutoFieldIds]);
+
+  const lockedEnumeratorFieldIds = useMemo(() => {
+    if (!primaryAssignedSlum) return undefined;
+    const ids = [
+      ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields)
+    ].filter((id) => slumAutoFieldIds.has(id));
+    return ids.length > 0 ? new Set(ids) : undefined;
+  }, [primaryAssignedSlum, questionnaire.enumeratorInfo?.fields, slumAutoFieldIds]);
 
   useEffect(() => {
     if (appliedDefaultRules.length === 0 || readOnly) return;
@@ -881,7 +1010,16 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
               answers={enumeratorInfo}
               logicAnswers={answersForOptionLogic}
               onChange={handleEnumeratorChange}
+              lockedFieldIds={lockedEnumeratorFieldIds}
             />
+            {primaryAssignedSlum && (
+              <p className="text-[11px] text-slate-500 mt-2">
+                Slum assignment: <span className="font-medium text-slate-700">{primaryAssignedSlum.slumName}</span>
+                {assignedSlumRecords.length > 1 && (
+                  <span className="text-amber-700"> (using first of {assignedSlumRecords.length} assigned slums)</span>
+                )}
+              </p>
+            )}
             {Object.keys(enumeratorErrors).length > 0 && (
               <p className="text-[11px] text-red-600 mt-2 flex items-center gap-1">
                 <AlertCircle size={12} />

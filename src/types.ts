@@ -70,6 +70,16 @@ export interface UserProfile {
    * for each project. Empty/undefined means "no questionnaires assigned".
    */
   assignedQuestionnaireIds?: string[];
+  /**
+   * Slum IDs (`SLUMID` from slum reference CSV) this enumerator may survey
+   * in questionnaire tasks. Union across projects when mirrored from
+   * `projectSlumAssignments`.
+   */
+  assignedSlumIds?: string[];
+  /**
+   * Per-project slum tasking — `{ [projectId]: ['20151612364', …] }`.
+   */
+  projectSlumAssignments?: { [projectId: string]: string[] };
 }
 
 /**

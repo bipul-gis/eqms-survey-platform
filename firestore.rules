@@ -39,7 +39,9 @@ service cloud.firestore {
         && request.resource.data.get('assignedWardName', null) == prior.get('assignedWardName', null)
         && request.resource.data.get('assignedWardNames', []) == prior.get('assignedWardNames', [])
         && request.resource.data.get('projectWardAssignments', {}) == prior.get('projectWardAssignments', {})
-        && request.resource.data.get('assignedQuestionnaireIds', []) == prior.get('assignedQuestionnaireIds', []);
+        && request.resource.data.get('assignedQuestionnaireIds', []) == prior.get('assignedQuestionnaireIds', [])
+        && request.resource.data.get('assignedSlumIds', []) == prior.get('assignedSlumIds', [])
+        && request.resource.data.get('projectSlumAssignments', {}) == prior.get('projectSlumAssignments', {});
     }
 
     function isValidFeature(data) {
@@ -54,6 +56,17 @@ service cloud.firestore {
       allow write: if isAdmin()
         || isSelf(userId) && isEnumeratorPendingProfile(request.resource.data, userId)
         || isSelfUiPrefsOnly(userId);
+    }
+
+    // Blocklist used when an admin permanently deletes an enumerator account.
+    match /deleted_users/{userId} {
+      allow read: if isSignedIn() && (isAdmin() || isSelf(userId));
+      allow write: if isAdmin();
+    }
+
+    match /deleted_user_emails/{emailKey} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     match /features/{featureId} {

@@ -473,6 +473,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
         <div className="fixed inset-0 z-[1003] bg-slate-50 animate-in fade-in duration-200">
           <QuestionnaireForm
             questionnaire={opening.questionnaire}
+            projectId={opening.questionnaire.projectId}
             existingResponse={opening.existingResponse}
             readOnly={opening.readOnly}
             initialLocation={initialLocation}

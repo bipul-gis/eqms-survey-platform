@@ -2849,6 +2849,7 @@ const AppContent: React.FC = () => {
           <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
             <QuestionnaireForm
               questionnaire={selectedQuestionnaire}
+              projectId={selectedQuestionnaire.projectId}
               onClose={() => setSelectedQuestionnaire(null)}
               initialLocation={questionnaireLocation || undefined}
             />

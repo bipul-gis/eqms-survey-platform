@@ -335,7 +335,9 @@ export const EnumeratorInfoTable: React.FC<{
    */
   logicAnswers?: Record<string, unknown>;
   onChange: (fieldId: string, value: unknown) => void;
-}> = ({ info, answers, logicAnswers, onChange }) => {
+  /** Field ids auto-filled from task assignment (read-only). */
+  lockedFieldIds?: Set<string>;
+}> = ({ info, answers, logicAnswers, onChange, lockedFieldIds }) => {
   const cls =
     'w-full text-sm border border-slate-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500';
   const logicCtx = logicAnswers ?? answers;
@@ -567,7 +569,23 @@ export const EnumeratorInfoTable: React.FC<{
                 {f.question || 'Untitled field'}
                 {f.required && <span className="text-red-500 ml-1">*</span>}
               </th>
-              <td className="px-4 py-2 align-middle bg-white">{renderInput(f)}</td>
+              <td className="px-4 py-2 align-middle bg-white">
+                <fieldset
+                  disabled={lockedFieldIds?.has(f.id)}
+                  className={
+                    lockedFieldIds?.has(f.id)
+                      ? 'border-0 p-0 m-0 [&_input]:cursor-not-allowed [&_select]:cursor-not-allowed [&_textarea]:cursor-not-allowed [&_input:disabled]:bg-slate-50'
+                      : 'border-0 p-0 m-0'
+                  }
+                >
+                  {renderInput(f)}
+                  {lockedFieldIds?.has(f.id) && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
+                      Auto-filled from your slum assignment
+                    </span>
+                  )}
+                </fieldset>
+              </td>
             </tr>
           ))}
         </tbody>
