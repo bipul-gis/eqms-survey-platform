@@ -7,6 +7,7 @@ import {
   doc,
   updateDoc,
   deleteDoc,
+  onSnapshot,
   serverTimestamp,
   writeBatch
 } from 'firebase/firestore';
@@ -62,11 +63,13 @@ interface QuestionnaireResponsesViewProps {
 type StatusFilter = 'all' | 'draft' | 'submitted' | 'reviewed';
 
 export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProps> = ({
-  questionnaire,
+  questionnaire: initialQuestionnaire,
   onClose
 }) => {
   const { user, userProfile } = useAuth();
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
+  /** Live questionnaire definition — columns in CSV preview/export follow this. */
+  const [questionnaire, setQuestionnaire] = useState<Questionnaire>(initialQuestionnaire);
   const [responses, setResponses] = useState<QuestionnaireResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -124,6 +127,24 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    setQuestionnaire(initialQuestionnaire);
+  }, [initialQuestionnaire]);
+
+  // Keep export/preview columns in sync when the questionnaire is edited in the builder.
+  useEffect(() => {
+    const ref = doc(db, 'questionnaires', initialQuestionnaire.id);
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) return;
+        setQuestionnaire({ ...(snap.data() as Questionnaire), id: snap.id });
+      },
+      (err) => console.warn('QuestionnaireResponsesView: questionnaire snapshot failed', err)
+    );
+    return () => unsub();
+  }, [initialQuestionnaire.id]);
 
   useEffect(() => {
     void fetchResponses();
@@ -1106,9 +1127,25 @@ const CsvPreview: React.FC<{
 }> = ({ questionnaire, responses }) => {
   // Show the *latest* 100 by submittedAt (parent already pre-sorts that way).
   const slice = useMemo(() => responses.slice(0, PREVIEW_LIMIT), [responses]);
+  const questionColumnKey = useMemo(() => {
+    const qs = questionnaire.questions || [];
+    return qs
+      .map(
+        (q) =>
+          `${q.id}\t${q.type}\t${q.parentId || ''}\t${q.question || q.key || ''}\t${(q.rows || []).join('\t')}`
+      )
+      .join('\n');
+  }, [questionnaire.questions]);
+  const enumeratorColumnKey = useMemo(
+    () =>
+      (questionnaire.enumeratorInfo?.fields || [])
+        .map((f) => `${f.id}\t${f.question || f.key || ''}`)
+        .join('\n'),
+    [questionnaire.enumeratorInfo?.fields]
+  );
   const { header, rows } = useMemo(
     () => buildResponsesTable(questionnaire, slice),
-    [questionnaire, slice]
+    [questionnaire, slice, questionColumnKey, enumeratorColumnKey]
   );
 
   if (rows.length === 0) return null;

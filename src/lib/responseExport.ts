@@ -115,6 +115,21 @@ const stringifyAnswer = (v: unknown, q?: Question): string => {
   if (q?.type === 'age' && typeof v === 'object' && !Array.isArray(v)) {
     return stringifyAge(v);
   }
+  if (
+    q?.type === 'location' &&
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    typeof (v as { lat?: unknown }).lat === 'number' &&
+    typeof (v as { lng?: unknown }).lng === 'number'
+  ) {
+    const loc = v as { lat: number; lng: number; accuracy?: number };
+    const acc =
+      typeof loc.accuracy === 'number' && Number.isFinite(loc.accuracy)
+        ? ` (±${loc.accuracy.toFixed(1)} m)`
+        : '';
+    return `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}${acc}`;
+  }
   // Computed answers are stored as raw numbers/strings. Re-apply the
   // admin-authored prefix/suffix so the CSV reads the same as what the
   // enumerator saw on screen (e.g. "BDT 1200" instead of "1200").
@@ -167,6 +182,72 @@ const stringifyAnswer = (v: unknown, q?: Question): string => {
 type ResponsesExportColumn =
   | { kind: 'question'; question: Question }
   | { kind: 'matrixRow'; question: Question; row: string };
+
+/**
+ * Survey questions in the same order enumerators see them: each top-level
+ * question (by builder order), then its sub-questions. Section breaks are
+ * omitted — they carry no answers.
+ */
+export const getExportOrderedQuestions = (questionnaire: Questionnaire): Question[] => {
+  const all = questionnaire.questions || [];
+  const ordered: Question[] = [];
+  const seen = new Set<string>();
+
+  const push = (q: Question) => {
+    if (q.type === 'section' || seen.has(q.id)) return;
+    seen.add(q.id);
+    ordered.push(q);
+  };
+
+  for (const q of all.filter((x) => !x.parentId)) {
+    push(q);
+    if (q.type === 'section') continue;
+    for (const child of all.filter((c) => c.parentId === q.id)) {
+      push(child);
+    }
+  }
+  for (const q of all) {
+    push(q);
+  }
+  return ordered;
+};
+
+/** Include answer keys from responses whose question was removed from the form. */
+const mergeQuestionsWithResponseKeys = (
+  ordered: Question[],
+  responses: QuestionnaireResponse[]
+): Question[] => {
+  const known = new Set(ordered.map((q) => q.id));
+  const orphanIds = new Set<string>();
+  for (const r of responses) {
+    if (!r.responses) continue;
+    for (const id of Object.keys(r.responses)) {
+      if (!known.has(id)) orphanIds.add(id);
+    }
+  }
+  if (orphanIds.size === 0) return ordered;
+  const orphans: Question[] = [...orphanIds].sort().map((id) => ({
+    id,
+    type: 'text',
+    question: `${id} (removed from questionnaire)`,
+    required: false
+  }));
+  return [...ordered, ...orphans];
+};
+
+const exportLatLng = (r: QuestionnaireResponse): { lat: string; lng: string } => {
+  const sub = r.submissionLocation;
+  const lat =
+    r.location?.lat ??
+    (sub?.lat != null && Number.isFinite(sub.lat) ? sub.lat : undefined);
+  const lng =
+    r.location?.lng ??
+    (sub?.lng != null && Number.isFinite(sub.lng) ? sub.lng : undefined);
+  return {
+    lat: lat != null ? String(lat) : '',
+    lng: lng != null ? String(lng) : ''
+  };
+};
 
 const buildResponsesExportColumns = (questions: Question[]): ResponsesExportColumn[] => {
   const cols: ResponsesExportColumn[] = [];
@@ -252,7 +333,10 @@ export const buildResponsesTable = (
   responses: QuestionnaireResponse[]
 ): ResponsesTable => {
   const enumFields = q.enumeratorInfo?.fields || [];
-  const questions = (q.questions || []).filter((qq) => qq.type !== 'section');
+  const questions = mergeQuestionsWithResponseKeys(
+    getExportOrderedQuestions(q),
+    responses
+  );
   const exportColumns = buildResponsesExportColumns(questions);
 
   const header: string[] = [
@@ -282,6 +366,7 @@ export const buildResponsesTable = (
     );
     const answerValues = exportColumns.map((col) => responsesExportColumnCell(col, r));
     const sub = r.submissionLocation;
+    const { lat: exportLat, lng: exportLng } = exportLatLng(r);
     return [
       r.id,
       r.status,
@@ -289,8 +374,8 @@ export const buildResponsesTable = (
       r.respondentName || '',
       r.respondentEmail || '',
       r.respondentId || '',
-      r.location?.lat != null ? String(r.location.lat) : '',
-      r.location?.lng != null ? String(r.location.lng) : '',
+      exportLat,
+      exportLng,
       r.location?.ward || '',
       r.consentGranted ? 'Yes' : 'No',
       fmtDate(r.consentGrantedAt),
