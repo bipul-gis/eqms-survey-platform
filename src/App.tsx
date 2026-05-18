@@ -2154,7 +2154,8 @@ const AppContent: React.FC = () => {
   ) {
     return (
       <div className="flex h-[100dvh] flex-col bg-gradient-to-br from-slate-50 via-blue-50/40 to-emerald-50/30 font-sans text-slate-800">
-        <header className="h-16 bg-white/85 backdrop-blur border-b border-slate-200 px-4 flex items-center justify-between shadow-sm">
+        <header className="bg-white/85 backdrop-blur border-b border-slate-200 shadow-sm pt-safe-top shrink-0">
+          <div className="h-16 px-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center shadow-md shadow-emerald-200">
               <ClipboardList size={18} className="text-white" />
@@ -2181,6 +2182,7 @@ const AppContent: React.FC = () => {
             >
               <LogOut size={20} />
             </button>
+          </div>
           </div>
         </header>
         <main className="flex-1 overflow-y-auto px-6 py-10">

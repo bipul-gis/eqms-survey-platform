@@ -309,7 +309,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
 
   return (
     <div className="qc-panel-scroll flex flex-col min-h-[100dvh] bg-gradient-to-br from-emerald-50/40 to-teal-50/30">
-      <header className="bg-white/85 backdrop-blur border-b border-slate-200 shadow-sm">
+      <header className="bg-white/85 backdrop-blur border-b border-slate-200 shadow-sm pt-safe-top">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
           {onBack && (
             <button
@@ -699,7 +699,7 @@ const MyResponsesPanel: React.FC<{
 
   return (
     <div className="fixed inset-0 z-[1002] bg-slate-50 flex flex-col">
-      <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center gap-3 shadow-sm">
+      <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center gap-3 shadow-sm pt-safe-top shrink-0">
         <button
           onClick={onClose}
           className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
@@ -761,7 +761,7 @@ const MyResponsesPanel: React.FC<{
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5">
+      <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden px-4 sm:px-6 py-5">
         {filtered.length === 0 ? (
           totalCount === 0 ? (
             <div className="max-w-md mx-auto bg-white border border-slate-200 rounded-xl p-8 text-center">
@@ -788,8 +788,80 @@ const MyResponsesPanel: React.FC<{
             </div>
           )
         ) : (
-          <div className="max-w-4xl mx-auto bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            <table className="w-full text-left border-collapse">
+          <div className="max-w-4xl mx-auto space-y-3">
+            <ul className="md:hidden space-y-3">
+              {filtered.map((r, idx) => {
+                const lastTouched =
+                  tsToDate(r.updatedAt) || tsToDate(r.submittedAt);
+                const isDraft = r.status === 'draft';
+                return (
+                  <li
+                    key={r.id}
+                    className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase">
+                        #{idx + 1}
+                      </span>
+                      <ResponseStatusPill status={r.status} />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        Response ID
+                      </p>
+                      <ResponseIdCell id={r.id} variant="compact" />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
+                        Last updated
+                      </p>
+                      {lastTouched ? (
+                        <>
+                          <p className="text-xs text-slate-700">{fmtDate(lastTouched)}</p>
+                          <p className="text-[10px] text-slate-400">
+                            {formatRelative(lastTouched)}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">—</p>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-100">
+                      {isDraft ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onContinueDraft(r)}
+                            className="flex-1 min-w-[8rem] text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-3 py-2 rounded-lg inline-flex items-center justify-center gap-1.5"
+                          >
+                            <Edit3 size={14} /> Continue
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteDraft(r)}
+                            className="text-xs font-semibold text-red-700 hover:bg-red-50 border border-red-100 px-3 py-2 rounded-lg inline-flex items-center gap-1"
+                            title="Delete draft"
+                          >
+                            <Trash2 size={14} /> Delete
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onViewResponse(r)}
+                          className="w-full text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-100 px-3 py-2 rounded-lg inline-flex items-center justify-center gap-1.5"
+                        >
+                          <Eye size={14} /> View response
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+            <table className="w-full min-w-[36rem] text-left border-collapse">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-10">
@@ -804,7 +876,7 @@ const MyResponsesPanel: React.FC<{
                   <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-right">
+                  <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-right whitespace-nowrap">
                     Actions
                   </th>
                 </tr>
@@ -817,10 +889,10 @@ const MyResponsesPanel: React.FC<{
                   return (
                     <tr key={r.id} className="hover:bg-slate-50/60">
                       <td className="px-3 py-3 text-xs text-slate-400">{idx + 1}</td>
-                      <td className="px-3 py-3">
+                      <td className="px-3 py-3 max-w-[14rem]">
                         <ResponseIdCell id={r.id} variant="compact" />
                       </td>
-                      <td className="px-3 py-3 text-xs text-slate-700">
+                      <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">
                         {lastTouched ? (
                           <div>
                             <div className="text-slate-700">
@@ -872,6 +944,7 @@ const MyResponsesPanel: React.FC<{
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </div>

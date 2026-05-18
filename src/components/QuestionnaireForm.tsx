@@ -772,7 +772,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const body = (
     <div className={panelClasses}>
       {/* Header */}
-      <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50 sm:rounded-t-xl shrink-0">
+      <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50 sm:rounded-t-xl shrink-0 pt-safe-top">
         <div className="flex items-center gap-2 min-w-0">
           <FileText size={18} className="text-blue-600 shrink-0" />
           <div className="min-w-0">
