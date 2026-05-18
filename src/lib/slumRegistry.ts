@@ -82,10 +82,22 @@ export function findSlumByName(slumName: string): SlumRecord | undefined {
   return hits[0];
 }
 
+/** Ward number/text for questionnaire auto-fill (numeric CSV values stay as `8`, `12`, …). */
+export function wardValueFromSlumCsv(wardName: string): string {
+  return String(wardName ?? '').trim();
+}
+
+/** Display label for admin UI (numeric → `Ward 12`, otherwise as stored). */
+export function formatWardLabelFromCsv(wardName: string): string {
+  const ward = wardValueFromSlumCsv(wardName);
+  if (!ward) return '';
+  if (/^\d+$/.test(ward)) return `Ward ${ward}`;
+  return ward;
+}
+
 export function slumDisplayLabel(row: SlumRecord): string {
-  const ward = row.wardName.trim();
-  const wardLabel = /^\d+$/.test(ward) ? `Ward ${ward}` : ward;
-  return `${row.slumName} (${wardLabel})`;
+  const wardLabel = formatWardLabelFromCsv(row.wardName);
+  return wardLabel ? `${row.slumName} (${wardLabel})` : row.slumName;
 }
 
 /** Dwelling id format: `{SLUMID}_{n}` e.g. `20151612364_1`. */

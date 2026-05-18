@@ -46,9 +46,14 @@ import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { resolveAssignedSlumRecords } from '../lib/assignedSlums';
 import {
   collectDwellingIdFieldIds,
-  collectSlumNameFieldIds
+  collectSlumNameFieldIds,
+  collectWardAreaFieldIds
 } from '../lib/questionnaireSlumFields';
-import { formatDwellingId, nextDwellingSequenceFromValues } from '../lib/slumRegistry';
+import {
+  formatDwellingId,
+  nextDwellingSequenceFromValues,
+  wardValueFromSlumCsv
+} from '../lib/slumRegistry';
 import { loadDwellingIdValuesForQuestionnaire } from '../lib/slumDwellingSequence';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
@@ -522,6 +527,8 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     const ids = [
       ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
       ...collectSlumNameFieldIds(questionnaire.questions),
+      ...collectWardAreaFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectWardAreaFieldIds(questionnaire.questions),
       ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields),
       ...collectDwellingIdFieldIds(questionnaire.questions)
     ];
@@ -537,41 +544,91 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     if (readOnly || existingResponse || !primaryAssignedSlum || slumAutoInitRef.current) return;
 
     const slumName = primaryAssignedSlum.slumName;
+    const wardLabel = wardValueFromSlumCsv(primaryAssignedSlum.wardName);
     const slumNameFieldIds = [
       ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
       ...collectSlumNameFieldIds(questionnaire.questions)
+    ];
+    const wardAreaFieldIds = [
+      ...collectWardAreaFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectWardAreaFieldIds(questionnaire.questions)
     ];
     const dwellingFieldIds = [
       ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields),
       ...collectDwellingIdFieldIds(questionnaire.questions)
     ];
 
-    if (slumNameFieldIds.length === 0 && dwellingFieldIds.length === 0) return;
+    if (slumNameFieldIds.length === 0 && wardAreaFieldIds.length === 0 && dwellingFieldIds.length === 0) {
+      return;
+    }
 
     slumAutoInitRef.current = true;
 
-    const applySlumName = (prev: Record<string, unknown>, fieldIds: string[]) => {
+    const applyIfEmpty = (prev: Record<string, unknown>, fieldIds: string[], value: string) => {
       const next = { ...prev };
       for (const id of fieldIds) {
         if (next[id] === undefined || next[id] === null || next[id] === '') {
-          next[id] = slumName;
+          next[id] = value;
         }
       }
       return next;
     };
 
-    if (slumNameFieldIds.length > 0) {
-      const enumIds = collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields);
-      const qIds = collectSlumNameFieldIds(questionnaire.questions);
-      if (enumIds.length > 0) {
-        setEnumeratorInfo((prev) => applySlumName(prev, enumIds));
-      }
-      if (qIds.length > 0) {
-        setResponses((prev) => applySlumName(prev, qIds));
-      }
+    const patchEnumerator = (fieldIds: string[], value: string) => {
+      if (fieldIds.length === 0) return;
+      setEnumeratorInfo((prev) => applyIfEmpty(prev, fieldIds, value));
+    };
+
+    const patchQuestions = (fieldIds: string[], value: string) => {
+      if (fieldIds.length === 0) return;
+      setResponses((prev) => applyIfEmpty(prev, fieldIds, value));
+    };
+
+    const enumSlum = collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields);
+    const qSlum = collectSlumNameFieldIds(questionnaire.questions);
+    patchEnumerator(enumSlum, slumName);
+    patchQuestions(qSlum, slumName);
+
+    if (wardLabel) {
+      const enumWard = collectWardAreaFieldIds(questionnaire.enumeratorInfo?.fields);
+      const qWard = collectWardAreaFieldIds(questionnaire.questions);
+      patchEnumerator(enumWard, wardLabel);
+      patchQuestions(qWard, wardLabel);
     }
 
     if (dwellingFieldIds.length === 0) return;
+
+    const enumDw = collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields);
+    const qDw = collectDwellingIdFieldIds(questionnaire.questions);
+
+    const applyDwelling = (
+      prev: Record<string, unknown>,
+      fieldIds: string[],
+      dwellingValue: string,
+      overwrite = false
+    ) => {
+      const next = { ...prev };
+      for (const id of fieldIds) {
+        const cur = next[id];
+        const empty = cur === undefined || cur === null || cur === '';
+        if (overwrite || empty) {
+          next[id] = dwellingValue;
+        }
+      }
+      return next;
+    };
+
+    const patchDwelling = (dwellingValue: string, overwrite = false) => {
+      if (enumDw.length > 0) {
+        setEnumeratorInfo((prev) => applyDwelling(prev, enumDw, dwellingValue, overwrite));
+      }
+      if (qDw.length > 0) {
+        setResponses((prev) => applyDwelling(prev, qDw, dwellingValue, overwrite));
+      }
+    };
+
+    // Show next id immediately (usually _1); refine after Firestore scan.
+    patchDwelling(formatDwellingId(primaryAssignedSlum.slumId, 1));
 
     let cancelled = false;
     void (async () => {
@@ -582,26 +639,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         );
         if (cancelled) return;
         const seq = nextDwellingSequenceFromValues(values, primaryAssignedSlum.slumId);
-        const dwellingValue = formatDwellingId(primaryAssignedSlum.slumId, seq);
-
-        const applyDwelling = (prev: Record<string, unknown>, fieldIds: string[]) => {
-          const next = { ...prev };
-          for (const id of fieldIds) {
-            if (next[id] === undefined || next[id] === null || next[id] === '') {
-              next[id] = dwellingValue;
-            }
-          }
-          return next;
-        };
-
-        const enumDw = collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields);
-        const qDw = collectDwellingIdFieldIds(questionnaire.questions);
-        if (enumDw.length > 0) {
-          setEnumeratorInfo((prev) => applyDwelling(prev, enumDw));
-        }
-        if (qDw.length > 0) {
-          setResponses((prev) => applyDwelling(prev, qDw));
-        }
+        patchDwelling(formatDwellingId(primaryAssignedSlum.slumId, seq), true);
       } catch (e) {
         console.warn('QuestionnaireForm: dwelling id auto-fill failed', e);
       }
@@ -631,6 +669,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     if (!primaryAssignedSlum) return undefined;
     const ids = [
       ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
+      ...collectWardAreaFieldIds(questionnaire.enumeratorInfo?.fields),
       ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields)
     ].filter((id) => slumAutoFieldIds.has(id));
     return ids.length > 0 ? new Set(ids) : undefined;
@@ -1014,7 +1053,16 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
             />
             {primaryAssignedSlum && (
               <p className="text-[11px] text-slate-500 mt-2">
-                Slum assignment: <span className="font-medium text-slate-700">{primaryAssignedSlum.slumName}</span>
+                Slum assignment:{' '}
+                <span className="font-medium text-slate-700">{primaryAssignedSlum.slumName}</span>
+                {wardValueFromSlumCsv(primaryAssignedSlum.wardName) && (
+                  <>
+                    {' '}
+                    · <span className="font-medium text-slate-700">
+                      {wardValueFromSlumCsv(primaryAssignedSlum.wardName)}
+                    </span>
+                  </>
+                )}
                 {assignedSlumRecords.length > 1 && (
                   <span className="text-amber-700"> (using first of {assignedSlumRecords.length} assigned slums)</span>
                 )}
