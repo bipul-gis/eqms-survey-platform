@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   collection,
   getDocs,
@@ -55,7 +55,6 @@ import {
   fmtDate,
   tsToDate
 } from '../lib/responseExport';
-import { ResponseIdCell } from './ResponseIdCell';
 
 interface QuestionnaireResponsesViewProps {
   questionnaire: Questionnaire;
@@ -609,10 +608,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               </p>
             </div>
           ) : (
-          <>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            {/* Toolbar — search + status filter live inside the card so
-                they're visually tied to the response list they affect. */}
             <div className="px-3 sm:px-4 py-3 border-b border-slate-200 bg-slate-50/40 flex flex-wrap items-center gap-3">
               <div className="relative flex-1 min-w-[220px] max-w-xl">
                 <Search
@@ -670,9 +666,6 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
             </div>
 
             {filtered.length === 0 ? (
-              // Filters / search exclude everything — show inline empty
-              // state inside the card so the toolbar above (and the clear
-              // affordances on it) remain usable.
               <div className="px-6 py-12 text-center text-slate-500">
                 <Search size={28} className="mx-auto mb-3 text-slate-300" />
                 <p className="text-sm font-semibold text-slate-700">
@@ -694,138 +687,14 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
                 )}
               </div>
             ) : (
-              <>
-            {/* Fixed-height scrollable response list (250px). */}
-            <div className="qc-panel-scroll overflow-y-auto h-[250px]">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
-                <tr>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    #
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Response ID
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Submitted
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Enumerator
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Location
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center">
-                    Consent
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider text-right">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filtered.map((r, idx) => (
-                  <tr key={r.id} className="hover:bg-slate-50/60">
-                    <td className="px-3 py-1.5 text-xs text-slate-400">{idx + 1}</td>
-                    <td className="px-3 py-1.5">
-                      <ResponseIdCell id={r.id} />
-                    </td>
-                    <td className="px-3 py-1.5 text-xs text-slate-700">
-                      {fmtDate(r.submittedAt) || (
-                        <span className="text-slate-400 italic">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <div className="text-[13px] font-semibold text-slate-800 leading-tight">
-                        {r.respondentName || (
-                          <span className="text-slate-400 italic">Unknown</span>
-                        )}
-                      </div>
-                      {r.respondentEmail && (
-                        <div className="text-[10px] text-slate-400 leading-tight">
-                          {r.respondentEmail}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-1.5 text-xs text-slate-700">
-                      {r.location ? (
-                        <span className="inline-flex items-center gap-1">
-                          <MapPin size={11} className="text-slate-400" />
-                          {r.location.lat.toFixed(4)}, {r.location.lng.toFixed(4)}
-                          {r.location.ward && (
-                            <span className="text-slate-400 ml-1">
-                              ({r.location.ward})
-                            </span>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 italic">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-1.5 text-center">
-                      {r.consentGranted ? (
-                        <CheckCircle2
-                          size={14}
-                          className="text-emerald-500 inline"
-                        />
-                      ) : (
-                        <span className="text-[10px] text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <StatusPill status={r.status} />
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => setSelected(r)}
-                          className="text-xs font-semibold text-blue-700 hover:bg-blue-50 px-2 py-1 rounded inline-flex items-center gap-1"
-                        >
-                          <Eye size={12} /> View
-                        </button>
-                        <button
-                          onClick={() => void handleDelete(r)}
-                          className="text-xs font-semibold text-red-700 hover:bg-red-50 px-2 py-1 rounded"
-                          title="Delete"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </div>
-            <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-200 bg-slate-50/60 flex items-center justify-between">
-              <span>
-                Showing <span className="font-bold text-slate-700">{filtered.length}</span> of{' '}
-                <span className="font-bold text-slate-700">{responses.length}</span> response
-                {responses.length === 1 ? '' : 's'}
-                {search && (
-                  <span className="text-slate-400">
-                    {' '}
-                    · matching <span className="font-mono">"{search}"</span>
-                  </span>
-                )}
-              </span>
-              {filtered.length > 10 && (
-                <span className="text-slate-400 italic">Scroll for more</span>
-              )}
-            </div>
-              </>
+              <CsvPreview
+                questionnaire={questionnaire}
+                responses={filtered}
+                onView={(r) => setSelected(r)}
+                onDelete={(r) => void handleDelete(r)}
+              />
             )}
           </div>
-
-          {/* CSV export preview — same columns, same cell formatting as the
-              downloaded file, scoped to the most recent 100 responses so
-              preview rendering stays snappy even on questionnaires with
-              thousands of accumulated rows. */}
-          <CsvPreview questionnaire={questionnaire} responses={filtered} />
-          </>
           )}
           </div>
 
@@ -1258,23 +1127,28 @@ const formatRelativeTime = (ms: number): string => {
 
 // ---------------------------------------------------------------------------
 // CsvPreview — read-only preview of the data that would be exported as CSV.
-// Uses the same `buildResponsesTable` helper as the downloader, so admins
-// can verify column names, ordering, and per-cell stringification before
-// they ever hit "Export CSV". Sized to fit ~20 rows comfortably, scrolls
-// vertically *and* horizontally past that. Caps the rendered set at the
-// most recent 100 responses so a several-thousand-row questionnaire
-// doesn't make the DOM enormous; admins still get the full set in the
-// downloaded file.
+// Uses the same `buildResponsesTable` helper as the downloader. Shows every
+// filtered response with column sort and row-level View / Delete actions.
 // ---------------------------------------------------------------------------
 
-const PREVIEW_LIMIT = 100;
+/** Compare two CSV preview cells; blanks sort last on ascending order. */
+function compareCsvPreviewCells(a: string, b: string): number {
+  const sa = (a ?? '').trim();
+  const sb = (b ?? '').trim();
+  if (!sa && !sb) return 0;
+  if (!sa) return 1;
+  if (!sb) return -1;
+  return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+type CsvPreviewRow = { row: string[]; response: QuestionnaireResponse };
 
 const CsvPreview: React.FC<{
   questionnaire: Questionnaire;
   responses: QuestionnaireResponse[];
-}> = ({ questionnaire, responses }) => {
-  // Show the *latest* 100 by submittedAt (parent already pre-sorts that way).
-  const slice = useMemo(() => responses.slice(0, PREVIEW_LIMIT), [responses]);
+  onView: (r: QuestionnaireResponse) => void;
+  onDelete: (r: QuestionnaireResponse) => void;
+}> = ({ questionnaire, responses, onView, onDelete }) => {
   const questionColumnKey = useMemo(() => {
     const qs = questionnaire.questions || [];
     return qs
@@ -1291,116 +1165,198 @@ const CsvPreview: React.FC<{
         .join('\n'),
     [questionnaire.enumeratorInfo?.fields]
   );
-  const { header, rows } = useMemo(
-    () => buildResponsesTable(questionnaire, slice),
-    [questionnaire, slice, questionColumnKey, enumeratorColumnKey]
-  );
+  const { header, tableRows } = useMemo(() => {
+    const built = buildResponsesTable(questionnaire, responses);
+    const tableRows: CsvPreviewRow[] = built.rows.map((row, i) => ({
+      row,
+      response: responses[i]
+    }));
+    return { header: built.header, tableRows };
+  }, [questionnaire, responses, questionColumnKey, enumeratorColumnKey]);
 
-  if (rows.length === 0) return null;
+  const [sort, setSort] = useState<{ col: number; dir: 'asc' | 'desc' } | null>(null);
+  const dataScrollRef = useRef<HTMLDivElement>(null);
+  const actionsScrollRef = useRef<HTMLDivElement>(null);
+  const scrollSyncLock = useRef(false);
 
-  const truncated = responses.length > PREVIEW_LIMIT;
+  const syncScrollTop = (source: 'data' | 'actions') => {
+    if (scrollSyncLock.current) return;
+    const dataEl = dataScrollRef.current;
+    const actionsEl = actionsScrollRef.current;
+    if (!dataEl || !actionsEl) return;
+    scrollSyncLock.current = true;
+    if (source === 'data') {
+      actionsEl.scrollTop = dataEl.scrollTop;
+    } else {
+      dataEl.scrollTop = actionsEl.scrollTop;
+    }
+    scrollSyncLock.current = false;
+  };
+
+  const sortedTableRows = useMemo(() => {
+    if (sort == null) return tableRows;
+    const { col, dir } = sort;
+    const mult = dir === 'asc' ? 1 : -1;
+    return [...tableRows].sort((a, b) => {
+      const ca = col < a.row.length ? a.row[col] ?? '' : '';
+      const cb = col < b.row.length ? b.row[col] ?? '' : '';
+      return mult * compareCsvPreviewCells(ca, cb);
+    });
+  }, [tableRows, sort]);
+
+  if (tableRows.length === 0) return null;
 
   return (
-    <div className="mt-6 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/60 flex items-center justify-between gap-3 flex-wrap">
+    <>
+      <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/40">
         <div className="min-w-0">
           <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
             <FileSpreadsheet size={15} className="text-emerald-600" />
             CSV export preview
           </h3>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            Exact layout of the downloaded file. Showing latest{' '}
-            <span className="font-bold text-slate-700">{rows.length}</span> of{' '}
-            <span className="font-bold text-slate-700">{responses.length}</span>{' '}
-            response{responses.length === 1 ? '' : 's'}
-            {truncated && (
-              <> · older rows hidden from preview but included in the export</>
-            )}
+            Exact layout of the downloaded file.{' '}
+            <span className="font-bold text-slate-700">{tableRows.length}</span> response
+            {tableRows.length === 1 ? '' : 's'}
             {' · '}
             {header.length} column{header.length === 1 ? '' : 's'}
+            {' · '}
+            <span className="text-slate-600">Click a column title to sort (all columns move together).</span>
           </p>
         </div>
       </div>
 
-      {/* Same 250px height as response table & assignment summary — scroll for more. */}
-      <div className="qc-panel-scroll overflow-auto h-[250px]">
-        <table className="w-full text-[11px] border-collapse">
-          <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
-            <tr>
-              <th
-                scope="col"
-                className="px-2 py-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider text-right border-r border-slate-200 sticky left-0 bg-slate-50 z-20"
-              >
-                #
-              </th>
-              {header.map((h, i) => (
+      <div className="flex h-[615px] overflow-hidden border-b border-slate-100">
+        {/* Data columns — horizontal + vertical scroll; actions live outside this pane. */}
+        <div
+          ref={dataScrollRef}
+          onScroll={() => syncScrollTop('data')}
+          className="qc-panel-scroll flex-1 min-w-0 overflow-auto"
+        >
+          <table className="w-max min-w-full text-[11px] border-collapse">
+            <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
+              <tr>
                 <th
-                  key={i}
                   scope="col"
-                  className="px-2 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap border-r border-slate-100 last:border-r-0"
-                  title={h}
+                  className="px-2 py-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider text-right border-r border-slate-200 sticky left-0 bg-slate-50 z-20 cursor-pointer hover:bg-slate-100 select-none"
+                  title="Reset sort — restore original row order"
+                  onClick={() => setSort(null)}
                 >
-                  {h}
+                  #
                 </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, ri) => (
-              <tr
-                key={ri}
-                className="even:bg-slate-50/40 hover:bg-blue-50/40 transition-colors"
-              >
-                <td className="px-2 py-1 text-slate-400 text-right border-r border-slate-200 font-mono tabular-nums sticky left-0 bg-inherit z-10">
-                  {ri + 1}
-                </td>
-                {row.map((cell, ci) => (
-                  <td
-                    key={ci}
-                    className="px-2 py-1 text-slate-700 whitespace-nowrap border-r border-slate-100 last:border-r-0 font-mono"
-                    title={cell}
-                  >
-                    {cell || <span className="text-slate-300">·</span>}
-                  </td>
-                ))}
+                {header.map((h, i) => {
+                  const active = sort?.col === i;
+                  return (
+                    <th
+                      key={i}
+                      scope="col"
+                      title={`Sort by ${h}`}
+                      onClick={() =>
+                        setSort((prev) =>
+                          prev?.col === i
+                            ? { col: i, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                            : { col: i, dir: 'asc' }
+                        )
+                      }
+                      aria-sort={
+                        active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : undefined
+                      }
+                      className="px-2 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-slate-100 select-none text-left"
+                    >
+                      <span className="inline-flex items-center gap-0.5 max-w-[12rem]">
+                        <span className="truncate" title={h}>
+                          {h}
+                        </span>
+                        {active &&
+                          (sort!.dir === 'asc' ? (
+                            <ChevronUp size={12} className="shrink-0 text-slate-500" aria-hidden />
+                          ) : (
+                            <ChevronDown size={12} className="shrink-0 text-slate-500" aria-hidden />
+                          ))}
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {sortedTableRows.map(({ row, response }, ri) => (
+                <tr
+                  key={response.id}
+                  className="even:bg-slate-50/40 hover:bg-blue-50/40 transition-colors"
+                >
+                  <td className="px-2 py-1 text-slate-400 text-right border-r border-slate-200 font-mono tabular-nums sticky left-0 bg-white even:bg-slate-50/40 z-10">
+                    {ri + 1}
+                  </td>
+                  {row.map((cell, ci) => (
+                    <td
+                      key={ci}
+                      className="px-2 py-1 text-slate-700 whitespace-nowrap border-r border-slate-100 last:border-r-0 font-mono"
+                      title={cell}
+                    >
+                      {cell || <span className="text-slate-300">·</span>}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Fixed actions rail — never overlaps data when scrolling horizontally. */}
+        <div
+          ref={actionsScrollRef}
+          onScroll={() => syncScrollTop('actions')}
+          className="qc-panel-scroll shrink-0 w-[9.25rem] overflow-y-auto overflow-x-hidden border-l border-slate-200 bg-white shadow-[-6px_0_10px_-6px_rgba(15,23,42,0.15)]"
+        >
+          <table className="w-full text-[11px] border-collapse">
+            <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
+              <tr>
+                <th
+                  scope="col"
+                  className="px-2 py-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider text-center whitespace-nowrap"
+                >
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedTableRows.map(({ response }) => (
+                <tr
+                  key={response.id}
+                  className="even:bg-slate-50/40 hover:bg-blue-50/40 transition-colors"
+                >
+                  <td className="px-1 py-1 bg-white even:bg-slate-50/40">
+                    <div className="flex items-center justify-center gap-0.5 whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={() => onView(response)}
+                        className="text-[10px] font-semibold text-blue-700 hover:bg-blue-50 px-1 py-1 rounded inline-flex items-center gap-0.5"
+                        title="View response"
+                      >
+                        <Eye size={11} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(response)}
+                        className="text-[10px] font-semibold text-red-700 hover:bg-red-50 px-1 py-1 rounded inline-flex items-center"
+                        title="Delete"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-200 bg-slate-50/40 flex items-center justify-between flex-wrap gap-2">
-        <span>
-          {rows.length > 20 && (
-            <span className="text-slate-400 italic">Scroll for more rows · </span>
-          )}
-          Scroll horizontally to see all {header.length} columns.
-        </span>
-        {truncated && (
-          <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-            Preview limited to the most recent {PREVIEW_LIMIT} rows
-          </span>
-        )}
+      <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-200 bg-slate-50/40">
+        Scroll data columns horizontally; Actions stay fixed on the right. Click column headers to sort.
       </div>
-    </div>
-  );
-};
-
-const StatusPill: React.FC<{ status: QuestionnaireResponse['status'] }> = ({
-  status
-}) => {
-  const styles =
-    status === 'reviewed'
-      ? 'bg-emerald-100 text-emerald-700'
-      : status === 'submitted'
-        ? 'bg-blue-100 text-blue-700'
-        : 'bg-slate-200 text-slate-600';
-  return (
-    <span
-      className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${styles}`}
-    >
-      {status}
-    </span>
+    </>
   );
 };
 
