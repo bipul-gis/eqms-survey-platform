@@ -2,7 +2,11 @@ import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from './firebase';
 import { parseDwellingSequence } from './slumRegistry';
 
-/** Collect dwelling-id answer values already stored for a questionnaire. */
+/**
+ * Collect dwelling-id answer values already stored for a questionnaire.
+ * Scans all responses (every enumerator) so `{SLUMID}_1`, `_2`, … stay in one
+ * shared sequence when multiple enumerators survey the same slum.
+ */
 export async function loadDwellingIdValuesForQuestionnaire(
   questionnaireId: string,
   slumId: string

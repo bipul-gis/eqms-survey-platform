@@ -245,15 +245,15 @@ const EnumeratorWardRow: React.FC<{
 
 /**
  * Per-enumerator slum assignment for questionnaire surveys (from SLUM Info.csv).
- * Each slum can only be held by one enumerator at a time.
+ * The same slum may be assigned to multiple enumerators; dwelling IDs are
+ * sequenced globally per questionnaire ({SLUMID}_1, _2, …).
  */
 const EnumeratorSlumAssignmentSection: React.FC<{
   assignedSlumIds: string[];
   slums: SlumRecord[];
   saving: boolean;
-  slumHeldByOther: Map<string, { displayName: string; email: string }>;
   onSave: (slumIds: string[]) => void;
-}> = ({ assignedSlumIds, slums, saving, slumHeldByOther, onSave }) => {
+}> = ({ assignedSlumIds, slums, saving, onSave }) => {
   const [value, setValue] = useState<string[]>(() => [...assignedSlumIds]);
 
   useEffect(() => {
@@ -287,20 +287,15 @@ const EnumeratorSlumAssignmentSection: React.FC<{
         ) : (
           slums.map((s) => {
             const mine = value.includes(s.slumId);
-            const holder = slumHeldByOther.get(s.slumId);
-            const blocked = !!holder && !mine;
             return (
               <label
                 key={s.slumId}
-                className={`flex items-start gap-2 text-xs select-none ${
-                  blocked ? 'text-gray-400 cursor-not-allowed' : 'text-gray-700 cursor-pointer'
-                }`}
-                title={blocked && holder ? `Assigned to ${holder.displayName}` : undefined}
+                className="flex items-start gap-2 text-xs select-none text-gray-700 cursor-pointer"
               >
                 <input
                   type="checkbox"
                   checked={mine}
-                  disabled={saving || blocked}
+                  disabled={saving}
                   onChange={() => toggle(s.slumId)}
                   className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 mt-0.5 shrink-0"
                 />
@@ -318,7 +313,7 @@ const EnumeratorSlumAssignmentSection: React.FC<{
       <p className="text-[10px] text-gray-500">
         {value.length === 0
           ? 'No slum — enumerator will not get slum / dwelling auto-fill.'
-          : `${value.length} slum(s) selected. Slum name and Dwelling ID auto-fill on new forms.`}
+          : `${value.length} slum(s) selected. Slum name and Dwelling ID auto-fill on new forms (shared sequence per slum).`}
       </p>
       <button
         type="button"
@@ -341,11 +336,10 @@ const EnumeratorQuestionnaireRow: React.FC<{
   entry: EnumeratorEntry;
   questionnaires: Questionnaire[];
   slums: SlumRecord[];
-  slumHeldByOther: Map<string, { displayName: string; email: string }>;
   saving: boolean;
   onSaveQuestionnaires: (ids: string[]) => void;
   onSaveSlums: (slumIds: string[]) => void;
-}> = ({ entry, questionnaires, slums, slumHeldByOther, saving, onSaveQuestionnaires, onSaveSlums }) => {
+}> = ({ entry, questionnaires, slums, saving, onSaveQuestionnaires, onSaveSlums }) => {
   // Only project questionnaires participate in this picker; the saved value
   // is the intersection so we don't accidentally drop other projects' ids.
   const projectIds = useMemo(() => new Set(questionnaires.map((q) => q.id)), [questionnaires]);
@@ -379,7 +373,6 @@ const EnumeratorQuestionnaireRow: React.FC<{
         assignedSlumIds={entry.assignedSlumIds}
         slums={slums}
         saving={saving}
-        slumHeldByOther={slumHeldByOther}
         onSave={onSaveSlums}
       />
 
@@ -552,22 +545,6 @@ export const UserManagement: React.FC<{
         if (e.email.trim().toLowerCase() === myKey) continue;
         for (const w of e.assignedWardNames) {
           m.set(normalizeWardKey(w), { displayName: e.displayName, email: e.email });
-        }
-      }
-      result.set(target.email, m);
-    }
-    return result;
-  }, [activeEnumerators]);
-
-  const slumLocksByEnumeratorEmail = useMemo(() => {
-    const result = new Map<string, Map<string, { displayName: string; email: string }>>();
-    for (const target of activeEnumerators) {
-      const myKey = target.email.trim().toLowerCase();
-      const m = new Map<string, { displayName: string; email: string }>();
-      for (const e of activeEnumerators) {
-        if (e.email.trim().toLowerCase() === myKey) continue;
-        for (const sid of e.assignedSlumIds) {
-          m.set(sid, { displayName: e.displayName, email: e.email });
         }
       }
       result.set(target.email, m);
@@ -1019,22 +996,6 @@ export const UserManagement: React.FC<{
       setTaskSavingEmail(entry.email);
       setError(null);
       const normalized = [...new Set(selectedSlumIds.map((id) => String(id).trim()).filter(Boolean))].sort();
-
-      const myKey = entry.email.trim().toLowerCase();
-      for (const sid of normalized) {
-        const conflict = activeEnumerators.find(
-          (e) =>
-            e.email.trim().toLowerCase() !== myKey && e.assignedSlumIds.includes(sid)
-        );
-        const slum = findSlumById(sid);
-        if (conflict) {
-          setError(
-            `Cannot save: slum "${slum?.slumName ?? sid}" is already assigned to ${conflict.displayName}.`
-          );
-          setTaskSavingEmail(null);
-          return;
-        }
-      }
 
       const nextMap = { ...entry.projectSlumAssignments };
       if (normalized.length) nextMap[projectId] = normalized;
@@ -1639,7 +1600,10 @@ export const UserManagement: React.FC<{
                     Assign slums from SLUM Info.csv, then pick questionnaires. Slum name and Dwelling ID
                     (e.g. <span className="font-mono text-gray-600">20151612364_1</span>,{' '}
                     <span className="font-mono text-gray-600">20151612364_2</span>) auto-fill on new forms.
-                    Each slum can only be assigned to one enumerator; questionnaires can be shared.
+                    The same slum may be assigned to multiple enumerators; dwelling IDs continue in one
+                    shared sequence per slum (<span className="font-mono text-gray-600">_1</span>,{' '}
+                    <span className="font-mono text-gray-600">_2</span>, … across all enumerators).
+                    Questionnaires can be shared.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
@@ -1695,7 +1659,6 @@ export const UserManagement: React.FC<{
                         entry={entry}
                         questionnaires={projectQuestionnaires}
                         slums={slumOptions}
-                        slumHeldByOther={slumLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
                         saving={taskSavingEmail === entry.email || clearingAllAssignments}
                         onSaveSlums={(ids) => void saveEnumeratorSlumAssignment(entry, ids)}
                         onSaveQuestionnaires={(ids) =>
