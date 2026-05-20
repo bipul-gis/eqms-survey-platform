@@ -695,13 +695,8 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               </div>
             ) : (
               <>
-            {/* Fixed-height scrollable box. Sized so roughly 10 rows fit
-                comfortably; once more rows pile up the body scrolls inside
-                this container while the page stays still. The thead is
-                sticky so column titles remain visible while scrolling.
-                `qc-panel-scroll` forces a visible (non-overlay) scrollbar
-                on Windows so admins always know more rows are below. */}
-            <div className="qc-panel-scroll overflow-y-auto max-h-[640px]">
+            {/* Fixed-height scrollable response list (250px). */}
+            <div className="qc-panel-scroll overflow-y-auto h-[250px]">
               <table className="w-full text-left border-collapse">
                 <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
                 <tr>
@@ -1056,15 +1051,8 @@ const ResponsesMapPanel: React.FC<{
   }
 
   return (
-    // `flex-1 + flex flex-col` — when this panel is placed in a flex
-    // column sidebar (as we do in the Responses view), this lets the map
-    // body absorb all leftover vertical space below the enumerator card
-    // instead of leaving empty whitespace at the bottom of the page.
-    // `min(580px, 64vh)` is a balanced floor — large enough to read ward
-    // context comfortably, but trimmed down from earlier so the map
-    // doesn't dominate the page or push CSV preview / table off-screen
-    // on smaller laptops.
-    <div className="flex-1 min-h-[min(580px,64vh)] bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+    // Fixed 500px height for geospatial preview — map body fills space below header.
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[500px]">
       <div className="px-3 py-2 border-b border-slate-200 flex items-center gap-2 shrink-0">
         <MapIcon size={14} className="text-blue-600 shrink-0" />
         <h3 className="font-semibold text-slate-800 text-xs">Geospatial preview</h3>
@@ -1090,10 +1078,8 @@ const ResponsesMapPanel: React.FC<{
       {/* `flex-1` body — Leaflet still needs an explicit size, but
           `flex-1` inside a flex column gives it a real numeric height
           (the parent's height minus the header). On tall viewports the
-          map grows to fill all leftover sidebar space; on shorter ones
-          the wrapper's viewport-relative min-height keeps it readable
-          without overflowing the fold. */}
-      <div className="relative w-full flex-1 min-h-[min(540px,58vh)]">
+          map grows to fill all leftover sidebar space. */}
+      <div className="relative w-full flex-1 min-h-0">
         <Suspense
           fallback={
             <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
@@ -1149,8 +1135,8 @@ const EnumeratorBreakdownPanel: React.FC<{
     // enumerator" QC summary so admins recognise the format across both
     // tabs. Header on top, single dense table below with one row per
     // enumerator showing per-status counts (D/S/R) + total.
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden xl:sticky xl:top-0 p-3">
-      <div className="flex items-center gap-1.5 mb-1.5">
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden xl:sticky xl:top-0 p-3 h-[250px] flex flex-col">
+      <div className="flex items-center gap-1.5 mb-1.5 shrink-0">
         <Users size={14} className="text-slate-600 shrink-0" />
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
           Task assignments & responses
@@ -1168,7 +1154,7 @@ const EnumeratorBreakdownPanel: React.FC<{
           Management → Tasks.
         </p>
       ) : (
-        <div className="qc-panel-scroll max-h-[420px] overflow-y-auto rounded-lg border border-slate-100">
+        <div className="qc-panel-scroll flex-1 min-h-0 overflow-y-auto rounded-lg border border-slate-100">
           <table className="w-full text-[10px]">
             <thead>
               <tr className="bg-slate-50 text-slate-500">
@@ -1336,12 +1322,8 @@ const CsvPreview: React.FC<{
         </div>
       </div>
 
-      {/* Fixed-height scrollable viewport. Bumped to 720 px so ~26 rows
-          + header fit comfortably (rows are roughly 24 px tall in
-          monospace) — gives admins a longer preview before vertical
-          scroll kicks in. Horizontal scroll still kicks in automatically
-          when many enumerator-info / question columns are present. */}
-      <div className="qc-panel-scroll overflow-auto max-h-[720px]">
+      {/* Same 250px height as response table & assignment summary — scroll for more. */}
+      <div className="qc-panel-scroll overflow-auto h-[250px]">
         <table className="w-full text-[11px] border-collapse">
           <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
             <tr>
