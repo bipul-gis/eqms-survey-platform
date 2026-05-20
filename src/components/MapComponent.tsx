@@ -131,6 +131,8 @@ interface MapComponentProps {
   surveyLocations?: SurveyLocationMarker[];
   /** Initial visibility for the survey-locations layer. Defaults to `true`. */
   defaultShowSurveyLocations?: boolean;
+  /** Fires when the HH Survey Location layer is toggled (for parent Firestore gating). */
+  onSurveyLocationsVisibilityChange?: (visible: boolean) => void;
 }
 
 export interface SurveyLocationMarker {
@@ -595,7 +597,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   landmarkGeoJsonRefreshKey = 0,
   defaultShowLandmarks = true,
   surveyLocations,
-  defaultShowSurveyLocations = true
+  defaultShowSurveyLocations = true,
+  onSurveyLocationsVisibilityChange
 }) => {
   const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
@@ -606,6 +609,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showWards, setShowWards] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(defaultShowLandmarks);
   const [showSurveyLocations, setShowSurveyLocations] = useState(defaultShowSurveyLocations);
+  useEffect(() => {
+    onSurveyLocationsVisibilityChange?.(showSurveyLocations);
+  }, [showSurveyLocations, onSurveyLocationsVisibilityChange]);
   const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(false);
   const [enumeratorLocationFocusKey, setEnumeratorLocationFocusKey] = useState(0);
   const [showLayerPanel, setShowLayerPanel] = useState(false);

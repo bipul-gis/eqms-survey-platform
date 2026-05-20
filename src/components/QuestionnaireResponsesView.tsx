@@ -2,12 +2,12 @@ import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import {
   collection,
   getDocs,
+  getDoc,
   query,
   where,
   doc,
   updateDoc,
   deleteDoc,
-  onSnapshot,
   serverTimestamp,
   writeBatch
 } from 'firebase/firestore';
@@ -16,7 +16,9 @@ import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
-import { Question, Questionnaire, QuestionnaireResponse } from '../types';
+import { Question, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
+import { assignedSlumsForProject, formatAssignedSlumLabels } from '../lib/assignedSlums';
+import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { useAuth } from './AuthProvider';
 import { useOptimizedFeatures } from '../hooks/useOptimizedFeatures';
 import wardsData from '../data/ccc_wards.json';
@@ -84,6 +86,12 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     total: number;
   } | null>(null);
 
+  const projectId = questionnaire.projectId ?? DEFAULT_PROJECT_ID;
+  const [questionnaireTitleById, setQuestionnaireTitleById] = useState<Record<string, string>>({});
+  const [taskedEnumerators, setTaskedEnumerators] = useState<
+    { key: string; name: string; email?: string; slumIds: string[]; questionnaireIds: string[] }[]
+  >([]);
+
   // Pull the same feature set the geospatial-survey tab uses so admins viewing
   // this questionnaire's responses get the full map context (wards, points,
   // lines, polygons) in the embedded preview below. `'admin'` mode mirrors
@@ -107,7 +115,20 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         collection(db, 'questionnaireResponses'),
         where('questionnaireId', '==', questionnaire.id)
       );
-      const snap = await getDocs(qRef);
+      const usersQ = query(collection(db, 'users'), where('status', '==', 'approved'));
+      const titlesQ = query(
+        collection(db, 'questionnaires'),
+        where('projectId', '==', projectId)
+      );
+      const questionnaireRef = doc(db, 'questionnaires', questionnaire.id);
+
+      const [snap, usersSnap, titlesSnap, questionnaireSnap] = await Promise.all([
+        getDocs(qRef),
+        getDocs(usersQ),
+        getDocs(titlesQ),
+        getDoc(questionnaireRef)
+      ]);
+
       const list: QuestionnaireResponse[] = [];
       snap.forEach((d) =>
         list.push({ ...(d.data() as QuestionnaireResponse), id: d.id })
@@ -118,6 +139,56 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         return tb - ta;
       });
       setResponses(list);
+
+      if (questionnaireSnap.exists()) {
+        setQuestionnaire({
+          ...(questionnaireSnap.data() as Questionnaire),
+          id: questionnaireSnap.id
+        });
+      }
+
+      const titleMap: Record<string, string> = {};
+      titlesSnap.forEach((d) => {
+        const data = d.data() as Questionnaire;
+        titleMap[d.id] = (data.title || '').trim() || d.id;
+      });
+      setQuestionnaireTitleById(titleMap);
+
+      const byEmail = new Map<
+        string,
+        { key: string; name: string; email?: string; slumIds: string[]; questionnaireIds: string[] }
+      >();
+      usersSnap.forEach((docSnap) => {
+        const data = docSnap.data() as UserProfile;
+        if (data.role !== 'enumerator') return;
+        const qids = data.assignedQuestionnaireIds || [];
+        if (!qids.includes(questionnaire.id)) return;
+        const email = (data.email || '').trim();
+        const emailKey = email.toLowerCase();
+        if (!emailKey) return;
+        const slumIds = assignedSlumsForProject(data, projectId);
+        const questionnaireIds = [
+          ...new Set((qids || []).map((id) => String(id).trim()).filter(Boolean))
+        ].sort();
+        const existing = byEmail.get(emailKey);
+        if (!existing) {
+          byEmail.set(emailKey, {
+            key: emailKey,
+            name: (data.displayName || '').trim() || email,
+            email: email || undefined,
+            slumIds,
+            questionnaireIds
+          });
+        } else {
+          existing.slumIds = [...new Set([...existing.slumIds, ...slumIds])].sort();
+          existing.questionnaireIds = [
+            ...new Set([...existing.questionnaireIds, ...questionnaireIds])
+          ].sort();
+        }
+      });
+      setTaskedEnumerators(
+        Array.from(byEmail.values()).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      );
     } catch (error) {
       console.error('Error fetching responses:', error);
       setFetchError(
@@ -131,20 +202,6 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   useEffect(() => {
     setQuestionnaire(initialQuestionnaire);
   }, [initialQuestionnaire]);
-
-  // Keep export/preview columns in sync when the questionnaire is edited in the builder.
-  useEffect(() => {
-    const ref = doc(db, 'questionnaires', initialQuestionnaire.id);
-    const unsub = onSnapshot(
-      ref,
-      (snap) => {
-        if (!snap.exists()) return;
-        setQuestionnaire({ ...(snap.data() as Questionnaire), id: snap.id });
-      },
-      (err) => console.warn('QuestionnaireResponsesView: questionnaire snapshot failed', err)
-    );
-    return () => unsub();
-  }, [initialQuestionnaire.id]);
 
   useEffect(() => {
     void fetchResponses();
@@ -306,6 +363,82 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     });
   }, [responses]);
 
+  const formatQuestionnaireLabels = (ids: string[]): string => {
+    const unique = [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))];
+    if (unique.length === 0) return '—';
+    return unique
+      .map((id) => {
+        if (id === questionnaire.id) {
+          return questionnaire.title?.trim() || 'This survey';
+        }
+        return questionnaireTitleById[id] || id;
+      })
+      .join(', ');
+  };
+
+  /** Merges task slum assignments with per-response activity counts. */
+  const enumeratorSummary = useMemo(() => {
+    const map = new Map<string, EnumeratorBreakdownEntry>();
+
+    for (const a of taskedEnumerators) {
+      map.set(a.key, {
+        uid: a.key,
+        name: a.name,
+        email: a.email,
+        slumLabels: formatAssignedSlumLabels(a.slumIds),
+        questionnaireLabels: formatQuestionnaireLabels(a.questionnaireIds),
+        draft: 0,
+        submitted: 0,
+        reviewed: 0,
+        total: 0,
+        lastSeen: 0
+      });
+    }
+
+    for (const e of enumeratorBreakdown) {
+      const keys = [
+        e.email?.trim().toLowerCase(),
+        e.uid
+      ].filter((k): k is string => !!k);
+      let row = keys.map((k) => map.get(k)).find(Boolean);
+      if (!row) {
+        row = {
+          uid: e.uid,
+          name: e.name,
+          email: e.email,
+          slumLabels: '—',
+          questionnaireLabels: '—',
+          draft: 0,
+          submitted: 0,
+          reviewed: 0,
+          total: 0,
+          lastSeen: 0
+        };
+        for (const k of keys) map.set(k, row);
+      }
+      row.draft = e.draft;
+      row.submitted = e.submitted;
+      row.reviewed = e.reviewed;
+      row.total = e.total;
+      row.lastSeen = e.lastSeen;
+      if ((row.name === 'Unknown' || !row.name) && e.name) row.name = e.name;
+      if (!row.email && e.email) row.email = e.email;
+    }
+
+    const seen = new Set<EnumeratorBreakdownEntry>();
+    const out: EnumeratorBreakdownEntry[] = [];
+    for (const row of map.values()) {
+      if (seen.has(row)) continue;
+      seen.add(row);
+      out.push(row);
+    }
+
+    return out.sort((a, b) => {
+      if (b.total !== a.total) return b.total - a.total;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  }, [taskedEnumerators, enumeratorBreakdown, questionnaire.id, questionnaire.title, questionnaireTitleById]);
+
   const markReviewed = async (r: QuestionnaireResponse) => {
     if (!user) return;
     try {
@@ -456,16 +589,6 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
 
         {loading ? (
           <div className="text-center text-slate-500 py-20">Loading responses…</div>
-        ) : responses.length === 0 ? (
-          // True empty state — no responses exist at all for this questionnaire.
-          // We hide the search / filter toolbar entirely in this case because
-          // there's nothing to search through and an empty toolbar above an
-          // illustration would look broken.
-          <div className="text-center text-slate-500 py-20">
-            <FileText size={48} className="mx-auto mb-4 text-slate-300" />
-            <p className="font-medium">No responses yet for this questionnaire</p>
-            <p className="text-sm">Responses will appear here as enumerators submit them.</p>
-          </div>
         ) : (
         // Two-column layout on xl+: main column flexes to fill all
         // remaining horizontal space (no `max-w-*` cap) so the sidebar
@@ -475,7 +598,18 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         // dropping the cap doesn't visually distort them. Below xl
         // the columns stack vertically.
         <div className="flex flex-col xl:flex-row gap-6">
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex flex-col gap-6">
+          {responses.length === 0 ? (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-6 py-14 text-center text-slate-500">
+              <FileText size={48} className="mx-auto mb-4 text-slate-300" />
+              <p className="font-medium text-slate-700">No responses yet for this questionnaire</p>
+              <p className="text-sm mt-1 max-w-md mx-auto">
+                Responses will appear here as enumerators submit them. Task assignments (slums and
+                questionnaires per enumerator) are shown in the panel on the right.
+              </p>
+            </div>
+          ) : (
+          <>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             {/* Toolbar — search + status filter live inside the card so
                 they're visually tied to the response list they affect. */}
@@ -687,7 +821,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
                 <span className="text-slate-400 italic">Scroll for more</span>
               )}
             </div>
-            </>
+              </>
             )}
           </div>
 
@@ -696,6 +830,8 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               preview rendering stays snappy even on questionnaires with
               thousands of accumulated rows. */}
           <CsvPreview questionnaire={questionnaire} responses={filtered} />
+          </>
+          )}
           </div>
 
           {/* Right-side sidebar: enumerator-wise total counts followed by
@@ -714,10 +850,15 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               vertical space below the enumerator card instead of leaving
               dead whitespace at the bottom of the page. */}
           <aside className="xl:w-[420px] xl:shrink-0 flex flex-col gap-6">
-            <EnumeratorBreakdownPanel enumerators={enumeratorBreakdown} />
+            <EnumeratorBreakdownPanel
+              enumerators={enumeratorSummary}
+              assignedCount={taskedEnumerators.length}
+            />
             {/* Same data + controls as the main "Geospatial Survey" tab,
                 landmark layer off by default. */}
-            <ResponsesMapPanel features={mapFeatures} surveyLocations={surveyLocationMarkers} />
+            {responses.length > 0 && (
+              <ResponsesMapPanel features={mapFeatures} surveyLocations={surveyLocationMarkers} />
+            )}
           </aside>
         </div>
         )}
@@ -966,6 +1107,7 @@ const ResponsesMapPanel: React.FC<{
             onFeatureSelect={() => {}}
             addFeatureType={null}
             defaultShowLandmarks={false}
+            defaultShowSurveyLocations={false}
             surveyLocations={surveyLocations}
           />
         </Suspense>
@@ -987,6 +1129,8 @@ interface EnumeratorBreakdownEntry {
   uid: string;
   name: string;
   email?: string;
+  slumLabels: string;
+  questionnaireLabels: string;
   draft: number;
   submitted: number;
   reviewed: number;
@@ -996,7 +1140,8 @@ interface EnumeratorBreakdownEntry {
 
 const EnumeratorBreakdownPanel: React.FC<{
   enumerators: EnumeratorBreakdownEntry[];
-}> = ({ enumerators }) => {
+  assignedCount: number;
+}> = ({ enumerators, assignedCount }) => {
   const totalResponses = enumerators.reduce((s, e) => s + e.total, 0);
 
   return (
@@ -1008,16 +1153,19 @@ const EnumeratorBreakdownPanel: React.FC<{
       <div className="flex items-center gap-1.5 mb-1.5">
         <Users size={14} className="text-slate-600 shrink-0" />
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
-          By enumerator
+          Task assignments & responses
         </span>
-        <span className="ml-auto text-[10px] text-slate-400 tabular-nums">
-          {enumerators.length} · {totalResponses} resp.
+        <span className="ml-auto text-[10px] text-slate-400 tabular-nums text-right leading-tight">
+          {assignedCount} assigned
+          <br />
+          {totalResponses} resp.
         </span>
       </div>
 
       {enumerators.length === 0 ? (
         <p className="text-[10px] text-slate-400 italic px-1 py-2">
-          No enumerator activity yet.
+          No enumerators assigned to this questionnaire yet. Assign slums and questionnaires in User
+          Management → Tasks.
         </p>
       ) : (
         <div className="qc-panel-scroll max-h-[420px] overflow-y-auto rounded-lg border border-slate-100">
@@ -1025,6 +1173,8 @@ const EnumeratorBreakdownPanel: React.FC<{
             <thead>
               <tr className="bg-slate-50 text-slate-500">
                 <th className="text-left px-1.5 py-1 font-semibold">Name</th>
+                <th className="text-left px-1 py-1 font-semibold min-w-[4rem]">Slum(s)</th>
+                <th className="text-left px-1 py-1 font-semibold min-w-[4rem]">Survey(s)</th>
                 <th
                   className="text-center px-0.5 py-1 w-6 font-semibold text-amber-600"
                   title="Drafts"
@@ -1064,8 +1214,20 @@ const EnumeratorBreakdownPanel: React.FC<{
                   className="border-t border-slate-100 hover:bg-slate-50/60"
                   title={e.email || undefined}
                 >
-                  <td className="px-1.5 py-1 text-slate-800 truncate max-w-[8rem]">
+                  <td className="px-1.5 py-1 text-slate-800 truncate max-w-[7rem]">
                     {e.name || <span className="text-slate-400 italic">Unknown</span>}
+                  </td>
+                  <td
+                    className="px-1 py-1 text-slate-600 truncate max-w-[7rem] text-[9px] leading-snug"
+                    title={e.slumLabels !== '—' ? e.slumLabels : undefined}
+                  >
+                    {e.slumLabels}
+                  </td>
+                  <td
+                    className="px-1 py-1 text-slate-600 truncate max-w-[7rem] text-[9px] leading-snug"
+                    title={e.questionnaireLabels !== '—' ? e.questionnaireLabels : undefined}
+                  >
+                    {e.questionnaireLabels}
                   </td>
                   <td className="text-center py-1 font-semibold text-amber-600 tabular-nums">
                     {e.draft || ''}

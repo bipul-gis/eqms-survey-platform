@@ -23,3 +23,11 @@ export function resolveAssignedSlumRecords(profile: UserProfile | null, projectI
     .map((id) => findSlumById(id))
     .filter((r): r is SlumRecord => !!r);
 }
+
+/** Comma-separated slum names for admin summary tables. */
+export function formatAssignedSlumLabels(slumIds: string[]): string {
+  if (slumIds.length === 0) return '—';
+  return slumIds
+    .map((id) => findSlumById(id)?.slumName?.trim() || id)
+    .join(', ');
+}

@@ -94,13 +94,16 @@ function normalizeStatus(raw: unknown): 'draft' | 'submitted' | 'reviewed' {
 export function useQuestionnaireSurveyLocations(options: {
   mode: SurveyLocationLoadMode;
   userUid: string | undefined;
+  /** When false, no Firestore listener is attached (admin HH layer off). Default true. */
+  enabled?: boolean;
 }): { locations: SurveyLocationPoint[]; loading: boolean; error: Error | null } {
+  const enabled = options.enabled !== false;
   const [locations, setLocations] = useState<SurveyLocationPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    if (options.mode === 'idle') {
+    if (!enabled || options.mode === 'idle') {
       setLocations([]);
       setLoading(false);
       setError(null);
@@ -167,7 +170,7 @@ export function useQuestionnaireSurveyLocations(options: {
     return () => {
       unsub();
     };
-  }, [options.mode, options.userUid]);
+  }, [enabled, options.mode, options.userUid]);
 
   return { locations, loading, error };
 }

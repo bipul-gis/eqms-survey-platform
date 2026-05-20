@@ -35,13 +35,12 @@ import {
   X,
   Lock
 } from 'lucide-react';
+import { collection, doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
-  addDoc,
-  collection,
-  doc,
-  serverTimestamp,
-  updateDoc
-} from 'firebase/firestore';
+  commitFirestoreWrite,
+  isBrowserOffline,
+  isDeviceOffline
+} from '../lib/offlineFirestore';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { resolveAssignedSlumRecords } from '../lib/assignedSlums';
 import {
@@ -54,7 +53,10 @@ import {
   nextDwellingSequenceFromValues,
   wardValueFromSlumCsv
 } from '../lib/slumRegistry';
-import { loadDwellingIdValuesForQuestionnaire } from '../lib/slumDwellingSequence';
+import {
+  invalidateDwellingIdCache,
+  loadDwellingIdValuesForQuestionnaire
+} from '../lib/slumDwellingSequence';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import { evaluateComputed } from '../lib/computedAnswers';
@@ -102,6 +104,8 @@ interface QuestionnaireFormProps {
   readOnly?: boolean;
   /** Used to resolve slum task assignment (`projectSlumAssignments`). */
   projectId?: string;
+  /** When true, always create a fresh response doc (ignore session draft id). */
+  forceNew?: boolean;
 }
 
 interface CapturedGps {
@@ -383,13 +387,58 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   variant = 'drawer',
   existingResponse,
   readOnly = false,
-  projectId: projectIdProp
+  projectId: projectIdProp,
+  forceNew = false
 }) => {
   const { user, userProfile } = useAuth();
   const projectId = projectIdProp || questionnaire.projectId || DEFAULT_PROJECT_ID;
   const isFullscreen = variant === 'fullscreen';
-  const isResuming = !!existingResponse;
-  const existingId = existingResponse?.id;
+
+  const draftStorageKey =
+    user?.uid && questionnaire.id
+      ? `qc-draft:${user.uid}:${questionnaire.id}`
+      : null;
+
+  const resolveInitialDraftId = (): string | undefined => {
+    if (forceNew) return undefined;
+    if (existingResponse?.id) return existingResponse.id;
+    if (draftStorageKey && typeof sessionStorage !== 'undefined') {
+      try {
+        return sessionStorage.getItem(draftStorageKey) || undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  };
+
+  /** Synchronous id — prevents duplicate docs when Save is tapped twice quickly. */
+  const draftDocIdRef = useRef<string | undefined>(resolveInitialDraftId());
+  const [savedResponseId, setSavedResponseId] = useState<string | undefined>(
+    () => draftDocIdRef.current
+  );
+  const persistInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (forceNew) {
+      draftDocIdRef.current = undefined;
+      setSavedResponseId(undefined);
+      if (draftStorageKey) {
+        try {
+          sessionStorage.removeItem(draftStorageKey);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+    const id = resolveInitialDraftId();
+    draftDocIdRef.current = id;
+    setSavedResponseId(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionnaire.id, user?.uid, existingResponse?.id, forceNew]);
+
+  const isResumingDraft = !!(existingResponse || savedResponseId || draftDocIdRef.current);
 
   const [responses, setResponses] = useState<Record<string, any>>(
     () => existingResponse?.responses || {}
@@ -429,7 +478,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [enumeratorErrors, setEnumeratorErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'submitting'>('idle');
   const [currentLocation, setCurrentLocation] = useState(
     existingResponse?.location || initialLocation
   );
@@ -538,7 +587,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const slumAutoInitRef = useRef(false);
   useEffect(() => {
     slumAutoInitRef.current = false;
-  }, [questionnaire.id, existingId]);
+  }, [questionnaire.id, savedResponseId]);
 
   useEffect(() => {
     if (readOnly || existingResponse || !primaryAssignedSlum || slumAutoInitRef.current) return;
@@ -831,28 +880,77 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     return stripUndefined(base) as Omit<QuestionnaireResponse, 'id'>;
   };
 
+  const rememberDraftDocId = (id: string) => {
+    draftDocIdRef.current = id;
+    setSavedResponseId(id);
+    if (draftStorageKey) {
+      try {
+        sessionStorage.setItem(draftStorageKey, id);
+      } catch {
+        /* ignore quota / private mode */
+      }
+    }
+  };
+
+  const clearRememberedDraftDocId = () => {
+    draftDocIdRef.current = undefined;
+    setSavedResponseId(undefined);
+    if (draftStorageKey) {
+      try {
+        sessionStorage.removeItem(draftStorageKey);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const persistResponse = async (status: 'draft' | 'submitted'): Promise<string> => {
+    const responseData = buildResponseData(status);
+    const existingId = draftDocIdRef.current;
+    const ref = existingId
+      ? doc(db, 'questionnaireResponses', existingId)
+      : doc(collection(db, 'questionnaireResponses'));
+
+    if (!existingId) {
+      rememberDraftDocId(ref.id);
+    }
+
+    const write = () =>
+      setDoc(ref, responseData as any, existingId ? { merge: true } : undefined);
+
+    try {
+      await commitFirestoreWrite(write);
+    } catch (error) {
+      if (!existingId) clearRememberedDraftDocId();
+      throw error;
+    }
+
+    if (status === 'submitted' && draftStorageKey) {
+      try {
+        sessionStorage.removeItem(draftStorageKey);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return ref.id;
+  };
+
   const handleSaveDraft = async () => {
-    if (!user || !userProfile) {
+    if (!user) {
       setSubmitError('You must be signed in to save a draft.');
       return;
     }
+    if (persistInFlightRef.current || saveState !== 'idle') return;
+    persistInFlightRef.current = true;
     setSubmitError(null);
-    setLoading(true);
+    setSaveState('saving');
     try {
-      const responseData = buildResponseData('draft');
-      if (existingId) {
-        await updateDoc(doc(db, 'questionnaireResponses', existingId), responseData as any);
-      } else {
-        await addDoc(collection(db, 'questionnaireResponses'), responseData);
-      }
-      // Firestore's `addDoc` / `updateDoc` resolve as soon as the write is
-      // committed to the local IndexedDB cache. When the device is offline
-      // the server hasn't seen it yet — be honest about that so the
-      // enumerator understands the work is safe but not yet uploaded.
-      const isOffline =
-        typeof navigator !== 'undefined' && navigator.onLine === false;
+      await persistResponse('draft');
+      invalidateDwellingIdCache(questionnaire.id);
+      const offline = await isDeviceOffline();
       alert(
-        isOffline
+        offline
           ? 'Draft saved on this device. It will sync automatically once you reconnect.'
           : 'Draft saved successfully!'
       );
@@ -860,22 +958,24 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       try {
         handleFirestoreError(
           error,
-          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          draftDocIdRef.current ? OperationType.UPDATE : OperationType.CREATE,
           'questionnaireResponses'
         );
       } catch (logged) {
         setSubmitError(friendlyError(logged));
       }
     } finally {
-      setLoading(false);
+      persistInFlightRef.current = false;
+      setSaveState('idle');
     }
   };
 
   const handleSubmit = async () => {
-    if (!user || !userProfile) {
+    if (!user) {
       setSubmitError('You must be signed in to submit.');
       return;
     }
+    if (persistInFlightRef.current || saveState !== 'idle') return;
     if (!validateAll()) {
       const missing: string[] = [];
       if (consentGate?.enabled && !consentGranted) missing.push('grant consent');
@@ -892,23 +992,17 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       setSubmitError(detail);
       return;
     }
+    persistInFlightRef.current = true;
     setSubmitError(null);
-    setLoading(true);
+    setSaveState('submitting');
     try {
       const responseData = buildResponseData('submitted');
-      let savedId: string;
-      if (existingId) {
-        await updateDoc(doc(db, 'questionnaireResponses', existingId), responseData as any);
-        savedId = existingId;
-      } else {
-        const docRef = await addDoc(collection(db, 'questionnaireResponses'), responseData);
-        savedId = docRef.id;
-      }
+      const savedId = await persistResponse('submitted');
+      invalidateDwellingIdCache(questionnaire.id);
       onSubmit?.({ ...(responseData as any), id: savedId } as QuestionnaireResponse);
-      const isOffline =
-        typeof navigator !== 'undefined' && navigator.onLine === false;
+      const offline = await isDeviceOffline();
       alert(
-        isOffline
+        offline
           ? 'Submission saved on this device. It will upload automatically once you reconnect — no need to resubmit.'
           : 'Questionnaire submitted successfully!'
       );
@@ -917,14 +1011,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       try {
         handleFirestoreError(
           error,
-          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          draftDocIdRef.current ? OperationType.UPDATE : OperationType.CREATE,
           'questionnaireResponses'
         );
       } catch (logged) {
         setSubmitError(friendlyError(logged));
       }
     } finally {
-      setLoading(false);
+      persistInFlightRef.current = false;
+      setSaveState('idle');
     }
   };
 
@@ -959,7 +1054,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                 <span className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded shrink-0">
                   View only
                 </span>
-              ) : isResuming ? (
+              ) : isResumingDraft ? (
                 <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded shrink-0">
                   Resuming draft
                 </span>
@@ -1213,21 +1308,21 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
               <button
                 type="button"
                 onClick={handleSaveDraft}
-                disabled={loading}
+                disabled={saveState !== 'idle'}
                 className="flex-1 bg-slate-100 text-slate-700 font-semibold py-2.5 rounded-lg hover:bg-slate-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Save size={16} />
-                {loading ? 'Saving…' : 'Save Draft'}
+                {saveState === 'saving' ? 'Saving…' : 'Save Draft'}
               </button>
             )}
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={loading || (consentGate?.enabled && !consentGranted)}
+              disabled={saveState !== 'idle' || (consentGate?.enabled && !consentGranted)}
               className="flex-1 bg-blue-600 text-white font-semibold py-2.5 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Send size={16} />
-              {loading ? 'Submitting…' : 'Submit'}
+              {saveState === 'submitting' ? 'Submitting…' : 'Submit'}
             </button>
           </div>
         </div>

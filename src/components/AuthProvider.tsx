@@ -53,9 +53,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: isWhitelistedAdmin ? 'admin' : 'enumerator',
         status: isWhitelistedAdmin ? 'approved' : 'pending'
       };
-      // Keep loading until first user-profile snapshot arrives to avoid
-      // "pending" flicker for already-approved enumerators on login.
-      setUserProfile(null);
+      // Keep last profile (or optimistic) so offline saves still work while
+      // Firestore reconnects — never clear to null mid-session.
+      setUserProfile((prev) => (prev?.uid === user.uid ? prev : optimisticProfile));
 
       // Listen for admin approvals / status changes in real-time.
       let initializedDoc = false;

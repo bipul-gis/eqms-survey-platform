@@ -483,35 +483,60 @@ const AppContent: React.FC = () => {
       isAdmin ||
       userProfile?.role !== 'enumerator' ||
       userProfile?.status !== 'approved' ||
-      !userProfile?.email
+      !userProfile?.email ||
+      !user?.uid
     ) {
       setSelfMergedAssignedWards([]);
       return;
     }
 
-    const myEmailKey = userProfile.email.trim().toLowerCase();
-    const q = query(collection(db, 'users'), where('status', '==', 'approved'));
+    const myEmail = userProfile.email.trim();
+    const myEmailKey = myEmail.toLowerCase();
+    let cancelled = false;
+
+    const applyWardsFromEnumeratorDocs = (snap: Awaited<ReturnType<typeof getDocs>>) => {
+      const merged = new Set<string>();
+      snap.forEach((docSnap) => {
+        const d = docSnap.data() as UserProfile;
+        if (d.role !== 'enumerator') return;
+        if ((d.email || '').trim().toLowerCase() !== myEmailKey) return;
+        for (const w of assignedWardsFromUserProfile(d)) {
+          const v = String(w).trim();
+          if (v) merged.add(v);
+        }
+      });
+      setSelfMergedAssignedWards([...merged]);
+    };
+
+    const loadSameEmailAccounts = async () => {
+      try {
+        const q = query(
+          collection(db, 'users'),
+          where('status', '==', 'approved'),
+          where('email', '==', myEmail)
+        );
+        const snap = await getDocs(q);
+        if (!cancelled) applyWardsFromEnumeratorDocs(snap);
+      } catch {
+        if (!cancelled) setSelfMergedAssignedWards([]);
+      }
+    };
+
+    void loadSameEmailAccounts();
     const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const merged = new Set<string>();
-        snap.forEach((docSnap) => {
-          const d = docSnap.data() as UserProfile;
-          if (d.role !== 'enumerator') return;
-          if ((d.email || '').trim().toLowerCase() !== myEmailKey) return;
-          for (const w of assignedWardsFromUserProfile(d)) {
-            const v = String(w).trim();
-            if (v) merged.add(v);
-          }
-        });
-        setSelfMergedAssignedWards([...merged]);
+      doc(db, 'users', user.uid),
+      () => {
+        void loadSameEmailAccounts();
       },
       () => {
-        setSelfMergedAssignedWards([]);
+        if (!cancelled) setSelfMergedAssignedWards([]);
       }
     );
-    return () => unsub();
-  }, [isAdmin, userProfile?.role, userProfile?.status, userProfile?.email]);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [isAdmin, user?.uid, userProfile?.role, userProfile?.status, userProfile?.email]);
 
   useEffect(() => {
     // On Capacitor (native Android shell), the hardware back button is
@@ -701,9 +726,12 @@ const AppContent: React.FC = () => {
     return 'idle';
   }, [authLoading, user, userProfile?.role, userProfile?.status]);
 
+  const [hhSurveyLayerEnabled, setHhSurveyLayerEnabled] = useState(true);
+
   const { locations: surveyLocations } = useQuestionnaireSurveyLocations({
     mode: surveyLocationsMode,
-    userUid: user?.uid
+    userUid: user?.uid,
+    enabled: surveyLocationsMode !== 'admin' || hhSurveyLayerEnabled
   });
 
   const visibleFeatures = useMemo(() => {
@@ -854,10 +882,12 @@ const AppContent: React.FC = () => {
       setApprovedEnumeratorsAdmin([]);
       return;
     }
-    const q = query(collection(db, 'users'), where('status', '==', 'approved'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const q = query(collection(db, 'users'), where('status', '==', 'approved'));
+        const snap = await getDocs(q);
+        if (cancelled) return;
         const byEmail = new Map<string, { email: string; displayName: string; assignedWardNames: string[] }>();
         snap.forEach((docSnap) => {
           const d = docSnap.data() as UserProfile;
@@ -878,20 +908,36 @@ const AppContent: React.FC = () => {
             return;
           }
 
-          // Prefer the most descriptive full-name variant.
-          const existingScore = existing.displayName.replace(/\s+/g, '').length + (existing.displayName.includes(' ') ? 100 : 0);
-          const candidateScore = candidateName.replace(/\s+/g, '').length + (candidateName.includes(' ') ? 100 : 0);
+          const existingScore =
+            existing.displayName.replace(/\s+/g, '').length +
+            (existing.displayName.includes(' ') ? 100 : 0);
+          const candidateScore =
+            candidateName.replace(/\s+/g, '').length +
+            (candidateName.includes(' ') ? 100 : 0);
           if (candidateScore > existingScore) {
             existing.displayName = candidateName;
           }
           existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wards])];
         });
-        const rows = Array.from(byEmail.values()).sort((a, b) => a.displayName.localeCompare(b.displayName));
+        const rows = Array.from(byEmail.values()).sort((a, b) =>
+          a.displayName.localeCompare(b.displayName)
+        );
         setApprovedEnumeratorsAdmin(rows);
-      },
-      (err) => console.error('approved enumerators snapshot', err)
-    );
-    return () => unsub();
+      } catch (err) {
+        console.error('approved enumerators load', err);
+      }
+    };
+    void load();
+    const intervalId = window.setInterval(() => void load(), 120_000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [isAdmin]);
 
   /** Admin map popups: enumerator display name from task ward assignment, else from `updatedBy` email. */
@@ -2643,6 +2689,7 @@ const AppContent: React.FC = () => {
               showPointAddBuffer={!isAdmin && isAddingFeature === 'point'}
               landmarkGeoJsonRefreshKey={isAdmin ? adminFeaturesRefreshKey : 0}
               surveyLocations={surveyLocations}
+              onSurveyLocationsVisibilityChange={setHhSurveyLayerEnabled}
             />
           ) : (
             <div className="p-6 overflow-y-auto w-full">

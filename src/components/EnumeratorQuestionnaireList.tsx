@@ -25,15 +25,8 @@ import {
   Trash2,
   Plus
 } from 'lucide-react';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  where
-} from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, query, where } from 'firebase/firestore';
+import { commitFirestoreWrite, getDocsOfflineFriendly } from '../lib/offlineFirestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Project, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
 import { useAuth } from './AuthProvider';
@@ -98,6 +91,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     questionnaire: Questionnaire;
     existingResponse?: QuestionnaireResponse;
     readOnly?: boolean;
+    forceNew?: boolean;
   } | null>(null);
   /** Currently-open "My Responses" panel for one questionnaire. */
   const [responsesPanel, setResponsesPanel] = useState<Questionnaire | null>(null);
@@ -204,7 +198,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           collection(db, 'questionnaireResponses'),
           where('respondentId', '==', user.uid)
         );
-        const snap = await getDocs(q);
+        const snap = await getDocsOfflineFriendly(q);
 
         // Bucket by questionnaireId.
         const buckets: Record<string, QuestionnaireResponse[]> = {};
@@ -298,12 +292,38 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   };
 
   const handleDeleteDraft = async (r: QuestionnaireResponse) => {
+    if (r.status !== 'draft') {
+      alert('Only draft responses can be deleted. Contact an admin if you need help.');
+      return;
+    }
     if (!confirm('Delete this draft? This cannot be undone.')) return;
     try {
-      await deleteDoc(doc(db, 'questionnaireResponses', r.id));
+      await commitFirestoreWrite(() =>
+        deleteDoc(doc(db, 'questionnaireResponses', r.id))
+      );
+      if (user?.uid && r.questionnaireId) {
+        try {
+          const key = `qc-draft:${user.uid}:${r.questionnaireId}`;
+          if (sessionStorage.getItem(key) === r.id) {
+            sessionStorage.removeItem(key);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       setRefreshTick((t) => t + 1);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, 'questionnaireResponses');
+      console.error('Delete draft failed:', err);
+      try {
+        handleFirestoreError(err, OperationType.DELETE, 'questionnaireResponses');
+      } catch (logged) {
+        const msg = logged instanceof Error ? logged.message : String(logged);
+        alert(
+          msg.includes('permission') || msg.includes('Permission')
+            ? 'Could not delete this draft. If you are offline, try again when connected — or ask an admin to remove it.'
+            : `Could not delete draft: ${msg}`
+        );
+      }
     }
   };
 
@@ -449,7 +469,9 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           questionnaire={responsesPanel}
           stats={responseStats[responsesPanel.id] || EMPTY_STATS}
           onClose={() => setResponsesPanel(null)}
-          onStartNew={() => setOpening({ questionnaire: responsesPanel })}
+          onStartNew={() =>
+            setOpening({ questionnaire: responsesPanel, forceNew: true })
+          }
           onContinueDraft={(r) =>
             setOpening({ questionnaire: responsesPanel, existingResponse: r })
           }
@@ -476,6 +498,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             projectId={opening.questionnaire.projectId}
             existingResponse={opening.existingResponse}
             readOnly={opening.readOnly}
+            forceNew={opening.forceNew}
             initialLocation={initialLocation}
             variant="fullscreen"
             onClose={() => {

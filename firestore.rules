@@ -106,7 +106,11 @@ service cloud.firestore {
         && request.resource.data.respondentId == request.auth.uid;
       allow update: if isAdmin()
         || (isSignedIn() && resource.data.respondentId == request.auth.uid);
-      allow delete: if isAdmin();
+      // Enumerators may discard their own drafts; submitted/reviewed rows are admin-only.
+      allow delete: if isAdmin()
+        || (isSignedIn()
+            && resource.data.respondentId == request.auth.uid
+            && resource.data.status == 'draft');
     }
   }
 }

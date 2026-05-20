@@ -7,20 +7,17 @@
   "scripts": {
     "// === setup ===": "",
     "setup": "npm install && npx cap add android",
-
     "// === one-shot build cycle ===": "",
     "build:web": "cd .. && npm run build",
     "copy-web": "node scripts/copy-web.js",
     "// (note) `prepare` is a reserved npm lifecycle hook — we use `sync` instead": "",
     "sync": "npm run build:web && npm run copy-web && npx cap sync android",
-
     "// === android builds ===": "",
     "// `npm run apk` — one command, auto-detects JDK, end-to-end APK build": "",
     "apk": "node scripts/build-apk.js",
     "open": "npx cap open android",
     "build:debug": "npm run sync && cd android && gradlew.bat assembleDebug",
     "build:release": "npm run sync && cd android && gradlew.bat assembleRelease",
-
     "// === dev / live reload ===": "",
     "live": "npx cap run android --livereload --external"
   },
@@ -29,6 +26,7 @@
     "@capacitor/app": "^6.0.0",
     "@capacitor/core": "^6.1.0",
     "@capacitor/geolocation": "^6.0.0",
+    "@capacitor/ios": "^6.2.1",
     "@capacitor/network": "^6.0.0",
     "@capacitor/preferences": "^6.0.0",
     "@capacitor/splash-screen": "^6.0.0",

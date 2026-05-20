@@ -1,19 +1,22 @@
 import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  GoogleAuthProvider, 
-  signInWithPopup, 
-  onAuthStateChanged, 
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  onAuthStateChanged,
   User,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signOut
+  signOut,
+  setPersistence,
+  browserLocalPersistence
 } from 'firebase/auth';
 import {
   getFirestore,
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  persistentSingleTabManager,
   doc,
   getDocFromServer,
   setDoc,
@@ -21,6 +24,7 @@ import {
 } from 'firebase/firestore';
 import { getFunctions } from 'firebase/functions';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { isCapacitorNative } from './offlineFirestore';
 
 export const app = initializeApp(firebaseConfig);
 /**
@@ -29,19 +33,27 @@ export const app = initializeApp(firebaseConfig);
  * - Queues writes while offline
  * - Auto-syncs when network reconnects
  *
- * Keeps the same app UI/flow; this is an internal data-layer upgrade.
+ * Android WebView must use single-tab persistence — multi-tab often fails to
+ * acquire IndexedDB and silently disables the offline queue.
  */
 export const db =
   typeof window !== 'undefined'
     ? initializeFirestore(app, {
         localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager()
+          tabManager: isCapacitorNative()
+            ? persistentSingleTabManager({ forceOwnership: true })
+            : persistentMultipleTabManager()
         })
       })
     : getFirestore(app);
 /** Callable Cloud Functions — must match `region` in `functions/src/index.ts` (`us-central1`). */
 export const functions = getFunctions(app, 'us-central1');
 export const auth = getAuth(app);
+if (typeof window !== 'undefined') {
+  void setPersistence(auth, browserLocalPersistence).catch((err) => {
+    console.warn('Firebase Auth: local persistence setup failed', err);
+  });
+}
 export const googleProvider = new GoogleAuthProvider();
 
 export async function testConnection() {

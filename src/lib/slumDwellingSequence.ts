@@ -1,6 +1,14 @@
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from './firebase';
+import { getCached, invalidateCached, setCached } from './firestoreReadCache';
 import { parseDwellingSequence } from './slumRegistry';
+
+const DWELLING_CACHE_TTL_MS = 45_000;
+
+/** Call after saving a response so the next form open sees the latest sequence. */
+export function invalidateDwellingIdCache(questionnaireId: string): void {
+  invalidateCached(`dwelling:${questionnaireId}`);
+}
 
 /**
  * Collect dwelling-id answer values already stored for a questionnaire.
@@ -11,6 +19,10 @@ export async function loadDwellingIdValuesForQuestionnaire(
   questionnaireId: string,
   slumId: string
 ): Promise<unknown[]> {
+  const cacheKey = `dwelling:${questionnaireId}:${slumId}`;
+  const cached = getCached<unknown[]>(cacheKey, DWELLING_CACHE_TTL_MS);
+  if (cached) return cached;
+
   const q = query(
     collection(db, 'questionnaireResponses'),
     where('questionnaireId', '==', questionnaireId)
@@ -29,5 +41,6 @@ export async function loadDwellingIdValuesForQuestionnaire(
       }
     }
   });
+  setCached(cacheKey, values);
   return values;
 }
