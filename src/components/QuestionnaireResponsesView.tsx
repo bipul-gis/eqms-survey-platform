@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import {
   collection,
   getDocs,
@@ -1131,6 +1131,15 @@ const formatRelativeTime = (ms: number): string => {
 // filtered response with column sort and row-level View / Delete actions.
 // ---------------------------------------------------------------------------
 
+const CSV_PREVIEW_ROW_H = 'h-8';
+const CSV_PREVIEW_CELL =
+  'h-8 max-h-8 px-2 py-0 align-middle overflow-hidden whitespace-nowrap leading-none box-border';
+/** Sticky leading columns (actions + row #) stay visible when scrolling horizontally. */
+const CSV_PREVIEW_STICKY_ACTIONS =
+  'sticky left-0 z-30 bg-inherit border-r border-slate-200 shadow-[2px_0_4px_-2px_rgba(15,23,42,0.12)]';
+const CSV_PREVIEW_STICKY_NUM =
+  'sticky left-[3.25rem] z-20 bg-inherit border-r border-slate-200 shadow-[2px_0_4px_-2px_rgba(15,23,42,0.08)]';
+
 /** Compare two CSV preview cells; blanks sort last on ascending order. */
 function compareCsvPreviewCells(a: string, b: string): number {
   const sa = (a ?? '').trim();
@@ -1175,23 +1184,6 @@ const CsvPreview: React.FC<{
   }, [questionnaire, responses, questionColumnKey, enumeratorColumnKey]);
 
   const [sort, setSort] = useState<{ col: number; dir: 'asc' | 'desc' } | null>(null);
-  const dataScrollRef = useRef<HTMLDivElement>(null);
-  const actionsScrollRef = useRef<HTMLDivElement>(null);
-  const scrollSyncLock = useRef(false);
-
-  const syncScrollTop = (source: 'data' | 'actions') => {
-    if (scrollSyncLock.current) return;
-    const dataEl = dataScrollRef.current;
-    const actionsEl = actionsScrollRef.current;
-    if (!dataEl || !actionsEl) return;
-    scrollSyncLock.current = true;
-    if (source === 'data') {
-      actionsEl.scrollTop = dataEl.scrollTop;
-    } else {
-      dataEl.scrollTop = actionsEl.scrollTop;
-    }
-    scrollSyncLock.current = false;
-  };
 
   const sortedTableRows = useMemo(() => {
     if (sort == null) return tableRows;
@@ -1226,135 +1218,108 @@ const CsvPreview: React.FC<{
         </div>
       </div>
 
-      <div className="flex h-[615px] overflow-hidden border-b border-slate-100">
-        {/* Data columns — horizontal + vertical scroll; actions live outside this pane. */}
-        <div
-          ref={dataScrollRef}
-          onScroll={() => syncScrollTop('data')}
-          className="qc-panel-scroll flex-1 min-w-0 overflow-auto"
-        >
-          <table className="w-max min-w-full text-[11px] border-collapse">
-            <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
-              <tr>
-                <th
-                  scope="col"
-                  className="px-2 py-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider text-right border-r border-slate-200 sticky left-0 bg-slate-50 z-20 cursor-pointer hover:bg-slate-100 select-none"
-                  title="Reset sort — restore original row order"
-                  onClick={() => setSort(null)}
-                >
-                  #
-                </th>
-                {header.map((h, i) => {
-                  const active = sort?.col === i;
-                  return (
-                    <th
-                      key={i}
-                      scope="col"
-                      title={`Sort by ${h}`}
-                      onClick={() =>
-                        setSort((prev) =>
-                          prev?.col === i
-                            ? { col: i, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-                            : { col: i, dir: 'asc' }
-                        )
-                      }
-                      aria-sort={
-                        active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : undefined
-                      }
-                      className="px-2 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-slate-100 select-none text-left"
-                    >
-                      <span className="inline-flex items-center gap-0.5 max-w-[12rem]">
-                        <span className="truncate" title={h}>
-                          {h}
-                        </span>
-                        {active &&
-                          (sort!.dir === 'asc' ? (
-                            <ChevronUp size={12} className="shrink-0 text-slate-500" aria-hidden />
-                          ) : (
-                            <ChevronDown size={12} className="shrink-0 text-slate-500" aria-hidden />
-                          ))}
+      <div className="qc-panel-scroll h-[615px] overflow-auto border-b border-slate-100">
+        <table className="w-max min-w-full text-[11px] border-collapse">
+          <thead className="bg-slate-50 sticky top-0 z-40 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
+            <tr className={CSV_PREVIEW_ROW_H}>
+              <th
+                scope="col"
+                className={`${CSV_PREVIEW_CELL} ${CSV_PREVIEW_STICKY_ACTIONS} text-[9px] font-bold text-slate-400 uppercase tracking-wider text-center bg-slate-50`}
+              >
+                Actions
+              </th>
+              <th
+                scope="col"
+                className={`${CSV_PREVIEW_CELL} ${CSV_PREVIEW_STICKY_NUM} text-[9px] font-bold text-slate-400 uppercase tracking-wider text-right bg-slate-50 cursor-pointer hover:bg-slate-100 select-none`}
+                title="Reset sort — restore original row order"
+                onClick={() => setSort(null)}
+              >
+                #
+              </th>
+              {header.map((h, i) => {
+                const active = sort?.col === i;
+                return (
+                  <th
+                    key={i}
+                    scope="col"
+                    title={`Sort by ${h}`}
+                    onClick={() =>
+                      setSort((prev) =>
+                        prev?.col === i
+                          ? { col: i, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                          : { col: i, dir: 'asc' }
+                      )
+                    }
+                    aria-sort={
+                      active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : undefined
+                    }
+                    className={`${CSV_PREVIEW_CELL} text-[9px] font-bold text-slate-500 uppercase tracking-wider border-r border-slate-100 last:border-r-0 bg-slate-50 cursor-pointer hover:bg-slate-100 select-none text-left`}
+                  >
+                    <span className="inline-flex items-center gap-0.5 max-w-[12rem]">
+                      <span className="truncate" title={h}>
+                        {h}
                       </span>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {sortedTableRows.map(({ row, response }, ri) => (
-                <tr
-                  key={response.id}
-                  className="even:bg-slate-50/40 hover:bg-blue-50/40 transition-colors"
-                >
-                  <td className="px-2 py-1 text-slate-400 text-right border-r border-slate-200 font-mono tabular-nums sticky left-0 bg-white even:bg-slate-50/40 z-10">
-                    {ri + 1}
-                  </td>
-                  {row.map((cell, ci) => (
-                    <td
-                      key={ci}
-                      className="px-2 py-1 text-slate-700 whitespace-nowrap border-r border-slate-100 last:border-r-0 font-mono"
-                      title={cell}
+                      {active &&
+                        (sort!.dir === 'asc' ? (
+                          <ChevronUp size={12} className="shrink-0 text-slate-500" aria-hidden />
+                        ) : (
+                          <ChevronDown size={12} className="shrink-0 text-slate-500" aria-hidden />
+                        ))}
+                    </span>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {sortedTableRows.map(({ row, response }, ri) => (
+              <tr
+                key={response.id}
+                className={`${CSV_PREVIEW_ROW_H} border-b border-slate-100 even:bg-slate-50/40 hover:bg-blue-50/40 transition-colors`}
+              >
+                <td className={`${CSV_PREVIEW_CELL} ${CSV_PREVIEW_STICKY_ACTIONS} bg-white even:bg-slate-50/40`}>
+                  <div className="flex h-8 items-center justify-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onView(response)}
+                      className="p-0.5 text-blue-700 hover:bg-blue-50 rounded inline-flex items-center justify-center"
+                      title="View response"
                     >
-                      {cell || <span className="text-slate-300">·</span>}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Fixed actions rail — never overlaps data when scrolling horizontally. */}
-        <div
-          ref={actionsScrollRef}
-          onScroll={() => syncScrollTop('actions')}
-          className="qc-panel-scroll shrink-0 w-[9.25rem] overflow-y-auto overflow-x-hidden border-l border-slate-200 bg-white shadow-[-6px_0_10px_-6px_rgba(15,23,42,0.15)]"
-        >
-          <table className="w-full text-[11px] border-collapse">
-            <thead className="bg-slate-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(15,23,42,0.08)]">
-              <tr>
-                <th
-                  scope="col"
-                  className="px-2 py-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider text-center whitespace-nowrap"
+                      <Eye size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(response)}
+                      className="p-0.5 text-red-700 hover:bg-red-50 rounded inline-flex items-center justify-center"
+                      title="Delete"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </td>
+                <td
+                  className={`${CSV_PREVIEW_CELL} ${CSV_PREVIEW_STICKY_NUM} text-slate-400 text-right font-mono tabular-nums bg-white even:bg-slate-50/40`}
                 >
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedTableRows.map(({ response }) => (
-                <tr
-                  key={response.id}
-                  className="even:bg-slate-50/40 hover:bg-blue-50/40 transition-colors"
-                >
-                  <td className="px-1 py-1 bg-white even:bg-slate-50/40">
-                    <div className="flex items-center justify-center gap-0.5 whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => onView(response)}
-                        className="text-[10px] font-semibold text-blue-700 hover:bg-blue-50 px-1 py-1 rounded inline-flex items-center gap-0.5"
-                        title="View response"
-                      >
-                        <Eye size={11} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete(response)}
-                        className="text-[10px] font-semibold text-red-700 hover:bg-red-50 px-1 py-1 rounded inline-flex items-center"
-                        title="Delete"
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    </div>
+                  {ri + 1}
+                </td>
+                {row.map((cell, ci) => (
+                  <td
+                    key={ci}
+                    className={`${CSV_PREVIEW_CELL} text-slate-700 border-r border-slate-100 last:border-r-0 font-mono`}
+                    title={cell}
+                  >
+                    {cell || <span className="text-slate-300">·</span>}
                   </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-200 bg-slate-50/40">
-        Scroll data columns horizontally; Actions stay fixed on the right. Click column headers to sort.
+        View/Delete are the first columns (stay pinned on the left when you scroll horizontally). Use the
+        scrollbars to move through all rows and columns.
       </div>
     </>
   );
