@@ -34,6 +34,14 @@ function writeUtf8CString(view: DataView, byteLength: number, str: string, offse
   return offset + byteLength;
 }
 
+/**
+ * Shapefile DBF limit: 8-character field names, A–Z, 0–9, underscore.
+ * Maps full CSV/export labels (Unicode, long text) to unique DBF names.
+ */
+export function mapLabelsToDbfFieldNames(labels: string[]): Map<string, string> {
+  return assignDbfFieldNames(labels);
+}
+
 /** Valid dBase III field name: start with letter, up to 8 chars A-Z 0-9 _ */
 function assignDbfFieldNames(keys: string[]): Map<string, string> {
   const used = new Set<string>();

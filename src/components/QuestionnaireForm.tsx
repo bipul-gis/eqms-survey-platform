@@ -48,14 +48,12 @@ import {
   collectSlumNameFieldIds,
   collectWardAreaFieldIds
 } from '../lib/questionnaireSlumFields';
+import { wardValueFromSlumCsv } from '../lib/slumRegistry';
 import {
-  formatDwellingId,
-  nextDwellingSequenceFromValues,
-  wardValueFromSlumCsv
-} from '../lib/slumRegistry';
-import {
+  allocateNextDwellingId,
+  dwellingFieldsAreEmpty,
   invalidateDwellingIdCache,
-  loadDwellingIdValuesForQuestionnaire
+  mergeDwellingIntoAnswerMaps
 } from '../lib/slumDwellingSequence';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
@@ -585,9 +583,18 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   }, [primaryAssignedSlum, questionnaire.enumeratorInfo?.fields, questionnaire.questions]);
 
   const slumAutoInitRef = useRef(false);
+  const enumDwellingFieldIds = useMemo(
+    () => collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields),
+    [questionnaire.enumeratorInfo?.fields]
+  );
+  const questionDwellingFieldIds = useMemo(
+    () => collectDwellingIdFieldIds(questionnaire.questions),
+    [questionnaire.questions]
+  );
+
   useEffect(() => {
     slumAutoInitRef.current = false;
-  }, [questionnaire.id, savedResponseId]);
+  }, [questionnaire.id, savedResponseId, forceNew]);
 
   useEffect(() => {
     if (readOnly || existingResponse || !primaryAssignedSlum || slumAutoInitRef.current) return;
@@ -645,50 +652,44 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       patchQuestions(qWard, wardLabel);
     }
 
-    if (dwellingFieldIds.length === 0) return;
+    if (dwellingFieldIds.length === 0 || !user?.uid) return;
 
-    const enumDw = collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields);
-    const qDw = collectDwellingIdFieldIds(questionnaire.questions);
-
-    const applyDwelling = (
-      prev: Record<string, unknown>,
-      fieldIds: string[],
-      dwellingValue: string,
-      overwrite = false
-    ) => {
-      const next = { ...prev };
-      for (const id of fieldIds) {
-        const cur = next[id];
-        const empty = cur === undefined || cur === null || cur === '';
-        if (overwrite || empty) {
-          next[id] = dwellingValue;
-        }
+    const patchDwelling = (dwellingValue: string) => {
+      if (enumDwellingFieldIds.length > 0) {
+        setEnumeratorInfo((prev) =>
+          mergeDwellingIntoAnswerMaps(
+            dwellingValue,
+            enumDwellingFieldIds,
+            [],
+            prev,
+            {}
+          ).enumeratorInfo
+        );
       }
-      return next;
-    };
-
-    const patchDwelling = (dwellingValue: string, overwrite = false) => {
-      if (enumDw.length > 0) {
-        setEnumeratorInfo((prev) => applyDwelling(prev, enumDw, dwellingValue, overwrite));
-      }
-      if (qDw.length > 0) {
-        setResponses((prev) => applyDwelling(prev, qDw, dwellingValue, overwrite));
+      if (questionDwellingFieldIds.length > 0) {
+        setResponses((prev) =>
+          mergeDwellingIntoAnswerMaps(
+            dwellingValue,
+            [],
+            questionDwellingFieldIds,
+            {},
+            prev
+          ).responses
+        );
       }
     };
-
-    // Show next id immediately (usually _1); refine after Firestore scan.
-    patchDwelling(formatDwellingId(primaryAssignedSlum.slumId, 1));
 
     let cancelled = false;
     void (async () => {
       try {
-        const values = await loadDwellingIdValuesForQuestionnaire(
+        const nextId = await allocateNextDwellingId(
           questionnaire.id,
-          primaryAssignedSlum.slumId
+          primaryAssignedSlum.slumId,
+          user.uid,
+          draftDocIdRef.current
         );
         if (cancelled) return;
-        const seq = nextDwellingSequenceFromValues(values, primaryAssignedSlum.slumId);
-        patchDwelling(formatDwellingId(primaryAssignedSlum.slumId, seq), true);
+        patchDwelling(nextId);
       } catch (e) {
         console.warn('QuestionnaireForm: dwelling id auto-fill failed', e);
       }
@@ -703,7 +704,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     primaryAssignedSlum,
     questionnaire.id,
     questionnaire.enumeratorInfo?.fields,
-    questionnaire.questions
+    questionnaire.questions,
+    user?.uid,
+    enumDwellingFieldIds,
+    questionDwellingFieldIds
   ]);
 
   const lockedQuestionIds = useMemo(() => {
@@ -904,9 +908,56 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     }
   };
 
+  const applyDwellingIdBeforeSave = async (
+    data: Omit<QuestionnaireResponse, 'id'>,
+    status: 'draft' | 'submitted',
+    excludeResponseId?: string
+  ): Promise<Omit<QuestionnaireResponse, 'id'>> => {
+    if (!primaryAssignedSlum || !user?.uid) return data;
+    if (enumDwellingFieldIds.length === 0 && questionDwellingFieldIds.length === 0) return data;
+
+    const reallocate =
+      status === 'submitted' ||
+      dwellingFieldsAreEmpty(
+        enumDwellingFieldIds,
+        questionDwellingFieldIds,
+        data.enumeratorInfo,
+        data.responses
+      );
+    if (!reallocate) return data;
+
+    try {
+      const nextId = await allocateNextDwellingId(
+        questionnaire.id,
+        primaryAssignedSlum.slumId,
+        user.uid,
+        excludeResponseId
+      );
+      const merged = mergeDwellingIntoAnswerMaps(
+        nextId,
+        enumDwellingFieldIds,
+        questionDwellingFieldIds,
+        data.enumeratorInfo || {},
+        data.responses || {}
+      );
+      if (enumDwellingFieldIds.length > 0) setEnumeratorInfo(merged.enumeratorInfo);
+      if (questionDwellingFieldIds.length > 0) setResponses(merged.responses);
+      return {
+        ...data,
+        enumeratorInfo:
+          enumDwellingFieldIds.length > 0 ? merged.enumeratorInfo : data.enumeratorInfo,
+        responses: questionDwellingFieldIds.length > 0 ? merged.responses : data.responses
+      };
+    } catch (e) {
+      console.warn('QuestionnaireForm: dwelling id allocation before save failed', e);
+      return data;
+    }
+  };
+
   const persistResponse = async (status: 'draft' | 'submitted'): Promise<string> => {
-    const responseData = buildResponseData(status);
     const existingId = draftDocIdRef.current;
+    let responseData = buildResponseData(status);
+    responseData = await applyDwellingIdBeforeSave(responseData, status, existingId);
     const ref = existingId
       ? doc(db, 'questionnaireResponses', existingId)
       : doc(collection(db, 'questionnaireResponses'));

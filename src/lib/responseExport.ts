@@ -15,6 +15,7 @@ import {
   Questionnaire,
   QuestionnaireResponse
 } from '../types';
+import { mapLabelsToDbfFieldNames } from './dbfUtf8';
 import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
@@ -249,6 +250,15 @@ const exportLatLng = (r: QuestionnaireResponse): { lat: string; lng: string } =>
   };
 };
 
+/** WGS84 point for shapefile export — same lat/lng rules as CSV columns. */
+export const responsePointForShp = (r: QuestionnaireResponse): [number, number] | null => {
+  const { lat, lng } = exportLatLng(r);
+  const la = Number(lat);
+  const ln = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) return null;
+  return [ln, la];
+};
+
 const buildResponsesExportColumns = (questions: Question[]): ResponsesExportColumn[] => {
   const cols: ResponsesExportColumn[] = [];
   for (const qq of questions) {
@@ -287,13 +297,15 @@ const responsesExportColumnCell = (
   return String(cell);
 };
 
-const slugify = (s: string): string =>
+export const slugifyExportBasename = (s: string): string =>
   s
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 48) || 'export';
+
+const slugify = slugifyExportBasename;
 
 const triggerDownload = (blob: Blob, filename: string) => {
   const url = URL.createObjectURL(blob);
@@ -390,6 +402,151 @@ export const buildResponsesTable = (
   });
 
   return { header, rows };
+};
+
+/** How one export column maps to questionnaire / system data. */
+export type ResponsesExportFieldDescriptor = {
+  /** Full column title in CSV export and GeoJSON properties before DBF rename. */
+  csvHeader: string;
+  sourceType: 'system' | 'enumerator_info' | 'question' | 'matrix_row';
+  questionId?: string;
+  fieldKey?: string;
+  sourceDetail: string;
+};
+
+const SYSTEM_EXPORT_FIELDS: ResponsesExportFieldDescriptor[] = [
+  { csvHeader: 'Response ID', sourceType: 'system', sourceDetail: 'Firestore response document id' },
+  { csvHeader: 'Status', sourceType: 'system', sourceDetail: 'draft | submitted | reviewed' },
+  { csvHeader: 'Submitted At', sourceType: 'system', sourceDetail: 'Submission timestamp' },
+  { csvHeader: 'Enumerator', sourceType: 'system', sourceDetail: 'Respondent display name' },
+  { csvHeader: 'Enumerator Email', sourceType: 'system', sourceDetail: 'Respondent email' },
+  { csvHeader: 'Enumerator UID', sourceType: 'system', sourceDetail: 'Firebase Auth uid (respondentId)' },
+  { csvHeader: 'Latitude', sourceType: 'system', sourceDetail: 'Export lat: location.lat or submissionLocation.lat' },
+  { csvHeader: 'Longitude', sourceType: 'system', sourceDetail: 'Export lng: location.lng or submissionLocation.lng' },
+  { csvHeader: 'Ward', sourceType: 'system', sourceDetail: 'location.ward when present' },
+  { csvHeader: 'Consent Granted', sourceType: 'system', sourceDetail: 'Yes / No' },
+  { csvHeader: 'Consent Granted At', sourceType: 'system', sourceDetail: 'consentGrantedAt' },
+  {
+    csvHeader: 'Submission GPS Latitude',
+    sourceType: 'system',
+    sourceDetail: 'submissionLocation.lat'
+  },
+  {
+    csvHeader: 'Submission GPS Longitude',
+    sourceType: 'system',
+    sourceDetail: 'submissionLocation.lng'
+  },
+  {
+    csvHeader: 'Submission GPS Accuracy (m)',
+    sourceType: 'system',
+    sourceDetail: 'submissionLocation.accuracy (meters)'
+  },
+  {
+    csvHeader: 'Submission GPS Captured At',
+    sourceType: 'system',
+    sourceDetail: 'submissionLocation.capturedAt'
+  },
+  {
+    csvHeader: 'Submission GPS Duration (s)',
+    sourceType: 'system',
+    sourceDetail: 'submissionLocation.durationSeconds'
+  }
+];
+
+/**
+ * Ordered list of export columns: system metadata, enumerator info, then
+ * survey questions (matrix → one column per row label).
+ */
+export const buildResponsesExportFieldDescriptors = (
+  q: Questionnaire,
+  responses: QuestionnaireResponse[]
+): ResponsesExportFieldDescriptor[] => {
+  const enumFields = q.enumeratorInfo?.fields || [];
+  const questions = mergeQuestionsWithResponseKeys(getExportOrderedQuestions(q), responses);
+  const exportColumns = buildResponsesExportColumns(questions);
+  const out: ResponsesExportFieldDescriptor[] = [...SYSTEM_EXPORT_FIELDS];
+
+  for (const f of enumFields) {
+    const label = f.question || f.key || f.id;
+    out.push({
+      csvHeader: `Info: ${label}`,
+      sourceType: 'enumerator_info',
+      questionId: f.id,
+      fieldKey: f.key,
+      sourceDetail: `Enumerator info field: ${label}`
+    });
+  }
+
+  for (const col of exportColumns) {
+    if (col.kind === 'question') {
+      const qq = col.question;
+      const label = qq.question || qq.key || qq.id;
+      out.push({
+        csvHeader: label,
+        sourceType: 'question',
+        questionId: qq.id,
+        fieldKey: qq.key,
+        sourceDetail: `Question type "${qq.type}": ${label}`
+      });
+    } else {
+      const qq = col.question;
+      const base = qq.question || qq.key || qq.id;
+      out.push({
+        csvHeader: `${base} — ${col.row}`,
+        sourceType: 'matrix_row',
+        questionId: qq.id,
+        fieldKey: qq.key,
+        sourceDetail: `Matrix question "${base}", row label: ${col.row}`
+      });
+    }
+  }
+
+  return out;
+};
+
+export type ResponsesShpFieldMappingRow = ResponsesExportFieldDescriptor & {
+  /** dBase III field name inside the .dbf (max 8 characters, A–Z 0–9 _). */
+  shpDbfField: string;
+};
+
+/** CSV/SHP column label → shortened DBF field name used in the shapefile. */
+export const buildResponsesShpFieldMapping = (
+  q: Questionnaire,
+  responses: QuestionnaireResponse[]
+): ResponsesShpFieldMappingRow[] => {
+  const descriptors = buildResponsesExportFieldDescriptors(q, responses);
+  const dbfMap = mapLabelsToDbfFieldNames(descriptors.map((d) => d.csvHeader));
+  return descriptors.map((d) => ({
+    ...d,
+    shpDbfField: dbfMap.get(d.csvHeader) ?? d.csvHeader
+  }));
+};
+
+/** UTF-8 CSV lookup table bundled inside the SHP ZIP download. */
+export const buildResponsesShpFieldMappingCsv = (
+  q: Questionnaire,
+  responses: QuestionnaireResponse[]
+): string => {
+  const mapping = buildResponsesShpFieldMapping(q, responses);
+  const header = [
+    'CSV_Column_Label',
+    'SHP_DBF_Field_8char',
+    'Source_Type',
+    'Question_ID',
+    'Field_Key',
+    'Source_Detail'
+  ];
+  const lines = mapping.map((r) =>
+    [
+      csvEscape(r.csvHeader),
+      csvEscape(r.shpDbfField),
+      csvEscape(r.sourceType),
+      csvEscape(r.questionId ?? ''),
+      csvEscape(r.fieldKey ?? ''),
+      csvEscape(r.sourceDetail)
+    ].join(',')
+  );
+  return '\uFEFF' + [header.join(','), ...lines].join('\r\n');
 };
 
 /** Build a CSV string for all responses to a questionnaire. */

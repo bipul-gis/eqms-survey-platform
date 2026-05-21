@@ -55,6 +55,9 @@ import {
   fmtDate,
   tsToDate
 } from '../lib/responseExport';
+// Lazy-load SHP export (jszip + shp-write) — only when the button is clicked.
+const loadDownloadResponsesShpZip = () =>
+  import('../lib/responseShpExport').then((m) => m.downloadResponsesShpZip);
 
 interface QuestionnaireResponsesViewProps {
   questionnaire: Questionnaire;
@@ -80,6 +83,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   const [showDeleteAll, setShowDeleteAll] = useState(false);
   const [deleteAllConfirmText, setDeleteAllConfirmText] = useState('');
   const [deletingAll, setDeletingAll] = useState(false);
+  const [exportingShp, setExportingShp] = useState(false);
   const [deleteAllProgress, setDeleteAllProgress] = useState<{
     done: number;
     total: number;
@@ -517,6 +521,32 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     downloadResponsesCsv(questionnaire, filtered);
   };
 
+  const handleExportShp = async () => {
+    if (filtered.length === 0) {
+      alert('Nothing to export — no responses match the current filter.');
+      return;
+    }
+    setExportingShp(true);
+    try {
+      const downloadShp = await loadDownloadResponsesShpZip();
+      const { exported, skippedNoGps } = await downloadShp(questionnaire, filtered);
+      const mappingNote =
+        ' Open *_field_mapping.csv inside the ZIP for CSV column → SHP DBF name lookup.';
+      if (skippedNoGps > 0) {
+        alert(
+          `SHP ZIP ready: ${exported} point(s) exported. Skipped ${skippedNoGps} response(s) with no GPS coordinates.${mappingNote}`
+        );
+      } else {
+        alert(`SHP ZIP ready: ${exported} point(s).${mappingNote}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`Failed to export shapefile: ${message}`);
+    } finally {
+      setExportingShp(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-[1006] bg-slate-50 flex flex-col">
       {/* Header */}
@@ -558,14 +588,24 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
             <Trash2 size={15} /> Delete All ({responses.length})
           </button>
         )}
-        <button
-          onClick={handleExportCsv}
-          disabled={loading || filtered.length === 0}
-          className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
-          title="Download all matching responses as a CSV file"
-        >
-          <FileSpreadsheet size={15} /> Export CSV ({filtered.length})
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExportCsv}
+            disabled={loading || filtered.length === 0}
+            className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
+            title="Download all matching responses as a CSV file"
+          >
+            <FileSpreadsheet size={15} /> Export CSV ({filtered.length})
+          </button>
+          <button
+            onClick={() => void handleExportShp()}
+            disabled={loading || exportingShp || filtered.length === 0}
+            className="px-3 py-2 text-sm font-semibold bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
+            title="Download zipped shapefile (WGS84). Includes field_mapping.csv: CSV column labels vs 8-character DBF field names per question."
+          >
+            <MapIcon size={15} /> {exportingShp ? 'Exporting SHP…' : `Export SHP ZIP (${filtered.length})`}
+          </button>
+        </div>
       </header>
 
       {/* Body */}
