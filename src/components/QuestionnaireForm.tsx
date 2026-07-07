@@ -35,10 +35,7 @@ import {
   X,
   Lock
 } from 'lucide-react';
-import { collection, doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
-  commitFirestoreWrite,
-  isBrowserOffline,
   isDeviceOffline
 } from '../lib/offlineFirestore';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
@@ -55,7 +52,6 @@ import {
   invalidateDwellingIdCache,
   mergeDwellingIntoAnswerMaps
 } from '../lib/slumDwellingSequence';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled } from '../lib/choiceAnswers';
@@ -75,6 +71,7 @@ import {
   isChoiceOptionDisabled,
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
+import { geosurveyApi } from '../lib/geosurveyApi';
 
 interface QuestionnaireFormProps {
   questionnaire: Questionnaire;
@@ -113,7 +110,7 @@ interface CapturedGps {
   durationSeconds: number;
 }
 
-/** Remove `undefined` values — Firestore's `addDoc` rejects them. */
+  /** Remove `undefined` values from API payloads. */
 const stripUndefined = <T extends Record<string, any>>(obj: T): T => {
   const out = {} as Record<string, any>;
   for (const [k, v] of Object.entries(obj)) {
@@ -845,9 +842,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   // ---- save / submit -----------------------------------------------------
 
   /**
-   * Build the Firestore payload. Omits `undefined` keys so `addDoc()` accepts
-   * it (Firestore rejects undefined). `respondentId === auth.uid` is required
-   * by `firestore.rules`.
+   * Build the response payload for the GeoSurvey API.
    */
   const buildResponseData = (
     status: 'draft' | 'submitted'
@@ -877,10 +872,8 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         capturedAt: new Date().toISOString()
       });
     }
-    if (status === 'submitted') base.submittedAt = serverTimestamp();
-    // Stamp every write so the enumerator list can show "saved 5 min ago"
-    // for drafts and admin tooling has a reliable last-touched timestamp.
-    base.updatedAt = serverTimestamp();
+    if (status === 'submitted') base.submittedAt = new Date().toISOString();
+    base.updatedAt = new Date().toISOString();
     return stripUndefined(base) as Omit<QuestionnaireResponse, 'id'>;
   };
 
@@ -958,33 +951,30 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     const existingId = draftDocIdRef.current;
     let responseData = buildResponseData(status);
     responseData = await applyDwellingIdBeforeSave(responseData, status, existingId);
-    const ref = existingId
-      ? doc(db, 'questionnaireResponses', existingId)
-      : doc(collection(db, 'questionnaireResponses'));
+    const optimisticId = existingId || `resp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     if (!existingId) {
-      rememberDraftDocId(ref.id);
+      rememberDraftDocId(optimisticId);
     }
 
-    const write = () =>
-      setDoc(ref, responseData as any, existingId ? { merge: true } : undefined);
-
     try {
-      await commitFirestoreWrite(write);
+      const saved = await geosurveyApi.saveResponse(
+        existingId ? { ...responseData, id: existingId } : responseData
+      );
+      const savedId = String((saved as { id?: string }).id ?? optimisticId);
+      rememberDraftDocId(savedId);
+      if (status === 'submitted' && draftStorageKey) {
+        try {
+          sessionStorage.removeItem(draftStorageKey);
+        } catch {
+          /* ignore */
+        }
+      }
+      return savedId;
     } catch (error) {
       if (!existingId) clearRememberedDraftDocId();
       throw error;
     }
-
-    if (status === 'submitted' && draftStorageKey) {
-      try {
-        sessionStorage.removeItem(draftStorageKey);
-      } catch {
-        /* ignore */
-      }
-    }
-
-    return ref.id;
   };
 
   const handleSaveDraft = async () => {
@@ -1006,15 +996,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           : 'Draft saved successfully!'
       );
     } catch (error) {
-      try {
-        handleFirestoreError(
-          error,
-          draftDocIdRef.current ? OperationType.UPDATE : OperationType.CREATE,
-          'questionnaireResponses'
-        );
-      } catch (logged) {
-        setSubmitError(friendlyError(logged));
-      }
+      setSubmitError(friendlyError(error));
     } finally {
       persistInFlightRef.current = false;
       setSaveState('idle');
@@ -1059,15 +1041,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       );
       onClose();
     } catch (error) {
-      try {
-        handleFirestoreError(
-          error,
-          draftDocIdRef.current ? OperationType.UPDATE : OperationType.CREATE,
-          'questionnaireResponses'
-        );
-      } catch (logged) {
-        setSubmitError(friendlyError(logged));
-      }
+      setSubmitError(friendlyError(error));
     } finally {
       persistInFlightRef.current = false;
       setSaveState('idle');

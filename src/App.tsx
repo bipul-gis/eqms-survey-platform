@@ -72,23 +72,13 @@ import {
   Folder
 } from 'lucide-react';
 import {
-  collection,
-  addDoc,
-  setDoc,
-  serverTimestamp,
-  writeBatch,
-  doc,
-  query,
-  where,
-  getDocs,
-  limit,
-  startAfter,
-  orderBy,
-  documentId,
-  onSnapshot,
-  updateDoc
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from './lib/firebase';
+  bulkUpsertFeatures,
+  bulkVerifyFeatures,
+  createFeature,
+  deleteAllFeaturesPaginated,
+  listApprovedUsers,
+  updateFeature,
+} from './lib/featuresApi';
 import { normalizedFullName } from './lib/userDisplayName';
 import wardsData from './data/ccc_wards.json';
 import { fetchLandmarkGeoJson } from './lib/landmarkGeoJson';
@@ -494,47 +484,29 @@ const AppContent: React.FC = () => {
     const myEmailKey = myEmail.toLowerCase();
     let cancelled = false;
 
-    const applyWardsFromEnumeratorDocs = (snap: Awaited<ReturnType<typeof getDocs>>) => {
-      const merged = new Set<string>();
-      snap.forEach((docSnap) => {
-        const d = docSnap.data() as UserProfile;
-        if (d.role !== 'enumerator') return;
-        if ((d.email || '').trim().toLowerCase() !== myEmailKey) return;
-        for (const w of assignedWardsFromUserProfile(d)) {
-          const v = String(w).trim();
-          if (v) merged.add(v);
-        }
-      });
-      setSelfMergedAssignedWards([...merged]);
-    };
-
     const loadSameEmailAccounts = async () => {
       try {
-        const q = query(
-          collection(db, 'users'),
-          where('status', '==', 'approved'),
-          where('email', '==', myEmail)
-        );
-        const snap = await getDocs(q);
-        if (!cancelled) applyWardsFromEnumeratorDocs(snap);
+        const users = await listApprovedUsers();
+        const merged = new Set<string>();
+        for (const d of users) {
+          if (d.role !== 'enumerator') continue;
+          if ((d.email || '').trim().toLowerCase() !== myEmailKey) continue;
+          for (const w of assignedWardsFromUserProfile(d)) {
+            const v = String(w).trim();
+            if (v) merged.add(v);
+          }
+        }
+        if (!cancelled) setSelfMergedAssignedWards([...merged]);
       } catch {
         if (!cancelled) setSelfMergedAssignedWards([]);
       }
     };
 
     void loadSameEmailAccounts();
-    const unsub = onSnapshot(
-      doc(db, 'users', user.uid),
-      () => {
-        void loadSameEmailAccounts();
-      },
-      () => {
-        if (!cancelled) setSelfMergedAssignedWards([]);
-      }
-    );
+    const interval = window.setInterval(() => void loadSameEmailAccounts(), 30_000);
     return () => {
       cancelled = true;
-      unsub();
+      window.clearInterval(interval);
     };
   }, [isAdmin, user?.uid, userProfile?.role, userProfile?.status, userProfile?.email]);
 
@@ -813,7 +785,7 @@ const AppContent: React.FC = () => {
 
   /** All ward labels from landmark GeoJSON, sorted ascending (numeric ward order when possible). */
   const wardOptionsForEditor = useMemo(() => {
-    const unique = [...new Set(landmarkWardOptions.map((w) => String(w ?? '').trim()).filter(Boolean))];
+    const unique = [...new Set(landmarkWardOptions.map((w) => String(w ?? '').trim()).filter(Boolean))] as string[];
     return unique.sort((a, b) => {
       const an = parseWardNumber(a);
       const bn = parseWardNumber(b);
@@ -826,7 +798,7 @@ const AppContent: React.FC = () => {
 
   /** Distinct Category values from landmark GeoJSON (e.g. Slum), sorted A–Z. */
   const categoryOptionsForEditor = useMemo(() => {
-    const unique = [...new Set(landmarkCategoryOptions.map((c) => String(c ?? '').trim()).filter(Boolean))];
+    const unique = [...new Set(landmarkCategoryOptions.map((c) => String(c ?? '').trim()).filter(Boolean))] as string[];
     return unique.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [landmarkCategoryOptions]);
 
@@ -885,12 +857,10 @@ const AppContent: React.FC = () => {
     let cancelled = false;
     const load = async () => {
       try {
-        const q = query(collection(db, 'users'), where('status', '==', 'approved'));
-        const snap = await getDocs(q);
+        const users = await listApprovedUsers();
         if (cancelled) return;
         const byEmail = new Map<string, { email: string; displayName: string; assignedWardNames: string[] }>();
-        snap.forEach((docSnap) => {
-          const d = docSnap.data() as UserProfile;
+        for (const d of users) {
           if (d.role !== 'enumerator') return;
           const email = (d.email || '').trim();
           if (!email) return;
@@ -918,7 +888,7 @@ const AppContent: React.FC = () => {
             existing.displayName = candidateName;
           }
           existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wards])];
-        });
+        }
         const rows = Array.from(byEmail.values()).sort((a, b) =>
           a.displayName.localeCompare(b.displayName)
         );
@@ -1271,70 +1241,25 @@ const AppContent: React.FC = () => {
       let processedCount = 0;
       setImportProgress({ total: totalSteps, processed: 0, written: 0, previousRemoved: 0 });
 
-      const MAX_OPS = 450;
+      removedCount = await deleteAllFeaturesPaginated((deleted) => {
+        setImportProgress((prev) => ({ ...prev, previousRemoved: deleted }));
+      });
 
-      // 1) Delete ALL documents in `features` (admin-only delete rule), then import only GeoJSON points.
-      const pageSize = 450;
-
-      let batch = writeBatch(db);
-      let ops = 0;
-      const commitIfNeeded = async (nextCost: number) => {
-        if (ops + nextCost > MAX_OPS) {
-          await batch.commit();
-          batch = writeBatch(db);
-          ops = 0;
-        }
-      };
-
-      let cursor: any = null;
-      while (true) {
-        const base = query(collection(db, 'features'), orderBy(documentId()), limit(pageSize));
-        const q = cursor ? query(base, startAfter(cursor)) : base;
-        const snap = await getDocs(q);
-        if (snap.empty) break;
-
-        for (const d of snap.docs) {
-          await commitIfNeeded(1);
-          batch.delete(doc(db, 'features', d.id));
-          ops += 1;
-          removedCount += 1;
-        }
-
-        cursor = snap.docs[snap.docs.length - 1];
-        if (snap.docs.length < pageSize) break;
-      }
-
-      if (ops > 0) {
-        await batch.commit();
-        batch = writeBatch(db);
-        ops = 0;
-      }
-      // 2) Write fresh canonical landmark docs in large batches.
-      const commitBatch = async () => {
-        if (ops > 0) {
-          await batch.commit();
-          batch = writeBatch(db);
-          ops = 0;
-        }
-      };
-
-      let writeChunk = 0;
+      const importPayloads: Record<string, unknown>[] = [];
       for (const rec of pointRecords) {
-        const ref = doc(db, 'features', rec.id);
         const [lng, lat] = parsePointCoordinates(rec.feature?.geometry?.coordinates);
         const rawProps =
           rec.feature?.properties != null && typeof rec.feature.properties === 'object'
             ? (rec.feature.properties as Record<string, unknown>)
             : {};
         const normalizedAttrs = normalizeImportedLandmarkProperties(rawProps, rec.fid);
-
-        await commitIfNeeded(1);
-        batch.set(ref, {
+        importPayloads.push({
+          id: rec.id,
           type: 'point',
           geometry: { type: 'Point', coordinates: [lng, lat] },
           attributes: withBaselineTaskWard({
             ...normalizedAttrs,
-            __source: 'ccc_landmark'
+            __source: 'ccc_landmark',
           }),
           status: 'pending',
           createdBy: 'ccc_landmark_import',
@@ -1345,34 +1270,17 @@ const AppContent: React.FC = () => {
             'Full landmark GeoJSON import (replaced all stored features)',
             user?.email || ENUMERATOR_UPDATED_BY_PLACEHOLDER
           ),
-          updatedAt: serverTimestamp()
+          updatedAt: new Date().toISOString(),
         });
-        ops += 1;
-        writtenCount += 1;
-        writeChunk += 1;
-
-        if (ops >= MAX_OPS) {
-          await commitBatch();
-        }
-        // Avoid updating React state on every row for large imports.
-        processedCount = writtenCount;
-        if (writeChunk >= 100 || writtenCount === pointRecords.length) {
-          setImportProgress({
-            total: totalSteps,
-            processed: processedCount,
-            written: writtenCount,
-            previousRemoved: removedCount
-          });
-          writeChunk = 0;
-        }
       }
-      await commitBatch();
 
+      writtenCount = await bulkUpsertFeatures(importPayloads);
+      processedCount = writtenCount;
       setImportProgress({
         total: totalSteps,
-        processed: totalSteps,
+        processed: processedCount,
         written: writtenCount,
-        previousRemoved: removedCount
+        previousRemoved: removedCount,
       });
       setImportNotice({
         type: 'success',
@@ -1502,25 +1410,7 @@ const AppContent: React.FC = () => {
       bulkVerifyBy = user.email || '';
       const chunkSize = 400;
       try {
-        for (let i = 0; i < idsPendingComplete.length; i += chunkSize) {
-          const chunk = idsPendingComplete.slice(i, i + chunkSize);
-          const batch = writeBatch(db);
-          for (const id of chunk) {
-            const row = exportList.find((x) => x.id === id);
-            batch.update(doc(db, 'features', id), {
-              status: 'verified',
-              verifiedAt: serverTimestamp(),
-              verifiedBy: bulkVerifyBy,
-              adminRM: appendAdminRm(
-                row?.adminRM,
-                'Changed SHP export: auto-verified complete pending landmark',
-                bulkVerifyBy
-              ),
-              updatedAt: serverTimestamp()
-            });
-          }
-          await batch.commit();
-        }
+        await bulkVerifyFeatures(idsPendingComplete, bulkVerifyBy);
       } catch (error) {
         console.error(error);
         setImportNotice({
@@ -1722,7 +1612,7 @@ const AppContent: React.FC = () => {
         const prevLng = Number(previousGeometry?.coordinates?.[0]);
         const prevLat = Number(previousGeometry?.coordinates?.[1]);
         const moveRemark = `Feature moved from (${Number.isFinite(prevLat) ? prevLat.toFixed(6) : 'n/a'}, ${Number.isFinite(prevLng) ? prevLng.toFixed(6) : 'n/a'}) to (${lat.toFixed(6)}, ${lng.toFixed(6)}) by ${user.email || 'user'} at ${new Date().toISOString()}`;
-        await updateDoc(doc(db, 'features', movingFeature.id), {
+        await updateFeature(movingFeature.id, {
           geometry: nextGeometry,
           moveRemarks: moveRemark,
           ...(isAdmin
@@ -1730,7 +1620,7 @@ const AppContent: React.FC = () => {
                 adminRM: appendAdminRm(latestFeature.adminRM, 'Point moved on map', user.email || 'admin')
               }
             : stampsForUpdatedBy(user, userProfile)),
-          updatedAt: serverTimestamp(),
+          updatedAt: new Date().toISOString(),
           ...(location && {
             collectorLocation: {
               lat: location.lat,
@@ -1748,7 +1638,7 @@ const AppContent: React.FC = () => {
         });
         setMovingFeature(null);
       } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, 'features');
+        console.error('Feature move failed', error);
       }
       return;
     }
@@ -1810,7 +1700,7 @@ const AppContent: React.FC = () => {
         geometry = { type: 'Polygon', coordinates: [[[lng, lat], [lng + 0.001, lat], [lng + 0.001, lat + 0.001], [lng, lat + 0.001], [lng, lat]]] };
       }
 
-      await addDoc(collection(db, 'features'), {
+      await createFeature({
         type: isAddingFeature,
         geometry,
         attributes: {
@@ -1835,7 +1725,7 @@ const AppContent: React.FC = () => {
               )
             }
           : stampsForUpdatedBy(user, userProfile)),
-        updatedAt: serverTimestamp(),
+        updatedAt: new Date().toISOString(),
         ...(location && {
           collectorLocation: {
             lat: location.lat,
@@ -1847,7 +1737,7 @@ const AppContent: React.FC = () => {
 
       setIsAddingFeature(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'features');
+      console.error('Feature create failed', error);
     }
   };
 
@@ -1860,7 +1750,7 @@ const AppContent: React.FC = () => {
 
   const handleCreateFeatureFromEditor = async (payload: { attributes: Record<string, any>; status: 'pending' | 'verified' | 'rejected' }) => {
     if (!user || !selectedFeature) return;
-    await addDoc(collection(db, 'features'), {
+    await createFeature({
       type: selectedFeature.type,
       geometry: selectedFeature.geometry,
       attributes: withBaselineTaskWard(payload.attributes),
@@ -1875,9 +1765,9 @@ const AppContent: React.FC = () => {
             adminRM: appendAdminRm(undefined, 'New landmark point created (admin)', user.email || '')
           }
         : stampsForUpdatedBy(user, userProfile)),
-      updatedAt: serverTimestamp(),
+      updatedAt: new Date().toISOString(),
       ...(payload.status === 'verified' && {
-        verifiedAt: serverTimestamp(),
+        verifiedAt: new Date().toISOString(),
         verifiedBy: user.email || ''
       }),
       ...(location && {
@@ -1924,38 +1814,34 @@ const AppContent: React.FC = () => {
 
       const featureId = fid !== undefined ? `landmark_${fid}` : null;
       if (featureId) {
-        const ref = doc(db, 'features', featureId);
-        await setDoc(
-          ref,
-          {
-            type: 'point',
-            geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
-            attributes,
-            status: 'pending',
-            createdBy: user.email,
-            createdByUid: user.uid,
-            ...(isAdmin
-              ? {
-                  updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
-                  updatedByUid: null,
-                  adminRM: appendAdminRm(
-                    undefined,
-                    'Promoted GeoJSON landmark to editable Firestore record',
-                    user.email || ''
-                  )
-                }
-              : stampsForUpdatedBy(user, userProfile)),
-            updatedAt: serverTimestamp(),
-            ...(location && {
-              collectorLocation: {
-                lat: location.lat,
-                lng: location.lng,
-                accuracy: location.accuracy
+        await createFeature({
+          id: featureId,
+          type: 'point',
+          geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
+          attributes,
+          status: 'pending',
+          createdBy: user.email,
+          createdByUid: user.uid,
+          ...(isAdmin
+            ? {
+                updatedBy: ENUMERATOR_UPDATED_BY_PLACEHOLDER,
+                updatedByUid: null,
+                adminRM: appendAdminRm(
+                  undefined,
+                  'Promoted GeoJSON landmark to editable record',
+                  user.email || ''
+                )
               }
-            })
-          },
-          { merge: true }
-        );
+            : stampsForUpdatedBy(user, userProfile)),
+          updatedAt: new Date().toISOString(),
+          ...(location && {
+            collectorLocation: {
+              lat: location.lat,
+              lng: location.lng,
+              accuracy: location.accuracy
+            }
+          })
+        });
 
         handleMapFeatureSelect({
           id: featureId,
@@ -1972,7 +1858,7 @@ const AppContent: React.FC = () => {
         return;
       }
 
-      const docRef = await addDoc(collection(db, 'features'), {
+      const created = await createFeature({
         type: 'point',
         geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
         attributes,
@@ -1985,12 +1871,12 @@ const AppContent: React.FC = () => {
               updatedByUid: null,
               adminRM: appendAdminRm(
                 undefined,
-                'Promoted GeoJSON landmark to editable Firestore record',
+                'Promoted GeoJSON landmark to editable record',
                 user.email || ''
               )
             }
           : stampsForUpdatedBy(user, userProfile)),
-        updatedAt: serverTimestamp(),
+        updatedAt: new Date().toISOString(),
         ...(location && {
           collectorLocation: {
             lat: location.lat,
@@ -2001,7 +1887,7 @@ const AppContent: React.FC = () => {
       });
 
       handleMapFeatureSelect({
-        id: docRef.id,
+        id: created.id,
         type: 'point',
         geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
         attributes,
@@ -2013,7 +1899,7 @@ const AppContent: React.FC = () => {
         updatedAt: new Date().toISOString()
       } as GeoFeature);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'features');
+      console.error('Landmark promote failed', error);
     }
   };
 
@@ -2039,13 +1925,13 @@ const AppContent: React.FC = () => {
       const undoLat = Number(lastMovedPoint.previousGeometry?.coordinates?.[1]);
       const undoRemark = `Move undone to (${Number.isFinite(undoLat) ? undoLat.toFixed(6) : 'n/a'}, ${Number.isFinite(undoLng) ? undoLng.toFixed(6) : 'n/a'}) by ${user.email || 'user'} at ${new Date().toISOString()}`;
       const prevSnap = features.find((f) => f.id === lastMovedPoint.featureId);
-      await updateDoc(doc(db, 'features', lastMovedPoint.featureId), {
+      await updateFeature(lastMovedPoint.featureId, {
         geometry: lastMovedPoint.previousGeometry,
         moveRemarks: undoRemark,
         ...(isAdmin
           ? { adminRM: appendAdminRm(prevSnap?.adminRM, 'Point move undone', user.email || 'admin') }
           : stampsForUpdatedBy(user, userProfile)),
-        updatedAt: serverTimestamp()
+        updatedAt: new Date().toISOString()
       });
       setSelectedFeature((prev) =>
         prev && prev.id === lastMovedPoint.featureId
@@ -2054,7 +1940,7 @@ const AppContent: React.FC = () => {
       );
       setLastMovedPoint(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'features');
+      console.error('Undo move failed', error);
     }
   };
 

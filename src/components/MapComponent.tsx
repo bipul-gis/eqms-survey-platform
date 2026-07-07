@@ -9,8 +9,7 @@ import {
 } from '../lib/slumFeatureFields';
 import { useGeoLocation } from './GeoLocationProvider';
 import { useAuth } from './AuthProvider';
-import { db } from '../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { geosurveyApi } from '../lib/geosurveyApi';
 import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
 import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../lib/wardGeometry';
 import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
@@ -668,17 +667,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [landmarkIconScale]);
 
   const syncLandmarkScaleToFirestore = useCallback(async (clamped: number) => {
-    if (!user) return;
+    if (!userProfile?.uid) return;
     try {
-      await setDoc(
-        doc(db, 'users', user.uid),
-        { landmarkIconScale: clamped },
-        { merge: true }
-      );
+      await geosurveyApi.updateUser(userProfile.uid, { landmarkIconScale: clamped });
     } catch (e) {
       console.error('Failed to persist landmark icon scale', e);
     }
-  }, [user]);
+  }, [userProfile?.uid]);
 
   const bumpLandmarkScale = useCallback(
     (delta: number) => {

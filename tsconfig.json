@@ -1,5 +1,5 @@
 {
-  "exclude": ["functions", "dist", "node_modules"],
+  "exclude": ["functions", "dist", "node_modules", "scripts"],
   "compilerOptions": {
     "target": "ES2022",
     "experimentalDecorators": true,

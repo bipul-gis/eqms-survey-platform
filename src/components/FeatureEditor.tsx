@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { GeoFeature, FeatureStatus, type FeatureType } from '../types';
 import { X, Save, MapPin, User, Clock, CheckCircle, AlertCircle } from 'lucide-react';
-import { doc, updateDoc, deleteDoc, deleteField, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   isTrivialWardValue,
   landmarkWardFromProperties,
@@ -21,6 +19,7 @@ import { useGeoLocation } from './GeoLocationProvider';
 import { formatChangeAtReadable } from '../lib/formatChangeAt';
 import { appendAdminRm } from '../lib/adminRm';
 import { stampsForUpdatedBy } from '../lib/featureUpdatedBy';
+import { updateFeature } from '../lib/featuresApi';
 
 // Match the attribute order in MapComponent popup (FID / Zone hidden but still stored on save)
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
@@ -265,20 +264,6 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     return true;
   };
 
-  const isOfflineClient = () => typeof navigator !== 'undefined' && navigator.onLine === false;
-
-  const runWrite = async (writeOp: () => Promise<void>) => {
-    const p = writeOp();
-    if (isOfflineClient()) {
-      // Do not block UI while offline; Firestore local cache keeps the write queued for auto-sync.
-      void p.catch((error) => {
-        console.error('Queued offline write failed:', error);
-      });
-      return;
-    }
-    await p;
-  };
-
   const handleStatusClick = (s: FeatureStatus) => {
     if (!isAdmin && s === 'rejected') return;
     if (!isAdmin && s === 'verified') {
@@ -336,15 +321,14 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
         if (!onCreateFeature) {
           throw new Error('Create feature handler is missing.');
         }
-        await runWrite(() => onCreateFeature({ attributes: attributesToSave, status: nextStatus }));
+        await onCreateFeature({ attributes: attributesToSave, status: nextStatus });
       } else {
-        const featureRef = doc(db, 'features', feature.id);
         const sharedPayload = {
           attributes: attributesToSave,
           status: nextStatus,
-          updatedAt: serverTimestamp(),
+          updatedAt: new Date().toISOString(),
           ...(verificationJustApplied && {
-            verifiedAt: serverTimestamp(),
+            verifiedAt: new Date().toISOString(),
             verifiedBy: user.email || ''
           }),
           ...(location && {
@@ -355,31 +339,27 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
             }
           })
         };
-        await runWrite(() =>
-          updateDoc(
-            featureRef,
-            isAdmin
-              ? {
-                  ...sharedPayload,
-                  adminRM: appendAdminRm(feature.adminRM, 'Attribute / QC update (admin profile)', user.email || '')
-                }
-              : {
-                  ...sharedPayload,
-                  ...stampsForUpdatedBy(user, userProfile)
-                }
-          )
+        await updateFeature(
+          feature.id,
+          isAdmin
+            ? {
+                ...feature,
+                ...sharedPayload,
+                adminRM: appendAdminRm(feature.adminRM, 'Attribute / QC update (admin profile)', user.email || '')
+              }
+            : {
+                ...feature,
+                ...sharedPayload,
+                ...stampsForUpdatedBy(user, userProfile)
+              }
         );
       }
       onPersistSuccess?.();
       setIsSaving(false);
       onClose();
     } catch (error) {
-      try {
-        handleFirestoreError(error, OperationType.UPDATE, `features/${feature.id}`);
-      } catch (e: any) {
-        console.error('Save feature failed:', e);
-        alert(e?.message || 'Failed to save feature changes');
-      }
+      console.error('Save feature failed:', error);
+      alert(error instanceof Error ? error.message : 'Failed to save feature changes');
       setIsSaving(false);
     }
   };
@@ -395,30 +375,25 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
       }
 
       // Admin and enumerator both reject with mandatory remarks.
-      await runWrite(() =>
-        updateDoc(doc(db, 'features', feature.id), {
-          remarks,
-          status: 'rejected',
-          ...(isAdmin
-            ? {
-                adminRM: appendAdminRm(feature.adminRM, 'Rejected (admin profile)', user.email || '')
-              }
-            : stampsForUpdatedBy(user, userProfile)),
-          updatedAt: serverTimestamp(),
-          ...(feature.status === 'verified'
-            ? { verifiedAt: deleteField(), verifiedBy: deleteField() }
-            : {})
-        })
-      );
+      await updateFeature(feature.id, {
+        ...feature,
+        remarks,
+        status: 'rejected',
+        ...(isAdmin
+          ? {
+              adminRM: appendAdminRm(feature.adminRM, 'Rejected (admin profile)', user.email || '')
+            }
+          : stampsForUpdatedBy(user, userProfile)),
+        updatedAt: new Date().toISOString(),
+        ...(feature.status === 'verified'
+          ? { verifiedAt: null, verifiedBy: null }
+          : {})
+      });
       onPersistSuccess?.();
       onClose();
     } catch (error) {
-      try {
-        handleFirestoreError(error, OperationType.DELETE, `features/${feature.id}`);
-      } catch (e: any) {
-        console.error('Reject feature failed:', e);
-        alert(e?.message || 'Failed to reject feature');
-      }
+      console.error('Reject feature failed:', error);
+      alert(error instanceof Error ? error.message : 'Failed to reject feature');
     }
   };
 

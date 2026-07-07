@@ -1,165 +1,105 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { auth, db } from '../lib/firebase';
-import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { geosurveyApi, setStoredSessionToken, getStoredSessionToken } from '../lib/geosurveyApi';
 import { UserProfile } from '../types';
 import { normalizedFullName } from '../lib/userDisplayName';
 
+export interface AuthUser {
+  uid: string;
+  email: string;
+  displayName?: string;
+}
+
 interface AuthContextType {
-  user: User | null;
+  user: AuthUser | null;
   userProfile: UserProfile | null;
   loading: boolean;
   login: (email: string, pass: string) => Promise<void>;
   logout: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let userProfileUnsubscribe: (() => void) | null = null;
-
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-
-      if (!user) {
-        if (userProfileUnsubscribe) userProfileUnsubscribe();
-        userProfileUnsubscribe = null;
-        setUserProfile(null);
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      const isWhitelistedAdmin =
-        user.email === 'bipul.paul@eqmscl.com' ||
-        user.email === 'admin@ccc.gov.bd';
-
-      // Stop any previous listener (if the auth state changes).
-      if (userProfileUnsubscribe) userProfileUnsubscribe();
-
-      const userDocRef = doc(db, 'users', user.uid);
-
-      // Optimistic profile so UI doesn't "Checking your access" for a long time.
-      const optimisticProfile: UserProfile = {
-        uid: user.uid,
-        email: user.email || '',
-        displayName:
-          normalizedFullName(user.displayName || undefined, user.email || '').trim() || 'User',
-        role: isWhitelistedAdmin ? 'admin' : 'enumerator',
-        status: isWhitelistedAdmin ? 'approved' : 'pending'
-      };
-      // Keep last profile (or optimistic) so offline saves still work while
-      // Firestore reconnects — never clear to null mid-session.
-      setUserProfile((prev) => (prev?.uid === user.uid ? prev : optimisticProfile));
-
-      // Listen for admin approvals / status changes in real-time.
-      let initializedDoc = false;
-      userProfileUnsubscribe = onSnapshot(
-        userDocRef,
-        (snap) => {
-          if (!snap.exists()) {
-            // Create the doc once if missing (e.g. first login).
-            if (initializedDoc) return;
-            initializedDoc = true;
-
-            void (async () => {
-              try {
-                let blocked = false;
-                try {
-                  const deletedByUidSnap = await getDoc(doc(db, 'deleted_users', user.uid));
-                  const emailKey = user.email
-                    ? encodeURIComponent(user.email.trim().toLowerCase())
-                    : null;
-                  const deletedByEmailSnap = emailKey
-                    ? await getDoc(doc(db, 'deleted_user_emails', emailKey))
-                    : null;
-                  blocked = deletedByUidSnap.exists() || Boolean(deletedByEmailSnap?.exists());
-                } catch (deletedCheckErr) {
-                  // Missing rules or offline — still create the profile so admins can approve.
-                  console.warn('AuthProvider: deleted-user check skipped', deletedCheckErr);
-                }
-
-                if (blocked) {
-                  const blockedProfile: UserProfile = {
-                    ...optimisticProfile,
-                    role: 'enumerator',
-                    status: 'rejected'
-                  };
-                  setUserProfile(blockedProfile);
-                  setLoading(false);
-                  await signOut(auth);
-                  return;
-                }
-
-                await setDoc(userDocRef, optimisticProfile);
-                setUserProfile(optimisticProfile);
-                setLoading(false);
-              } catch (e) {
-                console.error('AuthProvider: failed creating user doc', e);
-                setUserProfile(optimisticProfile);
-                setLoading(false);
-              }
-            })();
-            return;
-          }
-
-          const profile = snap.data() as UserProfile;
-
-          if (isWhitelistedAdmin) {
-            const updatedProfile: UserProfile = { ...profile, role: 'admin', status: 'approved' };
-            if (profile.role !== 'admin' || profile.status !== 'approved') {
-              void setDoc(userDocRef, updatedProfile);
-            }
-            setUserProfile(updatedProfile);
-            setLoading(false);
-          } else {
-            setUserProfile(profile);
-            setLoading(false);
-          }
-        },
-        (err) => {
-          console.error('AuthProvider: onSnapshot user doc failed', err);
-          void (async () => {
-            try {
-              const snap = await getDoc(userDocRef);
-              if (snap.exists()) {
-                setUserProfile(snap.data() as UserProfile);
-              } else {
-                await setDoc(userDocRef, optimisticProfile);
-                setUserProfile(optimisticProfile);
-              }
-            } catch (recoverErr) {
-              console.warn('AuthProvider: profile recovery failed', recoverErr);
-              setUserProfile(optimisticProfile);
-            } finally {
-              setLoading(false);
-            }
-          })();
-        }
-      );
+  const applySession = useCallback((profile: UserProfile, token: string) => {
+    setStoredSessionToken(token);
+    setUser({
+      uid: profile.uid,
+      email: profile.email,
+      displayName: profile.displayName,
     });
-
-    return () => {
-      if (userProfileUnsubscribe) userProfileUnsubscribe();
-      unsubscribe();
-    };
+    setUserProfile(profile);
   }, []);
 
+  const refreshProfile = useCallback(async () => {
+    const token = getStoredSessionToken();
+    if (!token) {
+      setUser(null);
+      setUserProfile(null);
+      return;
+    }
+    const session = await geosurveyApi.session();
+    applySession(session.profile, session.sessionToken);
+  }, [applySession]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const token = getStoredSessionToken();
+        if (!token) {
+          if (!cancelled) setLoading(false);
+          return;
+        }
+        const session = await geosurveyApi.session();
+        if (!cancelled) {
+          applySession(session.profile, session.sessionToken);
+        }
+      } catch {
+        setStoredSessionToken(null);
+        if (!cancelled) {
+          setUser(null);
+          setUserProfile(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applySession]);
+
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+    const interval = window.setInterval(() => {
+      void refreshProfile().catch(() => undefined);
+    }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [userProfile?.uid, refreshProfile]);
+
   const login = async (email: string, pass: string) => {
-    await signInWithEmailAndPassword(auth, email, pass);
+    const session = await geosurveyApi.login(email, pass);
+    applySession(session.profile, session.sessionToken);
   };
 
   const logout = async () => {
-    await signOut(auth);
+    try {
+      await geosurveyApi.logout();
+    } catch {
+      // ignore
+    }
+    setStoredSessionToken(null);
+    setUser(null);
+    setUserProfile(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, userProfile, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, userProfile, loading, login, logout, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );

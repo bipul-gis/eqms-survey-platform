@@ -20,14 +20,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import {
-  collection,
-  onSnapshot,
-  query,
-  where,
-  type Unsubscribe
-} from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { geosurveyApi } from '../lib/geosurveyApi';
 
 export type SurveyLocationLoadMode = 'idle' | 'admin' | 'enumerator';
 
@@ -94,7 +87,7 @@ function normalizeStatus(raw: unknown): 'draft' | 'submitted' | 'reviewed' {
 export function useQuestionnaireSurveyLocations(options: {
   mode: SurveyLocationLoadMode;
   userUid: string | undefined;
-  /** When false, no Firestore listener is attached (admin HH layer off). Default true. */
+  /** When false, no API request is issued (admin HH layer off). Default true. */
   enabled?: boolean;
 }): { locations: SurveyLocationPoint[]; loading: boolean; error: Error | null } {
   const enabled = options.enabled !== false;
@@ -118,25 +111,20 @@ export function useQuestionnaireSurveyLocations(options: {
     setLoading(true);
     setError(null);
 
-    const base = collection(db, 'questionnaireResponses');
-    // Admin sees every response; enumerators are constrained by Firestore
-    // rules to their own respondentId. Matching that constraint here also
-    // saves bandwidth on the enumerator side.
-    const q =
-      options.mode === 'admin'
-        ? base
-        : query(base, where('respondentId', '==', options.userUid));
-
-    const unsub: Unsubscribe = onSnapshot(
-      q,
-      (snap) => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await geosurveyApi.listResponses(
+          options.mode === 'admin' ? undefined : { respondentId: options.userUid }
+        );
+        if (cancelled) return;
         const next: SurveyLocationPoint[] = [];
-        snap.forEach((docSnap) => {
-          const data = docSnap.data() as Record<string, unknown>;
+        for (const item of result.items) {
+          const data = item as Record<string, unknown>;
           const coords = pickLatLng(data);
-          if (!coords) return;
+          if (!coords) continue;
           next.push({
-            id: docSnap.id,
+            id: String(data.id ?? ''),
             lat: coords.lat,
             lng: coords.lng,
             accuracy: coords.accuracy,
@@ -154,21 +142,18 @@ export function useQuestionnaireSurveyLocations(options: {
                 ? (data.location as any).ward
                 : undefined
           });
-        });
+        }
         setLocations(next);
         setLoading(false);
-      },
-      (err) => {
-        // Silent in console-friendly state — the consumer can show a
-        // toast if it wants, but a missing layer shouldn't break the
-        // rest of the map UI.
+      } catch (err) {
+        if (cancelled) return;
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoading(false);
       }
-    );
+    })();
 
     return () => {
-      unsub();
+      cancelled = true;
     };
   }, [enabled, options.mode, options.userUid]);
 

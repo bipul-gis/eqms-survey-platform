@@ -1,6 +1,5 @@
-import { collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from './firebase';
 import { getCached, invalidateCached, setCached } from './firestoreReadCache';
+import { geosurveyApi } from './geosurveyApi';
 import {
   formatDwellingId,
   nextDwellingSequenceFromValues,
@@ -51,27 +50,23 @@ export async function loadDwellingIdValuesForQuestionnaire(
   const cached = getCached<unknown[]>(cacheKey, DWELLING_CACHE_TTL_MS);
   if (cached) return cached;
 
-  const q = respondentId
-    ? query(collection(db, 'questionnaireResponses'), where('respondentId', '==', respondentId))
-    : query(
-        collection(db, 'questionnaireResponses'),
-        where('questionnaireId', '==', questionnaireId)
-      );
-
-  const snap = await getDocs(q);
+  const result = await geosurveyApi.listResponses(
+    respondentId ? { respondentId } : { questionnaireId }
+  );
   const values: unknown[] = [];
-  snap.forEach((docSnap) => {
-    if (excludeResponseId && docSnap.id === excludeResponseId) return;
-    const data = docSnap.data() as {
+  for (const item of result.items) {
+    const data = item as {
+      id?: string;
       questionnaireId?: string;
       responses?: Record<string, unknown>;
       enumeratorInfo?: Record<string, unknown>;
     };
-    if (respondentId && data.questionnaireId !== questionnaireId) return;
+    if (excludeResponseId && data.id === excludeResponseId) continue;
+    if (respondentId && data.questionnaireId !== questionnaireId) continue;
     values.push(
       ...collectDwellingValuesFromPools([data.responses, data.enumeratorInfo], slumId)
     );
-  });
+  }
   setCached(cacheKey, values);
   return values;
 }

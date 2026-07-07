@@ -11,31 +11,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Folder,
-  FolderPlus,
   ChevronRight,
   MapPin,
   ClipboardList,
-  Edit3,
-  Trash2,
-  X,
   AlertCircle,
   RefreshCw,
   Search,
-  Archive,
-  ArchiveRestore,
   Loader2,
+  Info,
   LogOut
 } from 'lucide-react';
 import { Project } from '../types';
 import { AppFooter } from './AppFooter';
-import {
-  countAllQuestionnairesByProject,
-  createProject,
-  deleteProject,
-  ensureDefaultProject,
-  listProjects,
-  updateProject
-} from '../lib/projects';
+import { countAllQuestionnairesByProject, listProjects } from '../lib/projects';
 
 interface ProjectPickerProps {
   currentUserUid: string;
@@ -45,7 +33,6 @@ interface ProjectPickerProps {
 }
 
 export const ProjectPicker: React.FC<ProjectPickerProps> = ({
-  currentUserUid,
   currentUserName,
   onOpen,
   onSignOut
@@ -55,19 +42,12 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [showArchived, setShowArchived] = useState(false);
-  const [editing, setEditing] = useState<Project | 'new' | null>(null);
   const [counts, setCounts] = useState<Record<string, number>>({});
 
   const refresh = async () => {
     try {
       setLoading(true);
       setError(null);
-      // First, ensure the canonical default project exists. This is idempotent.
-      await ensureDefaultProject(currentUserUid);
-      // Run the project list + per-project questionnaire counts concurrently.
-      // The counts are now derived from a single `getDocs` of all questionnaires
-      // instead of N per-project queries — eliminates the linear-with-projects
-      // round-trip penalty on the picker.
       const [list, countMap] = await Promise.all([
         listProjects(),
         countAllQuestionnairesByProject().catch(() => ({} as Record<string, number>))
@@ -97,42 +77,6 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           : true
       );
   }, [projects, search, showArchived]);
-
-  const handleArchive = async (p: Project) => {
-    if (!confirm(`Archive "${p.name}"?\nIt will be hidden from the default project list.`))
-      return;
-    try {
-      await updateProject(p.id, { isActive: false });
-      await refresh();
-    } catch (e) {
-      alert(`Failed to archive: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-
-  const handleRestore = async (p: Project) => {
-    try {
-      await updateProject(p.id, { isActive: true });
-      await refresh();
-    } catch (e) {
-      alert(`Failed to restore: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-
-  const handleDelete = async (p: Project) => {
-    if (
-      !confirm(
-        `Permanently DELETE "${p.name}"?\nThis only removes the project record. ` +
-          `Existing questionnaires/responses keep their projectId reference.`
-      )
-    )
-      return;
-    try {
-      await deleteProject(p.id);
-      await refresh();
-    } catch (e) {
-      alert(`Failed to delete: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
 
   return (
     <div className="min-h-[100dvh] bg-gradient-to-br from-slate-50 to-blue-50/40 flex flex-col">
@@ -180,17 +124,14 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           <div>
             <h2 className="text-xl sm:text-2xl font-bold text-slate-800">Projects</h2>
             <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Each project is a self-contained engagement. Geospatial wards,
-              questionnaires, and enumerator task assignments are scoped to
-              the project you open.
+              Projects are managed in MIS. Use this list to search and open a
+              project for its geospatial and questionnaire workspaces.
             </p>
           </div>
-          <button
-            onClick={() => setEditing('new')}
-            className="text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg flex items-center gap-2 shadow-md shadow-blue-200"
-          >
-            <FolderPlus size={16} /> New Project
-          </button>
+          <div className="inline-flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 max-w-md">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            <span>Projects are read-only here and managed in MIS.</span>
+          </div>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap mb-5">
@@ -240,11 +181,7 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
             <p className="text-sm font-semibold text-slate-700">
               {showArchived ? 'No archived projects.' : 'No projects yet.'}
             </p>
-            {!showArchived && (
-              <p className="text-xs text-slate-500 mt-1">
-                Click "New Project" to create one.
-              </p>
-            )}
+            {!showArchived && <p className="text-xs text-slate-500 mt-1">Create projects in MIS.</p>}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -254,10 +191,6 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
                 project={p}
                 questionnaireCount={counts[p.id] ?? 0}
                 onOpen={() => onOpen(p)}
-                onEdit={() => setEditing(p)}
-                onArchive={() => void handleArchive(p)}
-                onRestore={() => void handleRestore(p)}
-                onDelete={() => void handleDelete(p)}
               />
             ))}
           </div>
@@ -265,18 +198,6 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
       </main>
 
       <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
-
-      {editing && (
-        <ProjectEditorDialog
-          existing={editing === 'new' ? null : editing}
-          currentUserUid={currentUserUid}
-          onClose={() => setEditing(null)}
-          onSaved={async () => {
-            setEditing(null);
-            await refresh();
-          }}
-        />
-      )}
     </div>
   );
 };
@@ -289,11 +210,7 @@ const ProjectCard: React.FC<{
   project: Project;
   questionnaireCount: number;
   onOpen: () => void;
-  onEdit: () => void;
-  onArchive: () => void;
-  onRestore: () => void;
-  onDelete: () => void;
-}> = ({ project, questionnaireCount, onOpen, onEdit, onArchive, onRestore, onDelete }) => {
+}> = ({ project, questionnaireCount, onOpen }) => {
   const isArchived = project.isActive === false;
   const segGeo = project.segments?.geospatial !== false;
   const segQ = project.segments?.questionnaire !== false;
@@ -348,196 +265,7 @@ const ProjectCard: React.FC<{
         >
           Open <ChevronRight size={14} />
         </button>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onEdit}
-            className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
-            title="Edit project"
-          >
-            <Edit3 size={13} />
-          </button>
-          {isArchived ? (
-            <button
-              onClick={onRestore}
-              className="p-1.5 rounded hover:bg-emerald-50 text-emerald-700"
-              title="Restore"
-            >
-              <ArchiveRestore size={13} />
-            </button>
-          ) : (
-            <button
-              onClick={onArchive}
-              className="p-1.5 rounded hover:bg-amber-50 text-amber-700"
-              title="Archive"
-            >
-              <Archive size={13} />
-            </button>
-          )}
-          <button
-            onClick={onDelete}
-            className="p-1.5 rounded hover:bg-red-50 text-red-700"
-            title="Delete (record only)"
-          >
-            <Trash2 size={13} />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Editor dialog
-// ---------------------------------------------------------------------------
-
-const ProjectEditorDialog: React.FC<{
-  existing: Project | null;
-  currentUserUid: string;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}> = ({ existing, currentUserUid, onClose, onSaved }) => {
-  const [name, setName] = useState(existing?.name ?? '');
-  const [code, setCode] = useState(existing?.code ?? '');
-  const [description, setDescription] = useState(existing?.description ?? '');
-  const [geospatial, setGeospatial] = useState(existing?.segments?.geospatial !== false);
-  const [questionnaire, setQuestionnaire] = useState(
-    existing?.segments?.questionnaire !== false
-  );
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const save = async () => {
-    if (!name.trim()) {
-      setErr('Project name is required.');
-      return;
-    }
-    if (!geospatial && !questionnaire) {
-      setErr('Enable at least one segment (geospatial or questionnaire).');
-      return;
-    }
-    try {
-      setSaving(true);
-      setErr(null);
-      if (existing) {
-        await updateProject(existing.id, {
-          name: name.trim(),
-          code: code.trim(),
-          description: description.trim(),
-          segments: { geospatial, questionnaire }
-        });
-      } else {
-        await createProject(
-          {
-            name: name.trim(),
-            code: code.trim(),
-            description: description.trim(),
-            segments: { geospatial, questionnaire },
-            isActive: true
-          },
-          currentUserUid
-        );
-      }
-      await onSaved();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[2000] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50">
-          <h3 className="text-sm font-bold text-slate-800">
-            {existing ? 'Edit Project' : 'New Project'}
-          </h3>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-slate-200 text-slate-500"
-          >
-            <X size={16} />
-          </button>
-        </div>
-        <div className="p-5 space-y-3">
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Project Name *
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Consultancy services GPS Technology Assisted Mapping and Listing Exercise"
-              className="w-full text-sm px-3 py-2 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Project Code
-            </label>
-            <input
-              type="text"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="e.g. 20612601105"
-              className="w-full text-sm px-3 py-2 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Description
-            </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              placeholder="Optional notes shown on the project card."
-              className="w-full text-sm px-3 py-2 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3 pt-1">
-            <label className="flex items-center gap-2 text-xs text-slate-700 px-3 py-2 border border-slate-200 rounded-md cursor-pointer">
-              <input
-                type="checkbox"
-                checked={geospatial}
-                onChange={(e) => setGeospatial(e.target.checked)}
-              />
-              <MapPin size={13} className="text-blue-600" />
-              Geospatial Survey
-            </label>
-            <label className="flex items-center gap-2 text-xs text-slate-700 px-3 py-2 border border-slate-200 rounded-md cursor-pointer">
-              <input
-                type="checkbox"
-                checked={questionnaire}
-                onChange={(e) => setQuestionnaire(e.target.checked)}
-              />
-              <ClipboardList size={13} className="text-emerald-600" />
-              Questionnaire Survey
-            </label>
-          </div>
-          {err && (
-            <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">
-              {err}
-            </p>
-          )}
-        </div>
-        <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-end gap-2 bg-slate-50">
-          <button
-            onClick={onClose}
-            className="text-xs font-semibold px-3 py-2 rounded-md text-slate-600 hover:bg-slate-100"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => void save()}
-            disabled={saving}
-            className="text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md disabled:opacity-50 inline-flex items-center gap-1.5"
-          >
-            {saving && <Loader2 size={13} className="animate-spin" />}
-            {existing ? 'Save changes' : 'Create project'}
-          </button>
-        </div>
+        <span className="text-[11px] font-medium text-slate-500">Managed in MIS</span>
       </div>
     </div>
   );

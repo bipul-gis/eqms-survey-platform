@@ -90,16 +90,10 @@ import {
   CornerUpLeft
 } from 'lucide-react';
 import {
-  collection,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  getDocs,
-  query,
-  serverTimestamp
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+  handleFirestoreError,
+  OperationType
+} from '../lib/firebase';
+import { geosurveyApi } from '../lib/geosurveyApi';
 
 // Lazy: QuestionnaireResponsesView pulls in the CSV export helpers and a
 // fairly large response table. Keep it out of the initial chunk so admins
@@ -329,10 +323,8 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
     try {
       setLoading(true);
       setFetchError(null);
-      const q = query(collection(db, 'questionnaires'));
-      const snap = await getDocs(q);
-      const list: Questionnaire[] = [];
-      snap.forEach((d) => list.push({ ...(d.data() as Questionnaire), id: d.id }));
+      const result = await geosurveyApi.listQuestionnaires();
+      const list = result.items as unknown as Questionnaire[];
       // Sort newest first by `updatedAt` — values may be Firestore Timestamps,
       // ISO strings, or pending serverTimestamp placeholders; `toMillis` handles
       // all of those without throwing (the previous `localeCompare` crash
@@ -370,7 +362,7 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this questionnaire? This cannot be undone.')) return;
     try {
-      await deleteDoc(doc(db, 'questionnaires', id));
+      await geosurveyApi.deleteQuestionnaire(id);
       setQuestionnaires((prev) => prev.filter((q) => q.id !== id));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, 'questionnaires');
@@ -381,19 +373,18 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
     try {
       const { id: _omit, ...rest } = q;
       void _omit;
+      const now = new Date().toISOString();
       const dup = {
         ...rest,
         title: `${q.title} (Copy)`,
         isActive: false,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        createdAt: now,
+        updatedAt: now
       };
-      const ref = await addDoc(collection(db, 'questionnaires'), dup);
+      const ref = await geosurveyApi.saveQuestionnaire(dup as Record<string, unknown>);
       const created: Questionnaire = {
-        ...(dup as unknown as Questionnaire),
-        id: ref.id,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        ...(ref as unknown as Questionnaire),
+        id: String((ref as { id?: string }).id ?? '')
       };
       setQuestionnaires((prev) => [created, ...prev]);
     } catch (error) {
@@ -403,9 +394,10 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
 
   const toggleActive = async (q: Questionnaire) => {
     try {
-      await updateDoc(doc(db, 'questionnaires', q.id), {
+      await geosurveyApi.saveQuestionnaire({
+        ...q,
         isActive: !q.isActive,
-        updatedAt: serverTimestamp()
+        updatedAt: new Date().toISOString()
       });
       setQuestionnaires((prev) =>
         prev.map((x) => (x.id === q.id ? { ...x, isActive: !x.isActive } : x))
@@ -1045,16 +1037,16 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         settings,
         isActive: nextIsActive,
         createdBy: user.uid,
-        updatedAt: serverTimestamp(),
-        ...(persistedId ? {} : { createdAt: serverTimestamp() })
+        updatedAt: new Date().toISOString(),
+        ...(persistedId ? {} : { createdAt: new Date().toISOString() })
       }) as Record<string, unknown>;
       if (persistedId) {
-        await updateDoc(doc(db, 'questionnaires', persistedId), payload);
+        await geosurveyApi.saveQuestionnaire({ ...payload, id: persistedId });
       } else {
-        const created = await addDoc(collection(db, 'questionnaires'), payload);
+        const created = await geosurveyApi.saveQuestionnaire(payload);
         // Remember the new doc id so subsequent "Save" clicks update
         // the same row instead of inserting clones.
-        setPersistedId(created.id);
+        setPersistedId(String((created as { id?: string }).id ?? ''));
       }
       // Reflect the new publish state locally so the badge in the
       // toolbar updates immediately (otherwise "Active" / "Draft"

@@ -25,9 +25,7 @@ import {
   Trash2,
   Plus
 } from 'lucide-react';
-import { collection, deleteDoc, doc, getDoc, query, where } from 'firebase/firestore';
-import { commitFirestoreWrite, getDocsOfflineFriendly } from '../lib/offlineFirestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { geosurveyApi } from '../lib/geosurveyApi';
 import { Project, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
 import { useAuth } from './AuthProvider';
 import { QuestionnaireForm } from './QuestionnaireForm';
@@ -121,15 +119,10 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     setLoading(true);
     void (async () => {
       try {
-        const docs = await Promise.all(
-          assignedIds.map((id) => getDoc(doc(db, 'questionnaires', id)))
-        );
+        const result = await geosurveyApi.listQuestionnaires();
         if (cancelled) return;
-        const list: Questionnaire[] = [];
-        for (const snap of docs) {
-          if (!snap.exists()) continue;
-          list.push({ ...(snap.data() as Questionnaire), id: snap.id });
-        }
+        const assignedSet = new Set(assignedIds);
+        const list = (result.items as unknown as Questionnaire[]).filter((item) => assignedSet.has(item.id));
         list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
         setQuestionnaires(list);
         setError(null);
@@ -163,14 +156,12 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     let cancelled = false;
     void (async () => {
       try {
-        const docs = await Promise.all(
-          ids.map((id: string) => getDoc(doc(db, 'projects', id)))
-        );
+        const result = await geosurveyApi.listMisProjects();
         if (cancelled) return;
         const next: Record<string, Project> = {};
-        for (const snap of docs) {
-          if (!snap.exists()) continue;
-          next[snap.id] = { ...(snap.data() as Project), id: snap.id };
+        for (const project of result.items) {
+          if (!ids.includes(project.id)) continue;
+          next[project.id] = project;
         }
         setProjects(next);
       } catch (err) {
@@ -194,20 +185,14 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     let cancelled = false;
     const run = async () => {
       try {
-        const q = query(
-          collection(db, 'questionnaireResponses'),
-          where('respondentId', '==', user.uid)
-        );
-        const snap = await getDocsOfflineFriendly(q);
-
         // Bucket by questionnaireId.
+        const result = await geosurveyApi.listResponses({ respondentId: user.uid });
         const buckets: Record<string, QuestionnaireResponse[]> = {};
-        snap.forEach((d) => {
-          const data = d.data() as QuestionnaireResponse;
+        for (const data of result.items as unknown as QuestionnaireResponse[]) {
           const qid = data.questionnaireId;
-          if (!qid) return;
-          (buckets[qid] = buckets[qid] || []).push({ ...data, id: d.id });
-        });
+          if (!qid) continue;
+          (buckets[qid] = buckets[qid] || []).push(data);
+        }
 
         const next: Record<string, QuestionnaireStats> = {};
         for (const [qid, list] of Object.entries(buckets)) {
@@ -270,7 +255,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     let draft = 0;
     let submitted = 0;
     let reviewed = 0;
-    for (const s of Object.values(responseStats)) {
+    for (const s of Object.values(responseStats) as QuestionnaireStats[]) {
       draft += s.draft;
       submitted += s.submitted;
       reviewed += s.reviewed;
@@ -298,9 +283,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     }
     if (!confirm('Delete this draft? This cannot be undone.')) return;
     try {
-      await commitFirestoreWrite(() =>
-        deleteDoc(doc(db, 'questionnaireResponses', r.id))
-      );
+      await geosurveyApi.deleteResponse(r.id);
       if (user?.uid && r.questionnaireId) {
         try {
           const key = `qc-draft:${user.uid}:${r.questionnaireId}`;
@@ -314,16 +297,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       setRefreshTick((t) => t + 1);
     } catch (err) {
       console.error('Delete draft failed:', err);
-      try {
-        handleFirestoreError(err, OperationType.DELETE, 'questionnaireResponses');
-      } catch (logged) {
-        const msg = logged instanceof Error ? logged.message : String(logged);
-        alert(
-          msg.includes('permission') || msg.includes('Permission')
-            ? 'Could not delete this draft. If you are offline, try again when connected — or ask an admin to remove it.'
-            : `Could not delete draft: ${msg}`
-        );
-      }
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Could not delete draft: ${msg}`);
     }
   };
 

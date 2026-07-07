@@ -1,35 +1,48 @@
 import { useEffect, useState } from 'react';
-import { collection, onSnapshot, query, QueryConstraint } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { geosurveyApi } from '../lib/geosurveyApi';
 
-export function useFirestoreCollection<T>(collectionPath: string, ...queryConstraints: QueryConstraint[]) {
+export function useFirestoreCollection<T>(collectionPath: string) {
   const [data, setData] = useState<T[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const q = query(collection(db, collectionPath), ...queryConstraints);
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as T[];
-      setData(items);
-      setLoading(false);
-    }, (err) => {
-      setError(err);
-      setLoading(false);
-      // Avoid crashing the React tree on permission/auth transient errors.
-      // The caller can read `error` and decide what to render.
+    let cancelled = false;
+    const load = async () => {
       try {
-        handleFirestoreError(err, OperationType.GET, collectionPath);
-      } catch (e) {
-        console.error('useFirestoreCollection listener error:', e);
+        setLoading(true);
+        let items: T[] = [];
+        if (collectionPath === 'users') {
+          const res = await geosurveyApi.listUsers();
+          items = res.items as T[];
+        } else if (collectionPath === 'questionnaires') {
+          const res = await geosurveyApi.listQuestionnaires();
+          items = res.items as T[];
+        } else if (collectionPath === 'questionnaireResponses') {
+          const res = await geosurveyApi.listResponses();
+          items = res.items as T[];
+        } else if (collectionPath === 'features') {
+          const res = await geosurveyApi.listFeatures();
+          items = res.items as T[];
+        }
+        if (!cancelled) {
+          setData(items);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err : new Error(String(err)));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    });
-
-    return unsubscribe;
+    };
+    void load();
+    const interval = window.setInterval(() => void load(), 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [collectionPath]);
 
   return { data, loading, error };

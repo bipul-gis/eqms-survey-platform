@@ -1,17 +1,5 @@
 import React, { Suspense, useEffect, useMemo, useState } from 'react';
-import {
-  collection,
-  getDocs,
-  getDoc,
-  query,
-  where,
-  doc,
-  updateDoc,
-  deleteDoc,
-  serverTimestamp,
-  writeBatch
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { geosurveyApi } from '../lib/geosurveyApi';
 import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
@@ -114,28 +102,15 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     try {
       setLoading(true);
       setFetchError(null);
-      const qRef = query(
-        collection(db, 'questionnaireResponses'),
-        where('questionnaireId', '==', questionnaire.id)
-      );
-      const usersQ = query(collection(db, 'users'), where('status', '==', 'approved'));
-      const titlesQ = query(
-        collection(db, 'questionnaires'),
-        where('projectId', '==', projectId)
-      );
-      const questionnaireRef = doc(db, 'questionnaires', questionnaire.id);
-
-      const [snap, usersSnap, titlesSnap, questionnaireSnap] = await Promise.all([
-        getDocs(qRef),
-        getDocs(usersQ),
-        getDocs(titlesQ),
-        getDoc(questionnaireRef)
+      const [responsesResult, usersResult, titlesResult, questionnaireResult] = await Promise.all([
+        geosurveyApi.listResponses({ questionnaireId: questionnaire.id }),
+        geosurveyApi.listUsers(),
+        geosurveyApi.listQuestionnaires(projectId),
+        geosurveyApi.listQuestionnaires()
       ]);
 
       const list: QuestionnaireResponse[] = [];
-      snap.forEach((d) =>
-        list.push({ ...(d.data() as QuestionnaireResponse), id: d.id })
-      );
+      for (const item of responsesResult.items) list.push(item as unknown as QuestionnaireResponse);
       list.sort((a, b) => {
         const ta = tsToDate(a.submittedAt)?.getTime() ?? 0;
         const tb = tsToDate(b.submittedAt)?.getTime() ?? 0;
@@ -143,32 +118,28 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       });
       setResponses(list);
 
-      if (questionnaireSnap.exists()) {
-        setQuestionnaire({
-          ...(questionnaireSnap.data() as Questionnaire),
-          id: questionnaireSnap.id
-        });
+      const liveQuestionnaire = (questionnaireResult.items as unknown as Questionnaire[]).find((q) => q.id === questionnaire.id);
+      if (liveQuestionnaire) {
+        setQuestionnaire(liveQuestionnaire);
       }
 
       const titleMap: Record<string, string> = {};
-      titlesSnap.forEach((d) => {
-        const data = d.data() as Questionnaire;
-        titleMap[d.id] = (data.title || '').trim() || d.id;
-      });
+      for (const item of titlesResult.items as unknown as Questionnaire[]) {
+        titleMap[item.id] = (item.title || '').trim() || item.id;
+      }
       setQuestionnaireTitleById(titleMap);
 
       const byEmail = new Map<
         string,
         { key: string; name: string; email?: string; slumIds: string[]; questionnaireIds: string[] }
       >();
-      usersSnap.forEach((docSnap) => {
-        const data = docSnap.data() as UserProfile;
-        if (data.role !== 'enumerator') return;
+      for (const data of usersResult.items as UserProfile[]) {
+        if (data.role !== 'enumerator') continue;
         const qids = data.assignedQuestionnaireIds || [];
-        if (!qids.includes(questionnaire.id)) return;
+        if (!qids.includes(questionnaire.id)) continue;
         const email = (data.email || '').trim();
         const emailKey = email.toLowerCase();
-        if (!emailKey) return;
+        if (!emailKey) continue;
         const slumIds = assignedSlumsForProject(data, projectId);
         const questionnaireIds = [
           ...new Set((qids || []).map((id) => String(id).trim()).filter(Boolean))
@@ -188,7 +159,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
             ...new Set([...existing.questionnaireIds, ...questionnaireIds])
           ].sort();
         }
-      });
+      }
       setTaskedEnumerators(
         Array.from(byEmail.values()).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
       );
@@ -445,9 +416,10 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   const markReviewed = async (r: QuestionnaireResponse) => {
     if (!user) return;
     try {
-      await updateDoc(doc(db, 'questionnaireResponses', r.id), {
+      await geosurveyApi.saveResponse({
+        ...r,
         status: 'reviewed',
-        reviewedAt: serverTimestamp(),
+        reviewedAt: new Date().toISOString(),
         reviewedBy: user.email || user.uid
       });
       await fetchResponses();
@@ -459,18 +431,18 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         });
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'questionnaireResponses');
+      alert(error instanceof Error ? error.message : 'Failed to mark response reviewed');
     }
   };
 
   const handleDelete = async (r: QuestionnaireResponse) => {
     if (!confirm('Delete this response? This cannot be undone.')) return;
     try {
-      await deleteDoc(doc(db, 'questionnaireResponses', r.id));
+      await geosurveyApi.deleteResponse(r.id);
       setResponses((prev) => prev.filter((x) => x.id !== r.id));
       if (selected?.id === r.id) setSelected(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'questionnaireResponses');
+      alert(error instanceof Error ? error.message : 'Failed to delete response');
     }
   };
 
@@ -489,16 +461,10 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     setDeleteAllProgress({ done: 0, total: responses.length });
     try {
       const ids = responses.map((r) => r.id);
-      const chunkSize = 400;
       let done = 0;
-      for (let i = 0; i < ids.length; i += chunkSize) {
-        const slice = ids.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
-        for (const id of slice) {
-          batch.delete(doc(db, 'questionnaireResponses', id));
-        }
-        await batch.commit();
-        done += slice.length;
+      for (const id of ids) {
+        await geosurveyApi.deleteResponse(id);
+        done += 1;
         setDeleteAllProgress({ done, total: ids.length });
       }
       setResponses([]);
@@ -506,7 +472,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       setShowDeleteAll(false);
       setDeleteAllConfirmText('');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'questionnaireResponses');
+      alert(error instanceof Error ? error.message : 'Failed to delete all responses');
     } finally {
       setDeletingAll(false);
       setDeleteAllProgress(null);

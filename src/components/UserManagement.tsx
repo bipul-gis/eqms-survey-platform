@@ -17,15 +17,10 @@ import {
   Folder
 } from 'lucide-react';
 import { fetchLandmarkGeoJson } from '../lib/landmarkGeoJson';
-
-import { initializeApp } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, deleteField, deleteDoc } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
-import { db } from '../lib/firebase';
 import { Project, Questionnaire, UserProfile } from '../types';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { findSlumById, getAllSlums, slumDisplayLabel, SlumRecord } from '../lib/slumRegistry';
+import { geosurveyApi } from '../lib/geosurveyApi';
 
 type EnumeratorEntry = {
   email: string;
@@ -509,6 +504,11 @@ export const UserManagement: React.FC<{
   const [manageTabSearch, setManageTabSearch] = useState('');
   const [tasksTabSearch, setTasksTabSearch] = useState('');
 
+  const loadUsers = async () => {
+    const { items } = await geosurveyApi.listUsers();
+    return items as UserProfile[];
+  };
+
   const wardNameOptions = useMemo(
     () =>
       [...landmarkWardOptions].sort((a, b) => {
@@ -607,108 +607,91 @@ export const UserManagement: React.FC<{
     [activeEnumerators, tasksTabSearch]
   );
 
-  useEffect(() => {
-    // Subscribe to questionnaires belonging to the active project. Server-side
-    // filter via `where projectId == targetId` so we don't stream the entire
-    // /questionnaires collection. The default project also picks up legacy
-    // questionnaires (`projectId` missing) via a second subscription.
-    const targetProjectId = project?.id;
-    if (!targetProjectId) {
-      setProjectQuestionnaires([]);
-      return;
-    }
+  const refreshAll = async () => {
+    try {
+      const [allUsersResult, questionnairesResult] = await Promise.all([
+        loadUsers(),
+        geosurveyApi.listQuestionnaires()
+      ]);
+      const allUsers = allUsersResult
+        .filter((data) => !data.role || data.role === 'enumerator')
+        .map((data) => ({
+          ...data,
+          role: data.role || 'enumerator',
+          status: data.status || 'pending'
+        }));
 
-    const merged: Record<string, Questionnaire> = {};
-    const setMergedList = () => {
-      const list = Object.values(merged).sort((a, b) =>
-        (a.title || '').localeCompare(b.title || '')
-      );
-      setProjectQuestionnaires(list);
-    };
+      setPendingUsers(allUsers.filter((u) => u.status === 'pending'));
 
-    const unsubs: Array<() => void> = [];
-
-    // Primary: questionnaires explicitly tagged with this project.
-    unsubs.push(
-      onSnapshot(
-        query(collection(db, 'questionnaires'), where('projectId', '==', targetProjectId)),
-        (snap) => {
-          for (const d of snap.docChanges()) {
-            if (d.type === 'removed') {
-              delete merged[d.doc.id];
-            } else {
-              merged[d.doc.id] = { ...(d.doc.data() as Questionnaire), id: d.doc.id };
-            }
-          }
-          setMergedList();
-        },
-        (err) => console.error('Error fetching project questionnaires:', err)
-      )
-    );
-
-    // Fallback: when the active project IS the default one, also include any
-    // legacy questionnaires that pre-date `projectId`. We can't filter on
-    // "field missing" in Firestore, so we keep a second subscription that
-    // filters client-side and only fires when we're in the default project.
-    if (targetProjectId === DEFAULT_PROJECT_ID) {
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'questionnaires'),
-          (snap) => {
-            for (const d of snap.docChanges()) {
-              const data = d.doc.data() as Questionnaire;
-              if (data.projectId) continue; // already covered by the primary sub
-              if (d.type === 'removed') {
-                delete merged[d.doc.id];
-              } else {
-                merged[d.doc.id] = { ...data, id: d.doc.id };
-              }
-            }
-            setMergedList();
-          },
-          (err) => console.warn('Error fetching legacy questionnaires:', err)
-        )
-      );
-    }
-
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [project?.id]);
-
-  useEffect(() => {
-    const q = query(collection(db, 'users'), where('status', '==', 'pending'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (querySnapshot) => {
-        const users: UserProfile[] = [];
-        querySnapshot.forEach((docSnap) => {
-          const data = docSnap.data() as UserProfile;
-          if (data.role && data.role !== 'enumerator') return;
-          users.push({
-            ...data,
-            uid: data.uid || docSnap.id,
-            role: data.role || 'enumerator',
-            status: data.status || 'pending'
-          });
-        });
-        setPendingUsers(users);
-        // Clear any previous "pending load" errors when we successfully load data.
-        setError(null);
-      },
-      (error) => {
-        console.error('Error fetching pending users:', error);
-        setError(
-          error instanceof Error
-            ? `Failed to load pending approvals: ${error.message}`
-            : `Failed to load pending approvals: ${String(error)}`
-        );
+      const targetProjectId = project?.id;
+      if (!targetProjectId) {
+        setProjectQuestionnaires([]);
+      } else {
+        const qList = (questionnairesResult.items as unknown as Questionnaire[])
+          .filter((it) => {
+            const pid = it.projectId || DEFAULT_PROJECT_ID;
+            return pid === targetProjectId;
+          })
+          .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+        setProjectQuestionnaires(qList);
       }
-    );
 
-    return () => unsubscribe();
-  }, []);
+      const buildEntries = (status: 'approved' | 'rejected') => {
+        const byEmail = new Map<string, EnumeratorEntry>();
+        for (const data of allUsers) {
+          if (data.role !== 'enumerator' || data.status !== status) continue;
+          const emailKey = (data.email || '').trim().toLowerCase();
+          if (!emailKey) continue;
+          const uid = data.uid;
+          const existing = byEmail.get(emailKey);
+          const wn = wardsFromUserProfile(data);
+          const qids = questionnaireIdsFromUserProfile(data);
+          const slumMap = projectSlumAssignmentsFromProfile(data);
+          const projectId = project?.id;
+          if (!existing) {
+            byEmail.set(emailKey, {
+              email: data.email,
+              displayName: data.displayName,
+              mobileNumber: data.mobileNumber,
+              uids: uid ? [uid] : [],
+              assignedWardNames: status === 'approved' ? wn : [],
+              assignedQuestionnaireIds: status === 'approved' ? qids : [],
+              assignedSlumIds: status === 'approved' ? slumIdsForProject(data, projectId) : [],
+              projectSlumAssignments: status === 'approved' ? slumMap : {}
+            });
+            continue;
+          }
+          if (uid && !existing.uids.includes(uid)) existing.uids.push(uid);
+          if (!existing.mobileNumber && data.mobileNumber) existing.mobileNumber = data.mobileNumber;
+          if (status === 'approved') {
+            existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wn])].sort((a, b) => a.localeCompare(b));
+            existing.assignedQuestionnaireIds = [...new Set([...existing.assignedQuestionnaireIds, ...qids])].sort();
+            existing.projectSlumAssignments = mergeProjectSlumAssignmentMaps(existing.projectSlumAssignments, slumMap);
+            existing.assignedSlumIds = slumIdsForProject(
+              { ...data, projectSlumAssignments: existing.projectSlumAssignments },
+              projectId
+            );
+          }
+        }
+        return Array.from(byEmail.values()).sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
+      };
+
+      const approvedEntries = buildEntries('approved');
+      const rejectedEntries = buildEntries('rejected');
+      setActiveEnumerators(approvedEntries);
+      setActiveEnumeratorsCount(approvedEntries.length);
+      setDeactivatedEnumerators(rejectedEntries);
+      setDeactivatedEnumeratorsCount(rejectedEntries.length);
+      setError(null);
+    } catch (error) {
+      console.error('Error loading user management data:', error);
+      setError(error instanceof Error ? error.message : 'Failed to load user data');
+    }
+  };
+
+  useEffect(() => {
+    void refreshAll();
+  }, [project?.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -737,132 +720,13 @@ export const UserManagement: React.FC<{
   }, []);
 
   useEffect(() => {
-    const q = query(collection(db, 'users'), where('status', '==', 'approved'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (querySnapshot) => {
-        const byEmail = new Map<string, EnumeratorEntry>();
-        querySnapshot.forEach((docSnap) => {
-          const data = docSnap.data() as UserProfile;
-          if (data.role !== 'enumerator') return;
-          const emailKey = (data.email || '').trim().toLowerCase();
-          if (!emailKey) return;
-
-          const uid = data.uid || docSnap.id;
-          const existing = byEmail.get(emailKey);
-
-          const wn = wardsFromUserProfile(data);
-          const qids = questionnaireIdsFromUserProfile(data);
-          const slumMap = projectSlumAssignmentsFromProfile(data);
-          const projectId = project?.id;
-
-          if (!existing) {
-            byEmail.set(emailKey, {
-              email: data.email,
-              displayName: data.displayName,
-              mobileNumber: data.mobileNumber,
-              uids: [uid],
-              assignedWardNames: wn,
-              assignedQuestionnaireIds: qids,
-              projectSlumAssignments: slumMap,
-              assignedSlumIds: slumIdsForProject(data, projectId)
-            });
-          } else {
-            if (uid && !existing.uids.includes(uid)) {
-              existing.uids.push(uid);
-            }
-            if (!existing.mobileNumber && data.mobileNumber) {
-              existing.mobileNumber = data.mobileNumber;
-            }
-            if (existing.assignedWardNames.length === 0 && wn.length > 0) {
-              existing.assignedWardNames = wn;
-            }
-            if (qids.length > 0) {
-              // Union across multiple UIDs sharing the same email.
-              existing.assignedQuestionnaireIds = [
-                ...new Set([...existing.assignedQuestionnaireIds, ...qids])
-              ].sort();
-            }
-            existing.projectSlumAssignments = mergeProjectSlumAssignmentMaps(
-              existing.projectSlumAssignments,
-              slumMap
-            );
-            existing.assignedSlumIds = slumIdsForProject(
-              { ...data, projectSlumAssignments: existing.projectSlumAssignments },
-              projectId
-            );
-          }
-        });
-
-        const entries = Array.from(byEmail.values()).sort((a, b) =>
-          (a.displayName || '').localeCompare(b.displayName || '')
-        );
-        setActiveEnumerators(entries);
-        setActiveEnumeratorsCount(entries.length);
-      },
-      (err) => console.error('Error fetching active enumerators:', err)
-    );
-
-    return () => unsubscribe();
-  }, [project?.id]);
-
-  useEffect(() => {
-    const q = query(collection(db, 'users'), where('status', '==', 'rejected'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (querySnapshot) => {
-        const byEmail = new Map<string, EnumeratorEntry>();
-        querySnapshot.forEach((docSnap) => {
-          const data = docSnap.data() as UserProfile;
-          if (data.role !== 'enumerator') return;
-          const emailKey = (data.email || '').trim().toLowerCase();
-          if (!emailKey) return;
-
-          const uid = data.uid || docSnap.id;
-          const existing = byEmail.get(emailKey);
-
-          if (!existing) {
-            byEmail.set(emailKey, {
-              email: data.email,
-              displayName: data.displayName,
-              mobileNumber: data.mobileNumber,
-              uids: [uid],
-              assignedWardNames: [],
-              assignedQuestionnaireIds: [],
-              assignedSlumIds: [],
-              projectSlumAssignments: {}
-            });
-          } else if (uid && !existing.uids.includes(uid)) {
-            existing.uids.push(uid);
-            if (!existing.mobileNumber && data.mobileNumber) {
-              existing.mobileNumber = data.mobileNumber;
-            }
-          }
-        });
-
-        const entries = Array.from(byEmail.values()).sort((a, b) =>
-          (a.displayName || '').localeCompare(b.displayName || '')
-        );
-        setDeactivatedEnumerators(entries);
-        setDeactivatedEnumeratorsCount(entries.length);
-      },
-      (err) => console.error('Error fetching deactivated enumerators:', err)
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
     setTotalEnumeratorsCount(pendingUsers.length + activeEnumeratorsCount + deactivatedEnumeratorsCount);
   }, [pendingUsers.length, activeEnumeratorsCount, deactivatedEnumeratorsCount]);
 
   const handleApproveUser = async (userId: string) => {
     try {
-      await updateDoc(doc(db, 'users', userId), {
-        status: 'approved'
-      });
+      await geosurveyApi.updateUser(userId, { status: 'approved' });
+      await refreshAll();
     } catch (error) {
       console.error('Error approving user:', error);
       setError('Failed to approve user');
@@ -871,9 +735,8 @@ export const UserManagement: React.FC<{
 
   const handleRejectUser = async (userId: string) => {
     try {
-      await updateDoc(doc(db, 'users', userId), {
-        status: 'rejected'
-      });
+      await geosurveyApi.updateUser(userId, { status: 'rejected' });
+      await refreshAll();
     } catch (error) {
       console.error('Error rejecting user:', error);
       setError('Failed to reject user');
@@ -885,9 +748,8 @@ export const UserManagement: React.FC<{
       setEnumActionLoadingEmail(entry.email);
       setError(null);
 
-      await Promise.all(
-        entry.uids.map((uid) => updateDoc(doc(db, 'users', uid), { status }))
-      );
+      await Promise.all(entry.uids.map((uid) => geosurveyApi.updateUser(uid, { status })));
+      await refreshAll();
     } catch (e) {
       console.error('Error updating enumerator status:', e);
       setError(`Failed to update enumerator (${status})`);
@@ -902,36 +764,11 @@ export const UserManagement: React.FC<{
       setError(null);
       setDeleteNotice(null);
 
-      const emailKey = encodeURIComponent(entry.email.trim().toLowerCase());
-
-      await Promise.all([
-        ...entry.uids.map((uid) =>
-          setDoc(
-            doc(db, 'deleted_users', uid),
-            {
-              uid,
-              email: entry.email,
-              displayName: entry.displayName,
-              deletedAt: new Date().toISOString()
-            },
-            { merge: true }
-          )
-        ),
-        setDoc(
-          doc(db, 'deleted_user_emails', emailKey),
-          {
-            email: entry.email,
-            displayName: entry.displayName,
-            deletedAt: new Date().toISOString()
-          },
-          { merge: true }
-        ),
-        ...entry.uids.map((uid) => deleteDoc(doc(db, 'users', uid)))
-      ]);
+      await Promise.all(entry.uids.map((uid) => geosurveyApi.deleteUser(uid)));
+      await refreshAll();
 
       setDeleteNotice(
-        `Deleted ${entry.displayName}. This account is now blocked from auto re-registration requests. ` +
-          `To remove Firebase Authentication login entirely, use Firebase Console or Admin SDK Cloud Function.`
+          `Deleted ${entry.displayName}.`
       );
     } catch (e) {
       console.error('Error permanently deleting enumerator:', e);
@@ -966,16 +803,13 @@ export const UserManagement: React.FC<{
         }
       }
 
-      await Promise.all(
-        entry.uids.map((uid) =>
-          updateDoc(doc(db, 'users', uid), {
-            ...(normalized.length
-              ? { assignedWardNames: normalized }
-              : { assignedWardNames: deleteField() }),
-            assignedWardName: deleteField()
-          })
-        )
-      );
+      await Promise.all(entry.uids.map((uid) =>
+        geosurveyApi.updateUser(uid, {
+          assignedWardNames: normalized.length ? normalized : [],
+          assignedWardName: null
+        } as Partial<UserProfile>)
+      ));
+      await refreshAll();
     } catch (e) {
       console.error('Error saving ward assignment:', e);
       setError('Failed to save ward assignment');
@@ -1002,17 +836,13 @@ export const UserManagement: React.FC<{
       else delete nextMap[projectId];
 
       const union = unionSlumIdsFromMap(nextMap);
-      const mapPayload =
-        Object.keys(nextMap).length > 0 ? nextMap : deleteField();
-
-      await Promise.all(
-        entry.uids.map((uid) =>
-          updateDoc(doc(db, 'users', uid), {
-            projectSlumAssignments: mapPayload,
-            ...(union.length ? { assignedSlumIds: union } : { assignedSlumIds: deleteField() })
-          })
-        )
-      );
+      await Promise.all(entry.uids.map((uid) =>
+        geosurveyApi.updateUser(uid, {
+          projectSlumAssignments: nextMap,
+          assignedSlumIds: union
+        } as Partial<UserProfile>)
+      ));
+      await refreshAll();
     } catch (e) {
       console.error('Error saving slum assignment:', e);
       setError('Failed to save slum assignment');
@@ -1040,16 +870,15 @@ export const UserManagement: React.FC<{
           const nextMap = { ...entry.projectSlumAssignments };
           delete nextMap[projectId];
           const union = unionSlumIdsFromMap(nextMap);
-          const mapPayload =
-            Object.keys(nextMap).length > 0 ? nextMap : deleteField();
           return entry.uids.map((uid) =>
-            updateDoc(doc(db, 'users', uid), {
-              projectSlumAssignments: mapPayload,
-              ...(union.length ? { assignedSlumIds: union } : { assignedSlumIds: deleteField() })
-            })
+            geosurveyApi.updateUser(uid, {
+              projectSlumAssignments: nextMap,
+              assignedSlumIds: union
+            } as Partial<UserProfile>)
           );
         })
       );
+      await refreshAll();
     } catch (e) {
       console.error('Error clearing slum assignments:', e);
       setError('Failed to clear slum assignments');
@@ -1073,15 +902,10 @@ export const UserManagement: React.FC<{
       );
       const next = [...new Set([...preserved, ...selectedIdsForProject])].sort();
 
-      await Promise.all(
-        entry.uids.map((uid) =>
-          updateDoc(doc(db, 'users', uid), {
-            ...(next.length
-              ? { assignedQuestionnaireIds: next }
-              : { assignedQuestionnaireIds: deleteField() })
-          })
-        )
-      );
+      await Promise.all(entry.uids.map((uid) =>
+        geosurveyApi.updateUser(uid, { assignedQuestionnaireIds: next } as Partial<UserProfile>)
+      ));
+      await refreshAll();
     } catch (e) {
       console.error('Error saving questionnaire assignment:', e);
       setError('Failed to save questionnaire assignment');
@@ -1110,14 +934,11 @@ export const UserManagement: React.FC<{
             (id) => !projectQIds.has(id)
           );
           return entry.uids.map((uid) =>
-            updateDoc(doc(db, 'users', uid), {
-              ...(preserved.length
-                ? { assignedQuestionnaireIds: preserved }
-                : { assignedQuestionnaireIds: deleteField() })
-            })
+            geosurveyApi.updateUser(uid, { assignedQuestionnaireIds: preserved } as Partial<UserProfile>)
           );
         })
       );
+      await refreshAll();
     } catch (e) {
       console.error('Error clearing project questionnaire assignments:', e);
       setError('Failed to clear questionnaire assignments');
@@ -1133,15 +954,18 @@ export const UserManagement: React.FC<{
       setClearingAllAssignments(true);
       setError(null);
 
-      const allUids = [...new Set(activeEnumerators.flatMap((entry) => entry.uids).filter(Boolean))];
+      const allUids = Array.from(
+        new Set(activeEnumerators.flatMap((entry) => entry.uids))
+      ) as string[];
       await Promise.all(
         allUids.map((uid) =>
-          updateDoc(doc(db, 'users', uid), {
-            assignedWardNames: deleteField(),
-            assignedWardName: deleteField()
-          })
+          geosurveyApi.updateUser(uid, {
+            assignedWardNames: [],
+            assignedWardName: null
+          } as Partial<UserProfile>)
         )
       );
+      await refreshAll();
     } catch (e) {
       console.error('Error clearing all ward assignments:', e);
       setError('Failed to clear all ward assignments');
@@ -1155,26 +979,14 @@ export const UserManagement: React.FC<{
     setLoading(true);
     setError(null);
     
-    // Workaround: Use a secondary app instance to create accounts without logging out admin
-    const secondaryApp = initializeApp(firebaseConfig, 'Secondary');
-    const secondaryAuth = getAuth(secondaryApp);
-
     try {
-      const res = await createUserWithEmailAndPassword(secondaryAuth, email, password);
-      
-      // Save profile to main DB
-      await setDoc(doc(db, 'users', res.user.uid), {
-        uid: res.user.uid,
+      await geosurveyApi.createEnumerator({
         email,
+        password,
         displayName: name,
-        mobileNumber,
-        role: 'enumerator',
-        status: 'approved' // Admin-created accounts are automatically approved
+        mobileNumber
       });
-
-      // Sign out the new user from the secondary instance
-      await signOut(secondaryAuth);
-      
+      await refreshAll();
       setSuccess(true);
       setEmail('');
       setPassword('');
@@ -1185,8 +997,6 @@ export const UserManagement: React.FC<{
       setError(err.message || 'Failed to create user');
     } finally {
       setLoading(false);
-      // Clean up secondary app
-      // await deleteApp(secondaryApp); 
     }
   };
 
@@ -1773,8 +1583,7 @@ export const UserManagement: React.FC<{
               <div>
                 <p className="text-xs font-bold text-amber-800 mb-1">Important Note</p>
                 <p className="text-[10px] text-amber-700 leading-relaxed">
-                  Creating an account will temporarily sign you out in order to register the new user on this device. 
-                  You will need to sign back in as Admin afterwards. 
+                  Accounts are created through the GeoSurvey API and are approved automatically.
                 </p>
               </div>
             </div>

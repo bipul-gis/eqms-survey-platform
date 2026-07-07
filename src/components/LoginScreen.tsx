@@ -15,72 +15,9 @@ import {
   KeyRound,
   ArrowLeft
 } from 'lucide-react';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { httpsCallable, FunctionsError } from 'firebase/functions';
-import { FirebaseError } from 'firebase/app';
-import { auth, db, functions } from '../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { ApiError, geosurveyApi } from '../lib/geosurveyApi';
 
 type ScreenMode = 'login' | 'signup' | 'forgot';
-
-/** Callable errors often set `message` to the useless word "internal"; real text may live in `details`. */
-function extractFirebaseCallableMessage(err: unknown): string | undefined {
-  const useless = (s: string | undefined) =>
-    !s?.trim() || /^internal$/i.test(s.trim()) || s.trim() === 'INTERNAL';
-
-  if (err instanceof FunctionsError) {
-    const direct = err.message?.trim();
-    if (!useless(direct)) return direct;
-
-    const walk = (d: unknown): string | undefined => {
-      if (typeof d === 'string') {
-        const t = d.trim();
-        if (t.length > 3 && !/^internal$/i.test(t)) return t;
-      }
-      if (Array.isArray(d)) {
-        const chunks: string[] = [];
-        for (const x of d) {
-          if (typeof x === 'string') {
-            const t = x.trim();
-            if (t.length > 3 && !/^internal$/i.test(t)) chunks.push(t);
-          } else {
-            const r = walk(x);
-            if (r) chunks.push(r);
-          }
-        }
-        if (chunks.length) return chunks.join(' — ');
-      }
-      if (d && typeof d === 'object') {
-        const o = d as Record<string, unknown>;
-        for (const key of ['message', 'Message', 'reason']) {
-          const v = o[key];
-          if (typeof v === 'string') {
-            const r = walk(v);
-            if (r) return r;
-          }
-        }
-        for (const v of Object.values(o)) {
-          const r = walk(v);
-          if (r) return r;
-        }
-      }
-      return undefined;
-    };
-
-    const fromDetails = walk(err.details);
-    if (fromDetails) return fromDetails;
-  }
-
-  if (err instanceof FirebaseError) {
-    const m = err.message?.trim();
-    if (!useless(m)) return m;
-  }
-
-  return undefined;
-}
-
-const DEFAULT_FORGOT_INTERNAL =
-  'Password reset failed (no detail from server). Confirm `firebase deploy --only functions` succeeded, functions region is us-central1, and Authentication → Templates → Password reset is saved. For API errors about the key: Google Cloud → Credentials → your Browser key → Application restrictions: none or “IP addresses” for Cloud Functions egress — not “HTTP referrers” only.';
 
 export const LoginScreen: React.FC = () => {
   const { login } = useAuth();
@@ -96,29 +33,20 @@ export const LoginScreen: React.FC = () => {
   const [forgotEmailSent, setForgotEmailSent] = useState(false);
 
   const mapForgotPasswordError = (err: unknown): string => {
-    if (err instanceof FirebaseError) {
-      const c = err.code;
-      if (c === 'functions/not-found') {
-        return 'No enumerator account matches this email and mobile number.';
-      }
-      if (c === 'functions/permission-denied') {
-        return 'The email and mobile number do not match our records.';
-      }
-      if (c === 'functions/failed-precondition') {
-        return 'Profile not found for this account. Please contact an administrator.';
-      }
-      if (c === 'functions/invalid-argument') {
+    if (err instanceof ApiError) {
+      if (err.status === 400) {
         return 'Enter both email and the mobile number you registered with.';
       }
-      if (c === 'functions/internal') {
-        return extractFirebaseCallableMessage(err) ?? DEFAULT_FORGOT_INTERNAL;
+      if (err.status === 403) {
+        return 'The email and mobile number do not match our records.';
       }
-      if (c === 'functions/unavailable' || c === 'functions/deadline-exceeded') {
-        return 'Password reset service is unavailable. If this continues, ask your administrator to deploy Cloud Functions.';
+      if (err.status === 404) {
+        return 'No enumerator account matches this email and mobile number.';
+      }
+      if (err.status >= 500) {
+        return 'Password reset service is unavailable right now. Please try again later or contact an administrator.';
       }
     }
-    const extracted = extractFirebaseCallableMessage(err);
-    if (extracted) return extracted;
     return err instanceof Error ? err.message : 'Request failed';
   };
 
@@ -131,19 +59,15 @@ export const LoginScreen: React.FC = () => {
       setError('Enter your registered email and mobile number.');
       throw new Error('validation');
     }
-    const requestEnumeratorPasswordReset = httpsCallable<
-      { email: string; phone: string },
-      { resetLink?: string; emailSent?: boolean }
-    >(functions, 'requestEnumeratorPasswordReset');
-    const result = await requestEnumeratorPasswordReset({ email: em, phone });
-    const data = result.data;
-    if (data?.emailSent) {
+    const data = await geosurveyApi.forgotPassword(em, phone);
+    if (data?.temporaryPassword) {
+      setForgotResetLink(`Temporary password: ${data.temporaryPassword}`);
+      return;
+    }
+    if (data?.ok) {
       setForgotEmailSent(true);
       return;
     }
-    const link = data?.resetLink;
-    if (link) setForgotResetLink(link);
-    else setError('Reset was not completed. Try again or contact an administrator.');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -166,13 +90,9 @@ export const LoginScreen: React.FC = () => {
         await login(email, password);
       }
     } catch (err: any) {
-      if (err.code === 'auth/operation-not-allowed') {
-        setError('CRITICAL: Email/Password login is DISABLED in Firebase Console. Go to Authentication -> Sign-in Method to enable it.');
-      } else if (err.code === 'auth/invalid-credential') {
+      if (err instanceof ApiError && err.status === 401) {
         setError('Incorrect username or password.');
-      } else if (err.code === 'auth/user-not-found') {
-        setError('No account found with this email.');
-      } else if (err.code === 'auth/user-disabled') {
+      } else if (err instanceof ApiError && err.status === 403) {
         setError('Your account has been disabled. Please contact an administrator.');
       } else {
         setError(err.message || 'Login failed');
@@ -184,17 +104,12 @@ export const LoginScreen: React.FC = () => {
 
   const handleSignUp = async () => {
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        uid: userCredential.user.uid,
+      await geosurveyApi.register({
         email,
+        password,
         displayName: name,
-        mobileNumber,
-        role: 'enumerator',
-        status: 'pending'
+        mobileNumber
       });
-
       setSignUpSuccess(true);
       setEmail('');
       setPassword('');
@@ -364,7 +279,7 @@ export const LoginScreen: React.FC = () => {
             <div className="bg-green-50 text-green-800 p-3 rounded-xl text-xs border border-green-100 space-y-2">
               <p className="font-semibold flex items-center gap-2">
                 <CheckCircle2 size={18} />
-                Verified. Check your email inbox for a password reset message from Firebase (also check spam).
+                Verified. Check your email inbox for a password reset message.
               </p>
             </div>
           )}
