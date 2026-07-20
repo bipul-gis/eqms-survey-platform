@@ -31,7 +31,7 @@ import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
   choiceAnswerToComparableString
 } from '../lib/choiceAnswers';
-import { DEFAULT_PROJECT_ID } from '../lib/projects';
+import { DEFAULT_PROJECT_ID, listProjects, searchMisProjects } from '../lib/projects';
 import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
@@ -45,6 +45,7 @@ import {
   AlertCircle,
   CheckCircle,
   Copy,
+  FolderInput,
   ArrowUp,
   ArrowDown,
   Layers,
@@ -291,6 +292,266 @@ const blankLogic = (): LogicRule => ({
 });
 
 // ---------------------------------------------------------------------------
+// Copy-from-project modal — clone a questionnaire into the current project
+// ---------------------------------------------------------------------------
+
+type SourceProjectOption = {
+  id: string;
+  name: string;
+  code?: string;
+  questionnaires: Questionnaire[];
+};
+
+const CopyFromProjectModal: React.FC<{
+  currentProjectId?: string;
+  currentProjectName?: string;
+  onClose: () => void;
+  onCopied: (created: Questionnaire) => void;
+}> = ({ currentProjectId, currentProjectName, onClose, onCopied }) => {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sources, setSources] = useState<SourceProjectOption[]>([]);
+  const [sourceProjectId, setSourceProjectId] = useState('');
+  const [selectedQuestionnaireId, setSelectedQuestionnaireId] = useState('');
+  const [copying, setCopying] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const [activeProjects, misProjects, qResult] = await Promise.all([
+          listProjects().catch(() => [] as Project[]),
+          searchMisProjects().catch(() => [] as Project[]),
+          geosurveyApi.listQuestionnaires()
+        ]);
+        if (cancelled) return;
+
+        const nameById = new Map<string, Project>();
+        for (const p of [...misProjects, ...activeProjects]) {
+          nameById.set(p.id, p);
+        }
+
+        const byProject = new Map<string, Questionnaire[]>();
+        for (const raw of qResult.items as unknown as Questionnaire[]) {
+          const pid = raw.projectId || DEFAULT_PROJECT_ID;
+          if (currentProjectId && pid === currentProjectId) continue;
+          const list = byProject.get(pid) || [];
+          list.push(raw);
+          byProject.set(pid, list);
+        }
+
+        const options: SourceProjectOption[] = [...byProject.entries()]
+          .map(([id, questionnaires]) => {
+            const meta = nameById.get(id);
+            questionnaires.sort((a, b) => toMillis(b.updatedAt) - toMillis(a.updatedAt));
+            return {
+              id,
+              name: meta?.name || id,
+              code: meta?.code,
+              questionnaires
+            };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        setSources(options);
+        if (options.length > 0) {
+          setSourceProjectId(options[0].id);
+          setSelectedQuestionnaireId(options[0].questionnaires[0]?.id || '');
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Failed to load source questionnaires.');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProjectId]);
+
+  const selectedSource = sources.find((s) => s.id === sourceProjectId) || null;
+  const selectedQuestionnaire =
+    selectedSource?.questionnaires.find((q) => q.id === selectedQuestionnaireId) || null;
+
+  useEffect(() => {
+    if (!selectedSource) {
+      setSelectedQuestionnaireId('');
+      return;
+    }
+    if (!selectedSource.questionnaires.some((q) => q.id === selectedQuestionnaireId)) {
+      setSelectedQuestionnaireId(selectedSource.questionnaires[0]?.id || '');
+    }
+  }, [selectedSource, selectedQuestionnaireId]);
+
+  const handleCopy = async () => {
+    if (!selectedQuestionnaire || !currentProjectId) return;
+    try {
+      setCopying(true);
+      setError(null);
+      const { id: _omit, ...rest } = selectedQuestionnaire;
+      void _omit;
+      const now = new Date().toISOString();
+      const dup = {
+        ...rest,
+        projectId: currentProjectId,
+        title: `${selectedQuestionnaire.title} (Copy)`,
+        isActive: false,
+        createdAt: now,
+        updatedAt: now
+      };
+      const ref = await geosurveyApi.saveQuestionnaire(dup as Record<string, unknown>);
+      const created: Questionnaire = {
+        ...(dup as Questionnaire),
+        ...(ref as unknown as Questionnaire),
+        id: String((ref as { id?: string }).id ?? ''),
+        projectId: currentProjectId
+      };
+      onCopied(created);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to copy questionnaire.');
+      handleFirestoreError(e, OperationType.CREATE, 'questionnaires');
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4 bg-slate-900/40">
+      <div
+        className="absolute inset-0"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Copy from another project</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Clone a questionnaire into{' '}
+              <span className="font-semibold text-slate-700">
+                {currentProjectName || 'this project'}
+              </span>
+              . Responses are not copied.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
+            title="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center">
+              <Loader2 size={16} className="animate-spin" />
+              Loading questionnaires…
+            </div>
+          ) : sources.length === 0 ? (
+            <div className="text-center py-8 text-sm text-slate-500">
+              <FolderInput size={32} className="mx-auto mb-2 text-slate-300" />
+              No questionnaires found in other projects.
+            </div>
+          ) : (
+            <>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                  Source project
+                </span>
+                <select
+                  value={sourceProjectId}
+                  onChange={(e) => setSourceProjectId(e.target.value)}
+                  className="mt-1.5 w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                >
+                  {sources.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                      {s.code ? ` (${s.code})` : ''} · {s.questionnaires.length} questionnaire
+                      {s.questionnaires.length === 1 ? '' : 's'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                  Questionnaire
+                </span>
+                <select
+                  value={selectedQuestionnaireId}
+                  onChange={(e) => setSelectedQuestionnaireId(e.target.value)}
+                  className="mt-1.5 w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                >
+                  {(selectedSource?.questionnaires || []).map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.title}
+                      {q.isActive ? '' : ' (Draft)'} · {q.questions?.length || 0} questions
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {selectedQuestionnaire && (
+                <div className="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-600">
+                  <p className="font-semibold text-slate-800">{selectedQuestionnaire.title}</p>
+                  {selectedQuestionnaire.description && (
+                    <p className="mt-0.5 line-clamp-2">{selectedQuestionnaire.description}</p>
+                  )}
+                  <p className="mt-1 text-slate-400">
+                    v{selectedQuestionnaire.version || '1.0'} ·{' '}
+                    {selectedQuestionnaire.questions?.length || 0} questions
+                    {selectedQuestionnaire.sections?.length
+                      ? ` · ${selectedQuestionnaire.sections.length} sections`
+                      : ''}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+          {error && (
+            <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/80 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+            disabled={copying}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleCopy()}
+            disabled={
+              copying || loading || !selectedQuestionnaire || !currentProjectId || sources.length === 0
+            }
+            className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg flex items-center gap-2"
+          >
+            {copying ? <Loader2 size={15} className="animate-spin" /> : <Copy size={15} />}
+            {copying ? 'Copying…' : 'Copy into this project'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Top-level component — list view OR builder view
 // ---------------------------------------------------------------------------
 
@@ -318,6 +579,7 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
   const [editing, setEditing] = useState<Questionnaire | 'new' | null>(null);
   const [viewingResponses, setViewingResponses] = useState<Questionnaire | null>(null);
   const [search, setSearch] = useState('');
+  const [copyFromOpen, setCopyFromOpen] = useState(false);
 
   const fetchQuestionnaires = async () => {
     try {
@@ -369,13 +631,16 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
     }
   };
 
-  const handleDuplicate = async (q: Questionnaire) => {
+  const handleDuplicate = async (q: Questionnaire, targetProjectId?: string) => {
     try {
       const { id: _omit, ...rest } = q;
       void _omit;
       const now = new Date().toISOString();
+      const destProjectId =
+        targetProjectId || rest.projectId || scopeProjectId || DEFAULT_PROJECT_ID;
       const dup = {
         ...rest,
+        projectId: destProjectId,
         title: `${q.title} (Copy)`,
         isActive: false,
         createdAt: now,
@@ -383,10 +648,14 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
       };
       const ref = await geosurveyApi.saveQuestionnaire(dup as Record<string, unknown>);
       const created: Questionnaire = {
+        ...(dup as Questionnaire),
         ...(ref as unknown as Questionnaire),
-        id: String((ref as { id?: string }).id ?? '')
+        id: String((ref as { id?: string }).id ?? ''),
+        projectId: destProjectId
       };
-      setQuestionnaires((prev) => [created, ...prev]);
+      if (!scopeProjectId || destProjectId === scopeProjectId) {
+        setQuestionnaires((prev) => [created, ...prev]);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'questionnaires');
     }
@@ -469,11 +738,22 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
           </div>
         </div>
         <div className="flex items-center gap-2">
-        <button
+          {scopeProjectId && (
+            <button
+              type="button"
+              onClick={() => setCopyFromOpen(true)}
+              className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-semibold text-sm px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+              title="Copy a questionnaire from another project"
+            >
+              <FolderInput size={16} />
+              Copy from project
+            </button>
+          )}
+          <button
             onClick={() => setEditing('new')}
             className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
-        >
-          <Plus size={16} />
+          >
+            <Plus size={16} />
             New Questionnaire
           </button>
           <button
@@ -482,8 +762,8 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
             title="Close"
           >
             <X size={20} />
-        </button>
-      </div>
+          </button>
+        </div>
       </header>
 
       {/* Search bar */}
@@ -527,9 +807,21 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
             </p>
             <p className="text-sm">
               {questionnaires.length === 0
-                ? 'Click "New Questionnaire" to start building your first survey.'
+                ? scopeProjectId
+                  ? 'Create a new survey, or copy one from another project.'
+                  : 'Click "New Questionnaire" to start building your first survey.'
                 : 'Try a different search term.'}
             </p>
+            {questionnaires.length === 0 && scopeProjectId && (
+              <button
+                type="button"
+                onClick={() => setCopyFromOpen(true)}
+                className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-blue-700 hover:text-blue-800"
+              >
+                <FolderInput size={15} />
+                Copy from another project
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 max-w-7xl">
@@ -623,6 +915,17 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
         )}
       </div>
       <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
+      {copyFromOpen && scopeProjectId && (
+        <CopyFromProjectModal
+          currentProjectId={scopeProjectId}
+          currentProjectName={project?.name}
+          onClose={() => setCopyFromOpen(false)}
+          onCopied={(created) => {
+            setQuestionnaires((prev) => [created, ...prev.filter((q) => q.id !== created.id)]);
+            setCopyFromOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 };
