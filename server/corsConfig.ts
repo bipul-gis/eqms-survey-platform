@@ -3,6 +3,10 @@ import type { CorsOptions } from 'cors';
 const DEFAULT_ORIGINS = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'ionic://localhost',
   'https://geosurvey.eqmscl.com',
   'https://www.geosurvey.eqmscl.com',
   'https://eqms-survey-platform.vercel.app',

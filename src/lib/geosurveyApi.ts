@@ -1,21 +1,68 @@
-const SESSION_KEY = 'geosurvey_session_token';
-
 export function getApiBase(): string {
   const base = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (base) return base.replace(/\/$/, '');
-  if (typeof window !== 'undefined') return '';
+  if (typeof window !== 'undefined') {
+    // Capacitor Android/iOS WebViews have no Vite proxy — call the live API.
+    const cap = (
+      window as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
+      }
+    ).Capacitor;
+    if (cap?.isNativePlatform?.()) {
+      return 'https://geosurvey.eqmscl.com';
+    }
+    // Browser builds served from the same host use relative /api paths.
+    return '';
+  }
   return 'http://127.0.0.1:3002';
 }
 
-export function getStoredSessionToken(): string | null {
+const SESSION_STORAGE_KEY = 'geosurvey_session_token';
+
+function sessionStore(): Storage | null {
   if (typeof window === 'undefined') return null;
-  return sessionStorage.getItem(SESSION_KEY);
+  // Prefer localStorage so Capacitor apps keep the session across process kills.
+  try {
+    return window.localStorage;
+  } catch {
+    try {
+      return window.sessionStorage;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function getStoredSessionToken(): string | null {
+  const store = sessionStore();
+  if (!store) return null;
+  const fromPrimary = store.getItem(SESSION_STORAGE_KEY);
+  if (fromPrimary) return fromPrimary;
+  try {
+    return sessionStorage.getItem(SESSION_STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
 export function setStoredSessionToken(token: string | null): void {
-  if (typeof window === 'undefined') return;
-  if (token) sessionStorage.setItem(SESSION_KEY, token);
-  else sessionStorage.removeItem(SESSION_KEY);
+  const store = sessionStore();
+  if (!store) return;
+  if (token) {
+    store.setItem(SESSION_STORAGE_KEY, token);
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, token);
+    } catch {
+      /* ignore */
+    }
+  } else {
+    store.removeItem(SESSION_STORAGE_KEY);
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export class ApiError extends Error {

@@ -26,6 +26,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   const applySession = useCallback((profile: UserProfile, token: string) => {
+    if (!profile?.uid) {
+      throw new Error('Login succeeded but user profile was incomplete. Please try again.');
+    }
     setStoredSessionToken(token);
     setUser({
       uid: profile.uid,
@@ -43,6 +46,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
     const session = await geosurveyApi.session();
+    if (!session?.profile?.uid || !session.sessionToken) {
+      throw new Error('Session expired. Please sign in again.');
+    }
     applySession(session.profile, session.sessionToken);
   }, [applySession]);
 
@@ -84,6 +90,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, pass: string) => {
     const session = await geosurveyApi.login(email, pass);
+    if (!session?.profile?.uid || !session.sessionToken) {
+      throw new Error('Login failed: incomplete server response. Check your connection and try again.');
+    }
     applySession(session.profile, session.sessionToken);
   };
 
