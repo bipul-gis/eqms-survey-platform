@@ -240,19 +240,26 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     delete patch.assignedSlumIds;
     delete patch.projectSlumAssignments;
   }
-  const updated = await updateUser(req.params.id, {
-    displayName: patch.displayName,
-    mobileNumber: patch.mobileNumber,
-    role: patch.role,
-    status: patch.status,
-    landmarkIconScale: patch.landmarkIconScale,
-    assignedWardName: patch.assignedWardName,
-    assignedWardNames: patch.assignedWardNames,
-    projectWardAssignments: patch.projectWardAssignments,
-    assignedQuestionnaireIds: patch.assignedQuestionnaireIds,
-    assignedSlumIds: patch.assignedSlumIds,
-    projectSlumAssignments: patch.projectSlumAssignments,
-  });
+  const allowedKeys = [
+    'displayName',
+    'mobileNumber',
+    'role',
+    'status',
+    'landmarkIconScale',
+    'assignedWardName',
+    'assignedWardNames',
+    'projectWardAssignments',
+    'assignedQuestionnaireIds',
+    'assignedSlumIds',
+    'projectSlumAssignments',
+  ] as const;
+  const cleanPatch: Record<string, unknown> = {};
+  for (const key of allowedKeys) {
+    if (Object.prototype.hasOwnProperty.call(patch, key) && patch[key] !== undefined) {
+      cleanPatch[key] = patch[key];
+    }
+  }
+  const updated = await updateUser(req.params.id, cleanPatch);
   if (!updated) {
     res.status(404).json({ error: 'User not found.' });
     return;

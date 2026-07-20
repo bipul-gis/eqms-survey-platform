@@ -18,6 +18,42 @@ export interface DbUser {
   updatedAt: string;
 }
 
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((v) => String(v).trim()).filter(Boolean);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((v) => String(v).trim()).filter(Boolean);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
+function asStringMap(value: unknown): Record<string, string[]> {
+  const raw =
+    typeof value === 'string' && value.trim()
+      ? (() => {
+          try {
+            return JSON.parse(value);
+          } catch {
+            return null;
+          }
+        })()
+      : value;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    out[k] = asStringArray(v);
+  }
+  return out;
+}
+
 function rowToUser(row: Record<string, unknown>): DbUser {
   return {
     id: row.id as string,
@@ -28,11 +64,11 @@ function rowToUser(row: Record<string, unknown>): DbUser {
     status: row.status as DbUser['status'],
     landmarkIconScale: row.landmark_icon_scale as number | undefined,
     assignedWardName: row.assigned_ward_name as string | null | undefined,
-    assignedWardNames: (row.assigned_ward_names as string[]) || [],
-    projectWardAssignments: (row.project_ward_assignments as Record<string, string[]>) || {},
-    assignedQuestionnaireIds: (row.assigned_questionnaire_ids as string[]) || [],
-    assignedSlumIds: (row.assigned_slum_ids as string[]) || [],
-    projectSlumAssignments: (row.project_slum_assignments as Record<string, string[]>) || {},
+    assignedWardNames: asStringArray(row.assigned_ward_names),
+    projectWardAssignments: asStringMap(row.project_ward_assignments),
+    assignedQuestionnaireIds: asStringArray(row.assigned_questionnaire_ids),
+    assignedSlumIds: asStringArray(row.assigned_slum_ids),
+    projectSlumAssignments: asStringMap(row.project_slum_assignments),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -105,7 +141,14 @@ export async function createUser(input: {
 export async function updateUser(id: string, patch: Partial<DbUser>): Promise<DbUser | null> {
   const existing = await findUserById(id);
   if (!existing) return null;
-  const merged = { ...existing, ...patch, id };
+  // Only apply keys that are explicitly present (ignore undefined) so partial
+  // PATCH bodies do not wipe unrelated assignment fields.
+  const merged: DbUser = { ...existing, id };
+  for (const [key, value] of Object.entries(patch) as [keyof DbUser, DbUser[keyof DbUser]][]) {
+    if (value !== undefined) {
+      (merged as Record<string, unknown>)[key as string] = value;
+    }
+  }
   if (isWhitelistedAdmin(merged.email)) {
     merged.role = 'admin';
     merged.status = 'approved';

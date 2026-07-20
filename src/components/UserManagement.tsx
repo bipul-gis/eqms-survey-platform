@@ -142,10 +142,10 @@ const EnumeratorProjectTaskRow: React.FC<{
 
   const toggleWard = (w: string) => {
     setWards((prev) => {
-      const next = prev.includes(w)
-        ? prev.filter((x) => x !== w)
-        : [...prev, w].sort((a, b) => a.localeCompare(b));
-      return next;
+      const key = normalizeWardKey(w);
+      const has = prev.some((x) => normalizeWardKey(x) === key);
+      if (has) return prev.filter((x) => normalizeWardKey(x) !== key);
+      return [...prev, w].sort((a, b) => a.localeCompare(b));
     });
   };
 
@@ -230,7 +230,7 @@ const EnumeratorProjectTaskRow: React.FC<{
               wardOptions.map((w) => {
                 const key = normalizeWardKey(w);
                 const holder = wardHeldByOther.get(key);
-                const mine = wards.includes(w);
+                const mine = wards.some((x) => normalizeWardKey(x) === key);
                 const blocked = !!holder && !mine;
                 return (
                   <label
@@ -681,6 +681,8 @@ export const UserManagement: React.FC<{
       setTaskSavingEmail(entry.email);
       setError(null);
 
+      const patch: Partial<UserProfile> = {};
+
       if (next.wards !== undefined) {
         const normalized = [...new Set(next.wards.map((w) => String(w).trim()).filter(Boolean))].sort(
           (a, b) => a.localeCompare(b)
@@ -701,14 +703,8 @@ export const UserManagement: React.FC<{
             return;
           }
         }
-        await Promise.all(
-          entry.uids.map((uid) =>
-            geosurveyApi.updateUser(uid, {
-              assignedWardNames: normalized.length ? normalized : [],
-              assignedWardName: null
-            } as Partial<UserProfile>)
-          )
-        );
+        patch.assignedWardNames = normalized.length ? normalized : [];
+        patch.assignedWardName = null;
       }
 
       if (next.questionnaireIds !== undefined) {
@@ -716,16 +712,15 @@ export const UserManagement: React.FC<{
         const preserved = (entry.assignedQuestionnaireIds || []).filter(
           (id) => !projectQIds.has(id)
         );
-        const qNext = [...new Set([...preserved, ...next.questionnaireIds])].sort();
-        await Promise.all(
-          entry.uids.map((uid) =>
-            geosurveyApi.updateUser(uid, {
-              assignedQuestionnaireIds: qNext
-            } as Partial<UserProfile>)
-          )
-        );
+        patch.assignedQuestionnaireIds = [...new Set([...preserved, ...next.questionnaireIds])].sort();
       }
 
+      if (Object.keys(patch).length === 0) {
+        setTaskSavingEmail(null);
+        return;
+      }
+
+      await Promise.all(entry.uids.map((uid) => geosurveyApi.updateUser(uid, patch)));
       await refreshAll();
     } catch (e) {
       console.error('Error saving project assignment:', e);
