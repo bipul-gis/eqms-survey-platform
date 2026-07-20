@@ -1039,12 +1039,13 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     return {
       enabled: true,
       title: 'Enumerator Information',
-      description: 'Please fill in your details before starting the survey.',
+      description:
+        'Name, ID, phone and email are filled from your account and cannot be edited.',
       fields: [
         {
           id: uid('q'),
           key: 'enumerator_name',
-      type: 'text',
+          type: 'text',
           question: 'Enumerator Name',
           required: true
         },
@@ -1054,6 +1055,20 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
           type: 'text',
           question: 'Enumerator ID',
           required: true
+        },
+        {
+          id: uid('q'),
+          key: 'enumerator_phone',
+          type: 'phone',
+          question: 'Phone',
+          required: false
+        },
+        {
+          id: uid('q'),
+          key: 'enumerator_email',
+          type: 'email',
+          question: 'Email',
+          required: false
         },
         {
           id: uid('q'),
@@ -1067,7 +1082,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
           key: 'survey_area',
           type: 'text',
           question: 'Ward / Area',
-      required: false
+          required: false
         }
       ]
     };
@@ -4998,6 +5013,7 @@ const EnumeratorInfoEditor: React.FC<{
             </div>
             <p className="text-[11px] text-slate-500">
               Captured as a table at the top of the survey, before questions.
+              Name, ID, phone and email are auto-filled from the enumerator account and not editable.
             </p>
           </div>
         </div>

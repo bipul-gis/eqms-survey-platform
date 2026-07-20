@@ -1,24 +1,19 @@
-import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
+import { formatPhotoAnswerLabel } from '../lib/photoAnswers';
+import { ensureEnumeratorIdentityFields } from '../lib/enumeratorIdentityFields';
 import { Question, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
 import { assignedSlumsForProject, formatAssignedSlumLabels } from '../lib/assignedSlums';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { useAuth } from './AuthProvider';
-import { useOptimizedFeatures } from '../hooks/useOptimizedFeatures';
-import wardsData from '../data/ccc_wards.json';
 import { Map as MapIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import type { SurveyLocationMarker } from './MapComponent';
-
-// Lazy: MapComponent transitively pulls react-leaflet + leaflet (~150 KB) so
-// keep it out of the responses-view's initial chunk. Admins only pay the
-// cost when this view actually opens.
-const MapComponent = React.lazy(() =>
-  import('./MapComponent').then((m) => ({ default: m.MapComponent }))
-);
 import {
   ArrowLeft,
   FileText,
@@ -46,6 +41,7 @@ import {
 // Lazy-load SHP export (jszip + shp-write) — only when the button is clicked.
 const loadDownloadResponsesShpZip = () =>
   import('../lib/responseShpExport').then((m) => m.downloadResponsesShpZip);
+import 'leaflet/dist/leaflet.css';
 
 interface QuestionnaireResponsesViewProps {
   questionnaire: Questionnaire;
@@ -82,21 +78,6 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   const [taskedEnumerators, setTaskedEnumerators] = useState<
     { key: string; name: string; email?: string; slumIds: string[]; questionnaireIds: string[] }[]
   >([]);
-
-  // Pull the same feature set the geospatial-survey tab uses so admins viewing
-  // this questionnaire's responses get the full map context (wards, points,
-  // lines, polygons) in the embedded preview below. `'admin'` mode mirrors
-  // the load behaviour of the main map for admin users; non-admin viewers
-  // are filtered out before reaching this view, so passing `'admin'`
-  // unconditionally is safe here.
-  const { features: mapFeatures } = useOptimizedFeatures({
-    mode: 'admin',
-    userUid: user?.uid,
-    userEmail: user?.email ?? undefined,
-    assignedWards: [],
-    adminRefreshKey: 0,
-    enumeratorPersistRefreshKey: 0
-  });
 
   const fetchResponses = async () => {
     try {
@@ -182,48 +163,27 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [questionnaire.id]);
 
-  // Project this questionnaire's responses into the marker shape the map's
-  // "HH Survey Location" layer expects. Scoped to *this* questionnaire so
-  // the embedded preview only shows points relevant to what the admin is
-  // looking at right now (the parent geospatial map shows all points,
-  // across all questionnaires).
+  // GPS points for the responses map — submission GPS first, then any
+  // location-question answers stored on the response.
   const surveyLocationMarkers = useMemo<SurveyLocationMarker[]>(() => {
     const out: SurveyLocationMarker[] = [];
-    for (const r of responses) {
-      // Prefer the deliberate `submissionLocation` (has accuracy + capturedAt);
-      // fall back to the older `location` field for older / draft responses.
-      const sub = (r as any).submissionLocation as
-        | { lat?: number; lng?: number; accuracy?: number; capturedAt?: unknown }
-        | undefined;
-      const loc = r.location;
-      let lat: number | undefined;
-      let lng: number | undefined;
-      let accuracy: number | undefined;
-      let capturedAt: unknown;
-      if (
-        sub &&
-        typeof sub.lat === 'number' &&
-        typeof sub.lng === 'number' &&
-        Number.isFinite(sub.lat) &&
-        Number.isFinite(sub.lng)
-      ) {
-        lat = sub.lat;
-        lng = sub.lng;
-        accuracy = typeof sub.accuracy === 'number' ? sub.accuracy : undefined;
-        capturedAt = sub.capturedAt;
-      } else if (
-        loc &&
-        typeof loc.lat === 'number' &&
-        typeof loc.lng === 'number' &&
-        Number.isFinite(loc.lat) &&
-        Number.isFinite(loc.lng)
-      ) {
-        lat = loc.lat;
-        lng = loc.lng;
-      }
-      if (typeof lat !== 'number' || typeof lng !== 'number') continue;
+    const locationQuestionIds = new Set(
+      (questionnaire.questions || [])
+        .filter((q) => q.type === 'location')
+        .map((q) => q.id)
+    );
+
+    const pushPoint = (
+      r: QuestionnaireResponse,
+      lat: number,
+      lng: number,
+      accuracy?: number,
+      capturedAt?: unknown
+    ) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
       out.push({
-        id: r.id,
+        id: `${r.id}:${out.length}`,
         lat,
         lng,
         accuracy,
@@ -236,9 +196,59 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         submittedAt: r.submittedAt,
         ward: r.location?.ward
       });
+    };
+
+    for (const r of responses) {
+      const sub = (r as { submissionLocation?: { lat?: number; lng?: number; accuracy?: number; capturedAt?: unknown } })
+        .submissionLocation;
+      if (
+        sub &&
+        typeof sub.lat === 'number' &&
+        typeof sub.lng === 'number' &&
+        Number.isFinite(sub.lat) &&
+        Number.isFinite(sub.lng)
+      ) {
+        pushPoint(
+          r,
+          sub.lat,
+          sub.lng,
+          typeof sub.accuracy === 'number' ? sub.accuracy : undefined,
+          sub.capturedAt
+        );
+        continue;
+      }
+
+      const loc = r.location;
+      if (
+        loc &&
+        typeof loc.lat === 'number' &&
+        typeof loc.lng === 'number' &&
+        Number.isFinite(loc.lat) &&
+        Number.isFinite(loc.lng)
+      ) {
+        pushPoint(r, loc.lat, loc.lng);
+        continue;
+      }
+
+      // Fall back to answers on location-type questions.
+      if (r.responses) {
+        for (const [qid, raw] of Object.entries(r.responses)) {
+          if (locationQuestionIds.size > 0 && !locationQuestionIds.has(qid)) continue;
+          if (!raw || typeof raw !== 'object') continue;
+          const ans = raw as { lat?: unknown; lng?: unknown; accuracy?: unknown };
+          if (typeof ans.lat !== 'number' || typeof ans.lng !== 'number') continue;
+          pushPoint(
+            r,
+            ans.lat,
+            ans.lng,
+            typeof ans.accuracy === 'number' ? ans.accuracy : undefined
+          );
+          break;
+        }
+      }
     }
     return out;
-  }, [responses, questionnaire.title]);
+  }, [responses, questionnaire.title, questionnaire.questions]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -724,10 +734,9 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               enumerators={enumeratorSummary}
               assignedCount={taskedEnumerators.length}
             />
-            {/* Same data + controls as the main "Geospatial Survey" tab,
-                landmark layer off by default. */}
+            {/* OSM map of captured GPS points (no CCC boundary / landmarks). */}
             {responses.length > 0 && (
-              <ResponsesMapPanel features={mapFeatures} surveyLocations={surveyLocationMarkers} />
+              <ResponsesMapPanel surveyLocations={surveyLocationMarkers} />
             )}
           </aside>
         </div>
@@ -854,28 +863,55 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
 };
 
 // ---------------------------------------------------------------------------
-// ResponsesMapPanel — full-width geospatial preview rendered below the
-// response table + CSV preview + enumerator-breakdown row. Reuses the
-// production `MapComponent` so admins get the exact same ward/feature
-// layers, base maps, and layer controls that the "Geospatial Survey" tab
-// exposes. Differences:
-//   - Landmark layer starts off (admins reviewing submissions don't need
-//     the imported landmark dataset cluttering the view; they can toggle
-//     it back on via the layer panel).
-//   - All feature-mutation paths are disabled: `addFeatureType={null}`
-//     and the select / move callbacks are no-ops, since this is a
-//     read-only preview, not the editing surface.
+// ResponsesMapPanel — OSM map of captured GPS points only (no CCC wards /
+// landmarks / geospatial features). Fits bounds to the points when present.
 // ---------------------------------------------------------------------------
-// Persist the show/hide preference per browser so admins who don't care
-// about the map don't have to dismiss it every time they open this view.
 const MAP_VISIBLE_STORAGE_KEY = 'eqms_responses_map_visible_v1';
+const SURVEY_LOCATION_FILL = '#374151';
+const SURVEY_LOCATION_OUTLINE_BY_STATUS: Record<string, string> = {
+  draft: '#9ca3af',
+  submitted: '#111827',
+  reviewed: '#16a34a'
+};
+const BANGLADESH_FALLBACK: [number, number] = [23.685, 90.3563];
+
+function formatSurveyTimestamp(value: unknown): string {
+  if (!value) return '—';
+  try {
+    if (typeof value === 'object' && value && typeof (value as { toDate?: () => Date }).toDate === 'function') {
+      return (value as { toDate: () => Date }).toDate().toLocaleString();
+    }
+    if (typeof value === 'string' || typeof value === 'number') {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+    }
+  } catch {
+    /* fall through */
+  }
+  return '—';
+}
+
+/** Fit / re-fit the map whenever the GPS point set changes. */
+const FitGpsBounds: React.FC<{ points: SurveyLocationMarker[] }> = ({ points }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (!points.length) {
+      map.setView(BANGLADESH_FALLBACK, 7);
+      return;
+    }
+    if (points.length === 1) {
+      map.setView([points[0].lat, points[0].lng], 16);
+      return;
+    }
+    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number]));
+    map.fitBounds(bounds, { padding: [36, 36], maxZoom: 17 });
+  }, [map, points]);
+  return null;
+};
 
 const ResponsesMapPanel: React.FC<{
-  features: any[];
   surveyLocations: SurveyLocationMarker[];
-}> = ({ features, surveyLocations }) => {
-  // Default visible — most admins want to see the spatial summary at a
-  // glance — but respect a previously-stored "off" preference.
+}> = ({ surveyLocations }) => {
   const [visible, setVisible] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     try {
@@ -890,12 +926,10 @@ const ResponsesMapPanel: React.FC<{
     try {
       window.localStorage.setItem(MAP_VISIBLE_STORAGE_KEY, visible ? '1' : '0');
     } catch {
-      /* localStorage may be blocked (private mode); silent fallback */
+      /* localStorage may be blocked */
     }
   }, [visible]);
 
-  // When hidden, collapse to just a slim header — keeps the toggle
-  // visible and discoverable without claiming sidebar real estate.
   if (!visible) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -926,20 +960,21 @@ const ResponsesMapPanel: React.FC<{
   }
 
   return (
-    // Fixed 500px height for geospatial preview — map body fills space below header.
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[500px]">
       <div className="px-3 py-2 border-b border-slate-200 flex items-center gap-2 shrink-0">
         <MapIcon size={14} className="text-blue-600 shrink-0" />
         <h3 className="font-semibold text-slate-800 text-xs">Geospatial preview</h3>
-        {surveyLocations.length > 0 && (
+        {surveyLocations.length > 0 ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-700 bg-slate-100 border border-slate-300 rounded-full px-1.5 py-0.5">
             <span
               className="inline-block w-1.5 h-1.5 rounded-full"
               style={{ backgroundColor: '#374151' }}
               aria-hidden
             />
-            {surveyLocations.length}
+            {surveyLocations.length} GPS
           </span>
+        ) : (
+          <span className="text-[10px] text-slate-500">No GPS points in these responses</span>
         )}
         <button
           type="button"
@@ -950,28 +985,61 @@ const ResponsesMapPanel: React.FC<{
           Hide <ChevronUp size={12} />
         </button>
       </div>
-      {/* `flex-1` body — Leaflet still needs an explicit size, but
-          `flex-1` inside a flex column gives it a real numeric height
-          (the parent's height minus the header). On tall viewports the
-          map grows to fill all leftover sidebar space. */}
       <div className="relative w-full flex-1 min-h-0">
-        <Suspense
-          fallback={
-            <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
-              Loading map…
-            </div>
-          }
+        <MapContainer
+          center={BANGLADESH_FALLBACK}
+          zoom={7}
+          className="absolute inset-0 h-full w-full z-0"
+          scrollWheelZoom
         >
-          <MapComponent
-            features={features}
-            wards={wardsData}
-            onFeatureSelect={() => {}}
-            addFeatureType={null}
-            defaultShowLandmarks={false}
-            defaultShowSurveyLocations={false}
-            surveyLocations={surveyLocations}
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-        </Suspense>
+          <FitGpsBounds points={surveyLocations} />
+          {surveyLocations.map((point) => {
+            const status = point.status ?? 'submitted';
+            const outline =
+              SURVEY_LOCATION_OUTLINE_BY_STATUS[status] ||
+              SURVEY_LOCATION_OUTLINE_BY_STATUS.submitted;
+            const tsLabel = formatSurveyTimestamp(point.submittedAt || point.capturedAt);
+            return (
+              <CircleMarker
+                key={point.id}
+                center={[point.lat, point.lng]}
+                radius={7}
+                pathOptions={{
+                  color: outline,
+                  fillColor: SURVEY_LOCATION_FILL,
+                  fillOpacity: 0.85,
+                  weight: 2
+                }}
+              >
+                <Popup>
+                  <div className="min-w-[200px] text-[11px]">
+                    <p className="font-semibold text-slate-900 text-sm mb-1">
+                      {point.respondentName || 'Unknown enumerator'}
+                    </p>
+                    {point.respondentEmail ? (
+                      <p className="text-slate-500 mb-2">{point.respondentEmail}</p>
+                    ) : null}
+                    <p>
+                      <span className="text-slate-500">Status:</span>{' '}
+                      <span className="capitalize">{status}</span>
+                    </p>
+                    <p className="font-mono">
+                      {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
+                    </p>
+                    {typeof point.accuracy === 'number' ? (
+                      <p>±{Math.round(point.accuracy)} m</p>
+                    ) : null}
+                    <p className="text-slate-500 mt-1">{tsLabel}</p>
+                  </div>
+                </Popup>
+              </CircleMarker>
+            );
+          })}
+        </MapContainer>
       </div>
     </div>
   );
@@ -1175,10 +1243,10 @@ const CsvPreview: React.FC<{
   }, [questionnaire.questions]);
   const enumeratorColumnKey = useMemo(
     () =>
-      (questionnaire.enumeratorInfo?.fields || [])
+      (ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo)?.fields || [])
         .map((f) => `${f.id}\t${f.question || f.key || ''}`)
         .join('\n'),
-    [questionnaire.enumeratorInfo?.fields]
+    [questionnaire.enumeratorInfo]
   );
   const { header, tableRows } = useMemo(() => {
     const built = buildResponsesTable(questionnaire, responses);
@@ -1348,7 +1416,7 @@ const ResponseDetailDialog: React.FC<{
   onMarkReviewed,
   onDelete
 }) => {
-  const enumFields = questionnaire.enumeratorInfo?.fields || [];
+  const enumFields = ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo)?.fields || [];
   const questions = (questionnaire.questions || []).filter(
     (q) => q.type !== 'section'
   );
@@ -1598,6 +1666,9 @@ const formatAgeAnswer = (v: unknown): string => {
 
 const formatAnswerForDisplay = (v: unknown, q?: Question): string => {
   if (v == null) return '';
+  if (q?.type === 'photo') {
+    return formatPhotoAnswerLabel(v);
+  }
   if (isOtherSpecifyAnswer(v)) {
     return formatChoiceAnswerForExport(v);
   }
@@ -1629,6 +1700,13 @@ const formatAnswerForDisplay = (v: unknown, q?: Question): string => {
     return v.map((x) => String(x)).join(', ');
   }
   if (typeof v === 'object') {
+    // Legacy / untyped photo payloads (dataUrl present) — never dump base64.
+    if (
+      typeof (v as { dataUrl?: unknown }).dataUrl === 'string' &&
+      String((v as { dataUrl: string }).dataUrl).startsWith('data:image')
+    ) {
+      return formatPhotoAnswerLabel(v);
+    }
     try {
       return Object.entries(v as Record<string, unknown>)
         .map(([k, val]) => `${k}: ${String(val ?? '')}`)

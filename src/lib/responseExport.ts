@@ -20,6 +20,8 @@ import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
+import { formatPhotoAnswerLabel } from './photoAnswers';
+import { ensureEnumeratorIdentityFields } from './enumeratorIdentityFields';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -110,6 +112,10 @@ const stringifyAge = (v: unknown): string => {
 /** Convert raw answer values into a human-readable string. */
 const stringifyAnswer = (v: unknown, q?: Question): string => {
   if (v == null) return '';
+  // Photo answers store a dataUrl for preview — never dump base64 into CSV.
+  if (q?.type === 'photo') {
+    return formatPhotoAnswerLabel(v);
+  }
   // Age objects need a custom serializer — the generic object branch
   // below would otherwise emit `years: 3; months: 5` which is fine but
   // less natural than "3 years 5 months" in spreadsheets.
@@ -153,6 +159,12 @@ const stringifyAnswer = (v: unknown, q?: Question): string => {
     return v.map((x) => String(x)).join('; ');
   }
   if (typeof v === 'object') {
+    if (
+      typeof (v as { dataUrl?: unknown }).dataUrl === 'string' &&
+      String((v as { dataUrl: string }).dataUrl).startsWith('data:image')
+    ) {
+      return formatPhotoAnswerLabel(v);
+    }
     // Matrix-style answers: { row: column } → "row: column; row: column"
     const entries = Object.entries(v as Record<string, unknown>);
     if (entries.every(([k, val]) => typeof k === 'string' && typeof val !== 'object')) {
@@ -344,7 +356,7 @@ export const buildResponsesTable = (
   q: Questionnaire,
   responses: QuestionnaireResponse[]
 ): ResponsesTable => {
-  const enumFields = q.enumeratorInfo?.fields || [];
+  const enumFields = ensureEnumeratorIdentityFields(q.enumeratorInfo)?.fields || [];
   const questions = mergeQuestionsWithResponseKeys(
     getExportOrderedQuestions(q),
     responses
@@ -461,7 +473,7 @@ export const buildResponsesExportFieldDescriptors = (
   q: Questionnaire,
   responses: QuestionnaireResponse[]
 ): ResponsesExportFieldDescriptor[] => {
-  const enumFields = q.enumeratorInfo?.fields || [];
+  const enumFields = ensureEnumeratorIdentityFields(q.enumeratorInfo)?.fields || [];
   const questions = mergeQuestionsWithResponseKeys(getExportOrderedQuestions(q), responses);
   const exportColumns = buildResponsesExportColumns(questions);
   const out: ResponsesExportFieldDescriptor[] = [...SYSTEM_EXPORT_FIELDS];

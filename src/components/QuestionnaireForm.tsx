@@ -23,8 +23,7 @@ import {
   QuestionnaireResponse,
   Question,
   GpsCaptureSettings,
-  SubmissionGpsCapture,
-  UserProfile
+  SubmissionGpsCapture
 } from '../types';
 import {
   AlertCircle,
@@ -53,6 +52,12 @@ import {
   mergeDwellingIntoAnswerMaps
 } from '../lib/slumDwellingSequence';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
+import {
+  buildInitialEnumeratorInfo,
+  collectEnumeratorIdentityFieldIds,
+  ensureEnumeratorIdentityFields,
+  syncEnumeratorIdentityAnswers
+} from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled } from '../lib/choiceAnswers';
 import {
@@ -73,7 +78,6 @@ import {
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
 import { geosurveyApi } from '../lib/geosurveyApi';
-
 interface QuestionnaireFormProps {
   questionnaire: Questionnaire;
   onClose: () => void;
@@ -118,131 +122,6 @@ const stripUndefined = <T extends Record<string, any>>(obj: T): T => {
     if (v !== undefined) out[k] = v;
   }
   return out as T;
-};
-
-// ---- Auto-capture helpers (used to pre-fill date/time enumerator-info fields)
-
-const pad2 = (n: number) => String(n).padStart(2, '0');
-const formatLocalDate = (d: Date) =>
-  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-const formatLocalTime = (d: Date) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-const formatLocalDateTime = (d: Date) => `${formatLocalDate(d)}T${formatLocalTime(d)}`;
-
-/**
- * Words that unambiguously identify the *enumerator* (vs. the respondent,
- * slum, household, etc.). The auto-capture for name/email/phone only fires
- * when one of these qualifiers appears in the field key or question text —
- * otherwise we'd wrongly fill things like "Slum Name" or "Respondent Email"
- * with the enumerator's profile values.
- */
-const ENUMERATOR_FIELD_MARKERS = [
-  'enumerator',
-  'enum_',
-  'surveyor',
-  'interviewer',
-  'investigator',
-  'staff',
-  'data collector',
-  'data_collector',
-  'your '  // "Your Name", "Your Email", "Your Phone"
-];
-
-const hasEnumeratorMarker = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  return ENUMERATOR_FIELD_MARKERS.some((m) => hay.includes(m));
-};
-
-/** True if the field is explicitly the *enumerator's* name. */
-const looksLikeEnumeratorNameField = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  if (!(/\bname\b/.test(hay) || /\bনাম/.test(hay))) return false;
-  return hasEnumeratorMarker(f);
-};
-
-/** True if the field is explicitly the *enumerator's* phone / mobile. */
-const looksLikeEnumeratorPhoneField = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  const phoneHit =
-    /\b(phone|mobile|contact|cell)\b/.test(hay) || /\bমোবাইল|\bফোন/.test(hay);
-  if (!phoneHit) return false;
-  return hasEnumeratorMarker(f);
-};
-
-/** True if the field is explicitly the *enumerator's* email. */
-const looksLikeEnumeratorEmailField = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  const emailHit = /\bemail\b|\be-mail\b|\bমেইল/.test(hay);
-  if (!emailHit) return false;
-  return hasEnumeratorMarker(f);
-};
-
-/**
- * Build the initial answers map for the enumerator-info section.
- *
- * Pre-fills two kinds of fields so an enumerator doesn't have to type the
- * same data on every survey:
- *
- *   1. **Date / time fields** — current local date / time at the moment
- *      the form is opened ("Date of Survey", "Survey Start Time").
- *   2. **Identity fields** — when the question or key clearly indicates the
- *      *enumerator's own* name / email / phone (the whole section is
- *      contextually about the enumerator), the corresponding value from
- *      the signed-in `UserProfile` is filled in.
- *
- * Explicit field-level `defaultValue` (set by the admin in the builder)
- * always wins over the auto-capture.
- */
-const buildInitialEnumeratorInfo = (
-  fields: Question[] | undefined,
-  profile: UserProfile | null
-): Record<string, any> => {
-  if (!fields || fields.length === 0) return {};
-  const now = new Date();
-  const out: Record<string, any> = {};
-  for (const f of fields) {
-    if (f.defaultValue !== undefined && f.defaultValue !== null && f.defaultValue !== '') {
-      out[f.id] = f.defaultValue;
-      continue;
-    }
-
-    // Date / time auto-capture (independent of profile).
-    if (f.type === 'date') {
-      out[f.id] = formatLocalDate(now);
-      continue;
-    }
-    if (f.type === 'time') {
-      out[f.id] = formatLocalTime(now);
-      continue;
-    }
-    if (f.type === 'datetime') {
-      out[f.id] = formatLocalDateTime(now);
-      continue;
-    }
-
-    if (!profile) continue;
-
-    // Identity auto-capture is strictly *enumerator-scoped*. A field is only
-    // filled when its key / question text contains an explicit enumerator
-    // marker (e.g. "Enumerator Name", "Surveyor Phone"). This avoids
-    // hijacking unrelated "Name"/"Email"/"Phone" fields that happen to live
-    // in the section (like "Slum Name" or a respondent contact).
-    const isTexty =
-      f.type === 'text' || f.type === 'longtext' || f.type === 'email' || f.type === 'phone';
-    if (!isTexty) continue;
-
-    if (looksLikeEnumeratorEmailField(f)) {
-      if (profile.email) out[f.id] = profile.email;
-      continue;
-    }
-    if (looksLikeEnumeratorPhoneField(f)) {
-      if (profile.mobileNumber) out[f.id] = profile.mobileNumber;
-      continue;
-    }
-    if (looksLikeEnumeratorNameField(f)) {
-      if (profile.displayName) out[f.id] = profile.displayName;
-    }
-  }
-  return out;
 };
 
 /**
@@ -441,18 +320,20 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const [responses, setResponses] = useState<Record<string, any>>(
     () => existingResponse?.responses || {}
   );
-  // Lazy init so the "now" snapshot is taken when the form first mounts,
-  // not on every re-render. Date / time fields are pre-filled with the
-  // current local date/time; name / email / phone fields are pre-filled
-  // from the signed-in enumerator's profile when their question or key
-  // makes the intent clear. Admin-supplied `defaultValue` always wins.
-  // When resuming a draft we restore the previously captured values
-  // verbatim — the original survey-start time stays accurate.
-  const [enumeratorInfo, setEnumeratorInfo] = useState<Record<string, any>>(() =>
-    existingResponse?.enumeratorInfo
+  // Lazy init so the "now" snapshot is taken when the form first mounts.
+  // Identity fields (name / id / phone / email) always come from the signed-in
+  // account and stay locked. Date/time fields get "now" on new surveys; drafts
+  // keep their original survey-start values for non-identity rows.
+  const [enumeratorInfo, setEnumeratorInfo] = useState<Record<string, any>>(() => {
+    const fields = ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo)?.fields;
+    const base = existingResponse?.enumeratorInfo
       ? { ...existingResponse.enumeratorInfo }
-      : buildInitialEnumeratorInfo(questionnaire.enumeratorInfo?.fields, userProfile)
-  );
+      : buildInitialEnumeratorInfo(fields, userProfile, user);
+    return {
+      ...base,
+      ...syncEnumeratorIdentityAnswers(fields, userProfile, user)
+    };
+  });
   const [consentGranted, setConsentGranted] = useState(
     () => !!existingResponse?.consentGranted
   );
@@ -486,12 +367,40 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   }, [initialLocation, existingResponse?.location]);
 
   // Questionnaire-level config — preserve old default behaviour when missing.
+  // Identity rows (name / id / phone / email) are always present when the
+  // enumerator-info section is enabled.
   const descriptionBlocks = questionnaire.descriptionBlocks || [];
   const conclusionBlocks = questionnaire.conclusionBlocks || [];
-  const enumeratorInfoConfig = questionnaire.enumeratorInfo;
+  const enumeratorInfoConfig = useMemo(
+    () => ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo),
+    [questionnaire.enumeratorInfo]
+  );
   const consentGate = questionnaire.consentGate;
   const submissionGpsConfig: SubmissionGpsCapture | undefined = questionnaire.submissionGps;
   const settings = questionnaire.settings || {};
+
+  // Keep locked identity answers mirrored to the live profile (covers late
+  // profile load and resumed drafts that previously had editable values).
+  useEffect(() => {
+    if (readOnly) return;
+    const patch = syncEnumeratorIdentityAnswers(
+      enumeratorInfoConfig?.fields,
+      userProfile,
+      user
+    );
+    if (Object.keys(patch).length === 0) return;
+    setEnumeratorInfo((prev) => {
+      let dirty = false;
+      const next = { ...prev };
+      for (const [k, v] of Object.entries(patch)) {
+        if (next[k] !== v) {
+          next[k] = v;
+          dirty = true;
+        }
+      }
+      return dirty ? next : prev;
+    });
+  }, [readOnly, enumeratorInfoConfig?.fields, userProfile, user]);
 
   // Gate: questions only revealed once consent ticked (when consent is enabled).
   const questionsUnlocked = !consentGate?.enabled || consentGranted;
@@ -718,15 +627,53 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     return ids;
   }, [appliedDefaultRules, slumAutoFieldIds]);
 
+  const identityEnumeratorFieldIds = useMemo(
+    () => collectEnumeratorIdentityFieldIds(enumeratorInfoConfig?.fields),
+    [enumeratorInfoConfig?.fields]
+  );
+
   const lockedEnumeratorFieldIds = useMemo(() => {
-    if (!primaryAssignedSlum) return undefined;
-    const ids = [
-      ...collectSlumNameFieldIds(questionnaire.enumeratorInfo?.fields),
-      ...collectWardAreaFieldIds(questionnaire.enumeratorInfo?.fields),
-      ...collectDwellingIdFieldIds(questionnaire.enumeratorInfo?.fields)
-    ].filter((id) => slumAutoFieldIds.has(id));
-    return ids.length > 0 ? new Set(ids) : undefined;
-  }, [primaryAssignedSlum, questionnaire.enumeratorInfo?.fields, slumAutoFieldIds]);
+    const ids = new Set<string>(identityEnumeratorFieldIds);
+    if (primaryAssignedSlum) {
+      for (const id of [
+        ...collectSlumNameFieldIds(enumeratorInfoConfig?.fields),
+        ...collectWardAreaFieldIds(enumeratorInfoConfig?.fields),
+        ...collectDwellingIdFieldIds(enumeratorInfoConfig?.fields)
+      ]) {
+        if (slumAutoFieldIds.has(id)) ids.add(id);
+      }
+    }
+    return ids.size > 0 ? ids : undefined;
+  }, [
+    identityEnumeratorFieldIds,
+    primaryAssignedSlum,
+    enumeratorInfoConfig?.fields,
+    slumAutoFieldIds
+  ]);
+
+  const enumeratorLockReasons = useMemo(() => {
+    const reasons: Record<string, string> = {};
+    for (const id of identityEnumeratorFieldIds) {
+      reasons[id] = 'Auto-filled from your account';
+    }
+    if (primaryAssignedSlum) {
+      for (const id of [
+        ...collectSlumNameFieldIds(enumeratorInfoConfig?.fields),
+        ...collectWardAreaFieldIds(enumeratorInfoConfig?.fields),
+        ...collectDwellingIdFieldIds(enumeratorInfoConfig?.fields)
+      ]) {
+        if (slumAutoFieldIds.has(id)) {
+          reasons[id] = 'Auto-filled from your slum assignment';
+        }
+      }
+    }
+    return reasons;
+  }, [
+    identityEnumeratorFieldIds,
+    primaryAssignedSlum,
+    enumeratorInfoConfig?.fields,
+    slumAutoFieldIds
+  ]);
 
   useEffect(() => {
     if (appliedDefaultRules.length === 0 || readOnly) return;
@@ -800,6 +747,8 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   };
 
   const handleEnumeratorChange = (fieldId: string, value: unknown) => {
+    // Identity rows are profile-backed and never editable by enumerators.
+    if (identityEnumeratorFieldIds.has(fieldId)) return;
     setEnumeratorInfo((prev) => ({ ...prev, [fieldId]: value }));
     setEnumeratorErrors((prev) => {
       if (!prev[fieldId]) return prev;
@@ -1174,6 +1123,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
               logicAnswers={answersForOptionLogic}
               onChange={handleEnumeratorChange}
               lockedFieldIds={lockedEnumeratorFieldIds}
+              lockReasons={enumeratorLockReasons}
             />
             {primaryAssignedSlum && (
               <p className="text-[11px] text-slate-500 mt-2">

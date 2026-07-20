@@ -47,6 +47,15 @@ import {
   choiceAnswerToComparableString
 } from '../lib/choiceAnswers';
 import { ChoiceWithOtherFields } from './ChoiceWithOtherFields';
+import {
+  buildPhotoFileName,
+  formatPhotoAnswerLabel,
+  isPhotoAnswerFilled,
+  type PhotoAnswer
+} from '../lib/photoAnswers';
+
+export type { PhotoAnswer };
+export { isPhotoAnswerFilled, formatPhotoAnswerLabel, buildPhotoFileName };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -339,9 +348,11 @@ export const EnumeratorInfoTable: React.FC<{
    */
   logicAnswers?: Record<string, unknown>;
   onChange: (fieldId: string, value: unknown) => void;
-  /** Field ids auto-filled from task assignment (read-only). */
+  /** Field ids that are read-only (profile identity and/or slum auto-fill). */
   lockedFieldIds?: Set<string>;
-}> = ({ info, answers, logicAnswers, onChange, lockedFieldIds }) => {
+  /** Optional per-field badge text when locked. */
+  lockReasons?: Record<string, string>;
+}> = ({ info, answers, logicAnswers, onChange, lockedFieldIds, lockReasons }) => {
   const cls =
     'w-full text-sm border border-slate-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500';
   const logicCtx = logicAnswers ?? answers;
@@ -585,7 +596,7 @@ export const EnumeratorInfoTable: React.FC<{
                   {renderInput(f)}
                   {lockedFieldIds?.has(f.id) && (
                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
-                      Auto-filled from your slum assignment
+                      {lockReasons?.[f.id] || 'Auto-filled'}
                     </span>
                   )}
                 </fieldset>
@@ -1160,22 +1171,6 @@ const Stat: React.FC<{
 // PhotoCaptureWidget — camera capture for `photo` questions
 // ---------------------------------------------------------------------------
 
-export type PhotoAnswer = {
-  dataUrl: string;
-  mimeType: string;
-  capturedAt: string;
-  source: 'camera' | 'gallery';
-  width?: number;
-  height?: number;
-};
-
-export const isPhotoAnswerFilled = (value: unknown): boolean => {
-  if (typeof value === 'string') return value.startsWith('data:image') || value.startsWith('blob:');
-  if (!value || typeof value !== 'object') return false;
-  const dataUrl = (value as PhotoAnswer).dataUrl;
-  return typeof dataUrl === 'string' && dataUrl.length > 0;
-};
-
 const compressImageFile = async (
   file: Blob,
   maxEdge = 1280,
@@ -1292,8 +1287,7 @@ export const PhotoCaptureWidget: React.FC<{
       mimeType,
       capturedAt: new Date().toISOString(),
       source: 'camera',
-      width,
-      height
+      fileName: buildPhotoFileName('camera', mimeType)
     });
     stopCamera();
   }, [onChange, stopCamera, streaming]);
@@ -1309,8 +1303,7 @@ export const PhotoCaptureWidget: React.FC<{
           mimeType: compressed.mimeType,
           capturedAt: new Date().toISOString(),
           source,
-          width: compressed.width,
-          height: compressed.height
+          fileName: buildPhotoFileName(source, compressed.mimeType)
         });
         stopCamera();
       } catch (err) {
@@ -1332,6 +1325,11 @@ export const PhotoCaptureWidget: React.FC<{
           <div className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
             <CheckCircle2 size={12} /> Captured
           </div>
+          {value && typeof value === 'object' && (value as PhotoAnswer).fileName && (
+            <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white">
+              {(value as PhotoAnswer).fileName}
+            </div>
+          )}
         </div>
       ) : streaming ? (
         <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
