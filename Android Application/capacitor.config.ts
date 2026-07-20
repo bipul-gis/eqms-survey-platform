@@ -20,7 +20,7 @@ const config: CapacitorConfig = {
   // install effectively a "different app" and they'd have to reinstall.
   // Pick once, keep forever.
   appId: 'bd.gov.eqms.mamata.enumerator',
-  appName: 'EQMS Geosurvey',
+  appName: 'Geosurvey',
 
   // `www` is populated by `scripts/copy-web.js` (run as part of
   // `npm run prepare`). We don't symlink to `../dist` directly because
@@ -52,12 +52,14 @@ const config: CapacitorConfig = {
 
   plugins: {
     SplashScreen: {
-      launchShowDuration: 1200,
+      launchShowDuration: 2000,
       launchAutoHide: true,
       backgroundColor: '#0f172a',
+      androidSplashResourceName: 'splash',
       androidScaleType: 'CENTER_CROP',
-      showSpinner: true,
-      spinnerColor: '#3b82f6'
+      showSpinner: false,
+      splashFullScreen: true,
+      splashImmersive: true
     },
     StatusBar: {
       // Slate-900 to match the app's header gradient.
