@@ -9,6 +9,17 @@ interface MisProject {
   status?: string;
 }
 
+const DEFAULT_GEOSPATIAL_PROJECT_CODE = '20612601105';
+const DEFAULT_GEOSPATIAL_PROJECT_NAME =
+  'Consultancy services GPS Technology Assisted Mapping and Listing Exercise';
+
+function hasSharedGeospatialSurvey(project: Pick<MisProject, 'code' | 'name'>): boolean {
+  return (
+    String(project.code || '').trim() === DEFAULT_GEOSPATIAL_PROJECT_CODE ||
+    String(project.name || '').trim().toLowerCase() === DEFAULT_GEOSPATIAL_PROJECT_NAME.toLowerCase()
+  );
+}
+
 function getMisDatabaseUrl(): string {
   return (
     process.env.MIS_DATABASE_URL ||
@@ -37,12 +48,13 @@ export async function fetchMisProjects(): Promise<MisProject[]> {
 
 export function misProjectToGeosurvey(p: MisProject) {
   const active = p.status === 'Ongoing' || p.status === 'Payment Pending';
+  const geospatial = hasSharedGeospatialSurvey(p);
   return {
     id: p.id,
     name: p.name,
     code: p.code,
     description: p.manager ? `PM: ${p.manager}` : '',
-    segments: { geospatial: true, questionnaire: true },
+    segments: { geospatial, questionnaire: true },
     isActive: active,
     misStatus: p.status,
     manager: p.manager,

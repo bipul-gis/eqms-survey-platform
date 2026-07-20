@@ -8,8 +8,9 @@
  *
  * Usage: npm run db:migrate-firebase
  */
-import './server/env';
+import '../server/env';
 import admin from 'firebase-admin';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { readFileSync } from 'fs';
 import { pool, initDb } from '../server/db';
 import { hashPassword, getDefaultPassword } from '../server/passwordUtils';
@@ -17,20 +18,23 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const DEFAULT_PROJECT_ID = 'project_20612601105';
 
-async function getFirestore() {
+async function getFirestoreClient() {
+  let app: admin.app.App;
   if (!admin.apps.length) {
     const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
     if (!credPath) {
       throw new Error('Set GOOGLE_APPLICATION_CREDENTIALS to your Firebase service account JSON path.');
     }
     const serviceAccount = JSON.parse(readFileSync(credPath, 'utf8'));
-    admin.initializeApp({
+    app = admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
       projectId: firebaseConfig.projectId,
     });
+  } else {
+    app = admin.app();
   }
   const dbId = process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
-  return admin.firestore(dbId);
+  return getAdminFirestore(app, dbId);
 }
 
 function tsToIso(value: unknown): string | undefined {
@@ -203,7 +207,7 @@ async function migrateFeatures(db: FirebaseFirestore.Firestore) {
 
 async function main() {
   await initDb();
-  const db = await getFirestore();
+  const db = await getFirestoreClient();
   console.log('Starting Firebase → PostgreSQL migration...');
   await migrateUsers(db);
   await migrateBlocklists(db);

@@ -23,7 +23,13 @@ import {
 } from 'lucide-react';
 import { Project } from '../types';
 import { AppFooter } from './AppFooter';
-import { countAllQuestionnairesByProject, listProjects } from '../lib/projects';
+import {
+  activateProjectForGeosurvey,
+  countAllQuestionnairesByProject,
+  deactivateProjectForGeosurvey,
+  listProjects,
+  searchMisProjects
+} from '../lib/projects';
 
 interface ProjectPickerProps {
   currentUserUid: string;
@@ -41,19 +47,22 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [showArchived, setShowArchived] = useState(false);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [allMisProjects, setAllMisProjects] = useState<Project[]>([]);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
       setLoading(true);
       setError(null);
-      const [list, countMap] = await Promise.all([
+      const [list, countMap, misList] = await Promise.all([
         listProjects(),
-        countAllQuestionnairesByProject().catch(() => ({} as Record<string, number>))
+        countAllQuestionnairesByProject().catch(() => ({} as Record<string, number>)),
+        searchMisProjects()
       ]);
       setProjects(list);
       setCounts(countMap);
+      setAllMisProjects(misList);
     } catch (e) {
       console.error('Failed to load projects:', e);
       setError(e instanceof Error ? e.message : String(e));
@@ -69,14 +78,57 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return projects
-      .filter((p) => (showArchived ? p.isActive === false : p.isActive !== false))
-      .filter((p) =>
-        q
-          ? `${p.name} ${p.code} ${p.description || ''}`.toLowerCase().includes(q)
-          : true
-      );
-  }, [projects, search, showArchived]);
+    return projects.filter((p) =>
+      q ? `${p.name} ${p.code} ${p.description || ''}`.toLowerCase().includes(q) : true
+    );
+  }, [projects, search]);
+
+  const searchResults = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [] as Project[];
+    return allMisProjects
+      .filter((p) => `${p.name} ${p.code} ${p.description || ''}`.toLowerCase().includes(q))
+      .slice(0, 12);
+  }, [allMisProjects, search]);
+
+  const handleActivate = async (project: Project) => {
+    try {
+      setActivatingId(project.id);
+      setError(null);
+      const saved = await activateProjectForGeosurvey(project);
+      setProjects((prev) => {
+        const rest = prev.filter((item) => item.id !== saved.id);
+        return [...rest, saved].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      });
+      setSearch('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActivatingId(null);
+    }
+  };
+
+  const handleToggleActive = async (project: Project, active: boolean) => {
+    try {
+      setActivatingId(project.id);
+      setError(null);
+      if (active) {
+        await deactivateProjectForGeosurvey(project.id);
+        setProjects((prev) => prev.filter((item) => item.id !== project.id));
+      } else {
+        const saved = await activateProjectForGeosurvey(project);
+        setProjects((prev) => {
+          const rest = prev.filter((item) => item.id !== saved.id);
+          return [...rest, saved].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        });
+        setSearch('');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActivatingId(null);
+    }
+  };
 
   return (
     <div className="min-h-[100dvh] bg-gradient-to-br from-slate-50 to-blue-50/40 flex flex-col">
@@ -124,8 +176,8 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           <div>
             <h2 className="text-xl sm:text-2xl font-bold text-slate-800">Projects</h2>
             <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Projects are managed in MIS. Use this list to search and open a
-              project for its geospatial and questionnaire workspaces.
+              Search MIS projects, then activate the ones GeoSurvey should use.
+              Only activated projects are shown in the GeoSurvey project list.
             </p>
           </div>
           <div className="inline-flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 max-w-md">
@@ -135,24 +187,62 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
         </div>
 
         <div className="flex items-center gap-3 flex-wrap mb-5">
+          <span className="text-sm font-semibold text-slate-700">Select project</span>
           <div className="relative flex-1 min-w-[220px]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search projects by name, code, or description…"
+              placeholder="Type project name or code…"
               className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             />
+            {searchResults.length > 0 && (
+              <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
+                {searchResults.map((p) => {
+                  const active = projects.some((item) => item.id === p.id);
+                  return (
+                    <div
+                      key={p.id}
+                      className="px-4 py-3 border-b last:border-b-0 border-slate-100"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <label className="flex items-start gap-3 flex-1 min-w-0 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            checked={active}
+                            disabled={activatingId === p.id}
+                            onChange={() => {
+                              if (activatingId !== p.id) {
+                                void handleToggleActive(p, active);
+                              }
+                            }}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-slate-400 uppercase tracking-wide">
+                              {p.code || '—'}
+                            </div>
+                            <div className="text-sm font-semibold text-slate-800 truncate">{p.name}</div>
+                            <div className="text-xs text-slate-500 truncate">{p.description || 'PM: —'}</div>
+                          </div>
+                        </label>
+                        <span className="text-[11px] font-semibold text-blue-700 shrink-0">
+                          {activatingId === p.id
+                            ? active
+                              ? 'Removing…'
+                              : 'Adding…'
+                            : active
+                              ? 'GeoSurvey'
+                              : 'Mark as GeoSurvey'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-            />
-            Show archived
-          </label>
         </div>
 
         {error && (
@@ -179,9 +269,11 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           <div className="bg-white border border-slate-200 rounded-xl p-10 text-center">
             <Folder size={32} className="mx-auto mb-3 text-slate-300" />
             <p className="text-sm font-semibold text-slate-700">
-              {showArchived ? 'No archived projects.' : 'No projects yet.'}
+              No active GeoSurvey projects yet.
             </p>
-            {!showArchived && <p className="text-xs text-slate-500 mt-1">Create projects in MIS.</p>}
+            <p className="text-xs text-slate-500 mt-1">
+              Search above, then add the MIS projects you want active in GeoSurvey.
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -231,11 +323,9 @@ const ProjectCard: React.FC<{
               {project.name}
             </h3>
           </div>
-          {isArchived && (
-            <span className="text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full shrink-0">
-              Archived
-            </span>
-          )}
+          <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full shrink-0">
+            Active
+          </span>
         </div>
         {project.description && (
           <p className="text-[11px] text-slate-500 mt-2 line-clamp-2">

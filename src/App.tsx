@@ -456,6 +456,8 @@ const AppContent: React.FC = () => {
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isApprovedEnumerator = userProfile?.role === 'enumerator' && userProfile?.status === 'approved';
+  const currentProjectHasGeo = currentProject?.segments?.geospatial !== false;
+  const currentProjectHasQuestionnaire = currentProject?.segments?.questionnaire !== false;
 
   // Never allow admin-only overlays to persist across role changes or logout/login.
   useEffect(() => {
@@ -467,6 +469,16 @@ const AppContent: React.FC = () => {
     if (!isAdmin && adminMode !== 'home') setAdminMode('home');
     if (!isAdmin && currentProject) setCurrentProject(null);
   }, [isAdmin, adminMode, currentProject]);
+
+  useEffect(() => {
+    if (!isAdmin || !currentProject) return;
+    if (adminMode === 'geospatial' && !currentProjectHasGeo) {
+      setAdminMode(currentProjectHasQuestionnaire ? 'questionnaire' : 'home');
+    }
+    if (adminMode === 'questionnaire' && !currentProjectHasQuestionnaire) {
+      setAdminMode(currentProjectHasGeo ? 'geospatial' : 'home');
+    }
+  }, [isAdmin, currentProject, adminMode, currentProjectHasGeo, currentProjectHasQuestionnaire]);
 
   useEffect(() => {
     if (
@@ -2315,43 +2327,44 @@ const AppContent: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Geospatial Survey tile */}
-              <button
-                onClick={() => setAdminMode('geospatial')}
-                className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
-              >
-                <div className="absolute -top-12 -right-12 w-40 h-40 bg-blue-100/60 rounded-full blur-2xl group-hover:bg-blue-200/70 transition-colors" />
-                <div className="relative">
-                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
-                    <MapIcon size={26} className="text-white" />
+              {currentProjectHasGeo && (
+                <button
+                  onClick={() => setAdminMode('geospatial')}
+                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+                >
+                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-blue-100/60 rounded-full blur-2xl group-hover:bg-blue-200/70 transition-colors" />
+                  <div className="relative">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
+                      <MapIcon size={26} className="text-white" />
+                    </div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-lg font-bold text-slate-900">Geospatial Survey</h3>
+                      <ChevronRight
+                        size={18}
+                        className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all"
+                      />
+                    </div>
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      Map view, attribute data table, quality control and feature management for
+                      field-collected landmarks, points, lines and polygons.
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-1.5">
+                      {['Map', 'QC', 'Landmarks', 'Wards', 'Shapefile export'].map((tag) => (
+                        <span
+                          key={tag}
+                          className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-lg font-bold text-slate-900">Geospatial Survey</h3>
-                    <ChevronRight
-                      size={18}
-                      className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all"
-                    />
-                  </div>
-                  <p className="text-sm text-slate-500 leading-relaxed">
-                    Map view, attribute data table, quality control and feature management for
-                    field-collected landmarks, points, lines and polygons.
-                  </p>
-                  <div className="mt-4 flex flex-wrap gap-1.5">
-                    {['Map', 'QC', 'Landmarks', 'Wards', 'Shapefile export'].map((tag) => (
-                      <span
-                        key={tag}
-                        className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </button>
+                </button>
+              )}
 
-              {/* Questionnaire Survey tile */}
               <button
                 onClick={() => setAdminMode('questionnaire')}
+                disabled={!currentProjectHasQuestionnaire}
                 className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-indigo-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
               >
                 <div className="absolute -top-12 -right-12 w-40 h-40 bg-indigo-100/60 rounded-full blur-2xl group-hover:bg-indigo-200/70 transition-colors" />
@@ -2425,7 +2438,7 @@ const AppContent: React.FC = () => {
     );
   }
 
-  if (isAdmin && adminMode === 'questionnaire') {
+  if (isAdmin && adminMode === 'questionnaire' && currentProjectHasQuestionnaire) {
     return (
       <>
         <QuestionnaireManager
@@ -2434,6 +2447,29 @@ const AppContent: React.FC = () => {
           onSelectQuestionnaire={(questionnaire) => {
             setSelectedQuestionnaire(questionnaire);
             setAdminMode('geospatial');
+          }}
+        />
+        {showUserManagement && (
+          <div className="fixed top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
+            <UserManagement
+              project={currentProject}
+              onClose={() => setShowUserManagement(false)}
+            />
+          </div>
+        )}
+      </>
+    );
+  }
+
+  if (isAdmin && !currentProjectHasGeo && currentProjectHasQuestionnaire) {
+    return (
+      <>
+        <QuestionnaireManager
+          project={currentProject}
+          onClose={() => setAdminMode('home')}
+          onSelectQuestionnaire={(questionnaire) => {
+            setSelectedQuestionnaire(questionnaire);
+            setAdminMode('questionnaire');
           }}
         />
         {showUserManagement && (

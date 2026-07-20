@@ -87,6 +87,20 @@ export const geosurveyApi = {
   listMisProjects: () =>
     apiFetch<{ items: import('../types').Project[] }>('/api/mis-projects'),
 
+  listGeosurveyProjects: () =>
+    apiFetch<{ items: import('../types').Project[] }>('/api/geosurvey-projects'),
+
+  activateGeosurveyProject: (project: import('../types').Project) =>
+    apiFetch<{ item: import('../types').Project }>(`/api/geosurvey-projects/${project.id}/activate`, {
+      method: 'POST',
+      body: JSON.stringify(project),
+    }),
+
+  deactivateGeosurveyProject: (projectId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/geosurvey-projects/${projectId}/deactivate`, {
+      method: 'POST',
+    }),
+
   listUsers: () =>
     apiFetch<{ items: import('../types').UserProfile[] }>('/api/users'),
 

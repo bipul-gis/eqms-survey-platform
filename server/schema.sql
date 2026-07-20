@@ -99,3 +99,14 @@ CREATE TABLE IF NOT EXISTS project_id_map (
   mis_project_name TEXT,
   mapped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS geosurvey_projects (
+  project_id TEXT PRIMARY KEY,
+  project_code TEXT NOT NULL DEFAULT '',
+  project_name TEXT NOT NULL DEFAULT '',
+  manager_name TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  project_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

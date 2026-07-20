@@ -13,16 +13,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Camera,
   CheckCircle2,
   Crosshair,
   IdCard,
+  ImagePlus,
   Loader2,
   Locate,
   Lock,
+  RefreshCcw,
   Satellite,
   ShieldCheck,
   Sigma,
-  Star
+  Star,
+  Trash2
 } from 'lucide-react';
 import {
   ComputedSpec,
@@ -1153,6 +1157,310 @@ const Stat: React.FC<{
 );
 
 // ---------------------------------------------------------------------------
+// PhotoCaptureWidget — camera capture for `photo` questions
+// ---------------------------------------------------------------------------
+
+export type PhotoAnswer = {
+  dataUrl: string;
+  mimeType: string;
+  capturedAt: string;
+  source: 'camera' | 'gallery';
+  width?: number;
+  height?: number;
+};
+
+export const isPhotoAnswerFilled = (value: unknown): boolean => {
+  if (typeof value === 'string') return value.startsWith('data:image') || value.startsWith('blob:');
+  if (!value || typeof value !== 'object') return false;
+  const dataUrl = (value as PhotoAnswer).dataUrl;
+  return typeof dataUrl === 'string' && dataUrl.length > 0;
+};
+
+const compressImageFile = async (
+  file: Blob,
+  maxEdge = 1280,
+  quality = 0.72
+): Promise<{ dataUrl: string; width: number; height: number; mimeType: string }> => {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Failed to decode image.'));
+      el.src = objectUrl;
+    });
+    const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+    const width = Math.max(1, Math.round(img.width * scale));
+    const height = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas unavailable.');
+    ctx.drawImage(img, 0, 0, width, height);
+    const mimeType = 'image/jpeg';
+    const dataUrl = canvas.toDataURL(mimeType, quality);
+    return { dataUrl, width, height, mimeType };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+};
+
+/**
+ * Live camera capture for questionnaire Photo questions.
+ * Primary path: device camera preview + Capture button.
+ * Fallback: open camera app via `capture="environment"`, plus optional gallery pick.
+ */
+export const PhotoCaptureWidget: React.FC<{
+  value: unknown;
+  onChange: (v: PhotoAnswer | null) => void;
+  disabled?: boolean;
+}> = ({ value, onChange, disabled = false }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const [starting, setStarting] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const filled = isPhotoAnswerFilled(value);
+  const previewUrl =
+    typeof value === 'string'
+      ? value
+      : value && typeof value === 'object'
+        ? (value as PhotoAnswer).dataUrl
+        : '';
+
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setStreaming(false);
+  }, []);
+
+  useEffect(() => () => stopCamera(), [stopCamera]);
+
+  const startCamera = useCallback(async () => {
+    if (disabled) return;
+    setError(null);
+    setStarting(true);
+    try {
+      stopCamera();
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera API is not available in this browser.');
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => undefined);
+      }
+      setStreaming(true);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Unable to open the camera.';
+      setError(message);
+      setStreaming(false);
+    } finally {
+      setStarting(false);
+    }
+  }, [disabled, stopCamera]);
+
+  const captureFrame = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !streaming) return;
+    const width = video.videoWidth || 1280;
+    const height = video.videoHeight || 720;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, width, height);
+    const mimeType = 'image/jpeg';
+    const dataUrl = canvas.toDataURL(mimeType, 0.72);
+    onChange({
+      dataUrl,
+      mimeType,
+      capturedAt: new Date().toISOString(),
+      source: 'camera',
+      width,
+      height
+    });
+    stopCamera();
+  }, [onChange, stopCamera, streaming]);
+
+  const ingestFile = useCallback(
+    async (file: File | undefined, source: 'camera' | 'gallery') => {
+      if (!file || disabled) return;
+      setError(null);
+      try {
+        const compressed = await compressImageFile(file);
+        onChange({
+          dataUrl: compressed.dataUrl,
+          mimeType: compressed.mimeType,
+          capturedAt: new Date().toISOString(),
+          source,
+          width: compressed.width,
+          height: compressed.height
+        });
+        stopCamera();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to process photo.');
+      }
+    },
+    [disabled, onChange, stopCamera]
+  );
+
+  return (
+    <div className="space-y-2">
+      {filled && previewUrl ? (
+        <div className="relative overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50/40">
+          <img
+            src={previewUrl}
+            alt="Captured photo"
+            className="max-h-64 w-full object-contain bg-slate-950/5"
+          />
+          <div className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+            <CheckCircle2 size={12} /> Captured
+          </div>
+        </div>
+      ) : streaming ? (
+        <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className="max-h-72 w-full object-contain"
+          />
+          <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/60 to-transparent p-3 flex justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => void captureFrame()}
+              disabled={disabled}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-slate-900 shadow"
+            >
+              <Camera size={14} /> Capture photo
+            </button>
+            <button
+              type="button"
+              onClick={stopCamera}
+              className="inline-flex items-center gap-1.5 rounded-full bg-slate-800/80 px-3 py-2 text-xs font-semibold text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-6 text-center">
+          <Camera className="mx-auto mb-2 text-slate-400" size={28} />
+          <p className="text-xs font-semibold text-slate-700">Take a photo with the device camera</p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Opens the rear camera when available. You can also pick from the gallery if needed.
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {!disabled && (
+        <div className="flex flex-wrap gap-2">
+          {!filled && (
+            <>
+              <button
+                type="button"
+                onClick={() => void startCamera()}
+                disabled={starting || streaming}
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-60"
+              >
+                {starting ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+                {starting ? 'Opening camera…' : streaming ? 'Camera open' : 'Open camera'}
+              </button>
+              <button
+                type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <Camera size={14} /> Use camera app
+              </button>
+            </>
+          )}
+          {filled && (
+            <button
+              type="button"
+              onClick={() => {
+                onChange(null);
+                void startCamera();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <RefreshCcw size={14} /> Retake
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            <ImagePlus size={14} /> {filled ? 'Replace from gallery' : 'Choose from gallery'}
+          </button>
+          {filled && (
+            <button
+              type="button"
+              onClick={() => {
+                onChange(null);
+                stopCamera();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+            >
+              <Trash2 size={14} /> Remove
+            </button>
+          )}
+        </div>
+      )}
+
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          void ingestFile(file, 'camera');
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          void ingestFile(file, 'gallery');
+          e.target.value = '';
+        }}
+      />
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // RuntimeQuestion — renders a single question's input control
 // ---------------------------------------------------------------------------
 
@@ -1509,6 +1817,9 @@ export const RuntimeQuestion: React.FC<{
       );
       break;
     }
+    case 'photo':
+      body = <PhotoCaptureWidget value={value} onChange={(next) => onChange(next)} />;
+      break;
     case 'matrix':
       body = (
         <div className="space-y-1">

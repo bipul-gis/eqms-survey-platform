@@ -10,8 +10,22 @@ import { Project } from '../types';
 export const DEFAULT_PROJECT_ID = 'project_20612601105';
 
 export const listProjects = async (): Promise<Project[]> => {
+  const { items } = await geosurveyApi.listGeosurveyProjects();
+  return items;
+};
+
+export const searchMisProjects = async (): Promise<Project[]> => {
   const { items } = await geosurveyApi.listMisProjects();
   return items;
+};
+
+export const activateProjectForGeosurvey = async (project: Project): Promise<Project> => {
+  const { item } = await geosurveyApi.activateGeosurveyProject(project);
+  return item;
+};
+
+export const deactivateProjectForGeosurvey = async (projectId: string): Promise<void> => {
+  await geosurveyApi.deactivateGeosurveyProject(projectId);
 };
 
 export const countAllQuestionnairesByProject = async (): Promise<Record<string, number>> => {

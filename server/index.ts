@@ -27,6 +27,11 @@ import {
 } from './featuresStore';
 import { fetchMisProjects, misProjectToGeosurvey } from './misProjects';
 import {
+  activateGeosurveyProject,
+  deactivateGeosurveyProject,
+  listActiveGeosurveyProjects,
+} from './geosurveyProjectsStore';
+import {
   countQuestionnairesByProject,
   deleteQuestionnaire,
   listQuestionnaires,
@@ -129,16 +134,71 @@ app.use('/api', requireAuth);
 app.get('/api/mis-projects', requireApproved, async (_req, res) => {
   try {
     const items = await fetchMisProjects();
+    const activeProjects = await listActiveGeosurveyProjects();
+    const activeIds = new Set(activeProjects.map((item) => item.projectId));
     res.json({
       items: items.map(misProjectToGeosurvey).sort((a, b) => {
         const aa = a.isActive === false ? 1 : 0;
         const bb = b.isActive === false ? 1 : 0;
         if (aa !== bb) return aa - bb;
         return (a.name || '').localeCompare(b.name || '');
-      }),
+      }).map((item) => ({
+        ...item,
+        activeForGeosurvey: activeIds.has(item.id),
+      })),
     });
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.get('/api/geosurvey-projects', requireApproved, async (_req, res) => {
+  try {
+    const items = await listActiveGeosurveyProjects();
+    res.json({
+      items: items.map((item) => ({
+        ...(item.projectPayload || {}),
+        id: item.projectId,
+        code: item.projectCode,
+        name: item.projectName,
+        description: item.managerName ? `PM: ${item.managerName}` : '',
+        activeForGeosurvey: item.isActive,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/geosurvey-projects/:id/activate', requireAdmin, async (req, res) => {
+  try {
+    const project = req.body || {};
+    if (String(project.id || req.params.id) !== req.params.id) {
+      res.status(400).json({ error: 'Project id mismatch.' });
+      return;
+    }
+    const saved = await activateGeosurveyProject(project);
+    res.json({
+      item: {
+        ...(saved.projectPayload || {}),
+        id: saved.projectId,
+        code: saved.projectCode,
+        name: saved.projectName,
+        description: saved.managerName ? `PM: ${saved.managerName}` : '',
+        activeForGeosurvey: saved.isActive,
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/geosurvey-projects/:id/deactivate', requireAdmin, async (req, res) => {
+  try {
+    await deactivateGeosurveyProject(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

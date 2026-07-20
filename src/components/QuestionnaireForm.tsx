@@ -69,6 +69,7 @@ import {
   ensureOptionShape,
   evaluateLogic,
   isChoiceOptionDisabled,
+  isPhotoAnswerFilled,
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
 import { geosurveyApi } from '../lib/geosurveyApi';
@@ -271,7 +272,9 @@ const validateQuestion = (
   if (matrixErr) return matrixErr;
 
   const isEmpty =
-    q.type === 'select' || q.type === 'radio'
+    q.type === 'photo'
+      ? !isPhotoAnswerFilled(value)
+      : q.type === 'select' || q.type === 'radio'
       ? choiceAnswerIsEmpty(value)
       : value === undefined ||
         value === null ||
@@ -775,6 +778,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       const v = responses[q.id];
       if (q.type === 'matrix') return matrixAllRowsAnswered(v, q.rows);
       if (q.type === 'select' || q.type === 'radio') return choiceAnswerIsFilled(v);
+      if (q.type === 'photo') return isPhotoAnswerFilled(v);
       return v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0);
     }).length;
     const pct = !questionsUnlocked || required.length === 0

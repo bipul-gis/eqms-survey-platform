@@ -26,7 +26,7 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
-import { isChoiceOptionDisabled, ConsentGateForm } from './QuestionnaireRuntime';
+import { isChoiceOptionDisabled, ConsentGateForm, PhotoCaptureWidget } from './QuestionnaireRuntime';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
   choiceAnswerToComparableString
@@ -132,7 +132,7 @@ const QUESTION_TYPES: QuestionTypeDef[] = [
   { type: 'time',        label: 'Time',           hint: 'Time of day',                       Icon: Clock,       group: 'datetime' },
   { type: 'datetime',    label: 'Date & Time',    hint: 'Combined date and time',            Icon: Calendar,    group: 'datetime' },
   { type: 'location',    label: 'GPS Location',   hint: 'Auto-captured coordinates',         Icon: MapPin,      group: 'media' },
-  { type: 'photo',       label: 'Photo',          hint: 'Image upload',                      Icon: Camera,      group: 'media' },
+  { type: 'photo',       label: 'Photo',          hint: 'Camera capture',                    Icon: Camera,      group: 'media' },
   { type: 'signature',   label: 'Signature',      hint: 'Drawn signature',                   Icon: PenTool,     group: 'media' },
   { type: 'matrix',      label: 'Matrix / Grid',  hint: 'Rows × column options',             Icon: Grid3x3,     group: 'advanced' },
   { type: 'computed',    label: 'Computed',       hint: 'Auto-calculated from other answers',Icon: Sigma,       group: 'advanced' },
@@ -1826,7 +1826,7 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
     case 'photo':
       return (
         <div className={`${inputClass} flex items-center gap-2`}>
-          <Camera size={14} /> Upload photo
+          <Camera size={14} /> Capture photo
         </div>
       );
     case 'signature':
@@ -4543,7 +4543,7 @@ const PreviewQuestion: React.FC<{
       break;
     }
     case 'photo':
-      body = <input type="file" accept="image/*" className={cls} disabled />;
+      body = <PhotoCaptureWidget value={value} onChange={(next) => onChange(next)} />;
       break;
     case 'signature':
       body = (
