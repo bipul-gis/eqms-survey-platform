@@ -53,6 +53,7 @@ import {
   isPhotoAnswerFilled,
   type PhotoAnswer
 } from '../lib/photoAnswers';
+import { looksLikeEnumeratorIdField } from '../lib/enumeratorIdentityFields';
 
 export type { PhotoAnswer };
 export { isPhotoAnswerFilled, formatPhotoAnswerLabel, buildPhotoFileName };
@@ -387,7 +388,22 @@ export const EnumeratorInfoTable: React.FC<{
             className={`${cls} resize-none`}
           />
         );
-      case 'number':
+      case 'number': {
+        // Account UIDs are strings; a Number-typed Enumerator ID cannot show them.
+        const asText =
+          looksLikeEnumeratorIdField(f) ||
+          (typeof v === 'string' && v !== '' && Number.isNaN(Number(v)));
+        if (asText) {
+          return (
+            <input
+              type="text"
+              value={(v as string) || ''}
+              onChange={(e) => onChange(f.id, e.target.value)}
+              placeholder={f.placeholder}
+              className={cls}
+            />
+          );
+        }
         return (
           <input
             type="number"
@@ -396,6 +412,7 @@ export const EnumeratorInfoTable: React.FC<{
             className={cls}
           />
         );
+      }
       case 'age': {
         const ageVal = (v && typeof v === 'object' ? v : {}) as {
           years?: number | string;

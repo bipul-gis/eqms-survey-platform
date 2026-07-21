@@ -7,7 +7,6 @@ import {
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
 import { formatPhotoAnswerLabel } from '../lib/photoAnswers';
-import { ensureEnumeratorIdentityFields } from '../lib/enumeratorIdentityFields';
 import { Question, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
 import { assignedSlumsForProject, formatAssignedSlumLabels } from '../lib/assignedSlums';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
@@ -1243,10 +1242,10 @@ const CsvPreview: React.FC<{
   }, [questionnaire.questions]);
   const enumeratorColumnKey = useMemo(
     () =>
-      (ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo)?.fields || [])
+      (questionnaire.enumeratorInfo?.fields || [])
         .map((f) => `${f.id}\t${f.question || f.key || ''}`)
         .join('\n'),
-    [questionnaire.enumeratorInfo]
+    [questionnaire.enumeratorInfo?.fields]
   );
   const { header, tableRows } = useMemo(() => {
     const built = buildResponsesTable(questionnaire, responses);
@@ -1416,7 +1415,7 @@ const ResponseDetailDialog: React.FC<{
   onMarkReviewed,
   onDelete
 }) => {
-  const enumFields = ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo)?.fields || [];
+  const enumFields = questionnaire.enumeratorInfo?.fields || [];
   const questions = (questionnaire.questions || []).filter(
     (q) => q.type !== 'section'
   );

@@ -1,22 +1,77 @@
-import type { EnumeratorInfo, Question, UserProfile } from '../types';
+import type { Question, QuestionType, UserProfile } from '../types';
 import { enumeratorResolvedDisplayName } from './userDisplayName';
 
+/** How a preset fills itself on the enumerator form. */
+export type EnumeratorAutoSource = 'account' | 'today';
+
 /**
- * Standard identity rows shown at the top of the enumerator-info table.
- * Prefixed with stable `sys_` ids so they survive across sessions and stay
- * distinct from admin-authored field ids.
+ * Presets admins pick from when adding Enumerator Information fields.
+ * Only fields the admin selects appear on the survey — nothing is injected
+ * at runtime.
  */
-export const ENUMERATOR_IDENTITY_SPECS: Array<{
+export interface EnumeratorAutoFieldPreset {
   key: string;
-  type: Question['type'];
+  type: QuestionType;
+  /** Default English label (admin can rename after adding). */
   question: string;
   required: boolean;
-}> = [
-  { key: 'enumerator_name', type: 'text', question: 'Enumerator Name', required: true },
-  { key: 'enumerator_id', type: 'text', question: 'Enumerator ID', required: true },
-  { key: 'enumerator_phone', type: 'phone', question: 'Phone', required: false },
-  { key: 'enumerator_email', type: 'email', question: 'Email', required: false }
+  autoSource: EnumeratorAutoSource;
+  /** Short hint shown in the builder picker. */
+  hint: string;
+}
+
+export const ENUMERATOR_AUTO_FIELD_PRESETS: EnumeratorAutoFieldPreset[] = [
+  {
+    key: 'enumerator_name',
+    type: 'text',
+    question: 'Enumerator Name',
+    required: true,
+    autoSource: 'account',
+    hint: 'Auto from account · not editable'
+  },
+  {
+    key: 'enumerator_id',
+    type: 'text',
+    question: 'Enumerator ID',
+    required: true,
+    autoSource: 'account',
+    hint: 'Auto from account · not editable'
+  },
+  {
+    key: 'enumerator_phone',
+    type: 'phone',
+    question: 'Phone',
+    required: false,
+    autoSource: 'account',
+    hint: 'Auto from account · not editable'
+  },
+  {
+    key: 'enumerator_email',
+    type: 'email',
+    question: 'Email',
+    required: false,
+    autoSource: 'account',
+    hint: 'Auto from account · not editable'
+  },
+  {
+    key: 'survey_date',
+    type: 'date',
+    question: 'Date of Survey',
+    required: true,
+    autoSource: 'today',
+    hint: 'Auto-filled with today’s date'
+  }
 ];
+
+/** @deprecated Use ENUMERATOR_AUTO_FIELD_PRESETS — kept for older imports. */
+export const ENUMERATOR_IDENTITY_SPECS = ENUMERATOR_AUTO_FIELD_PRESETS.filter(
+  (p) => p.autoSource === 'account'
+).map((p) => ({
+  key: p.key,
+  type: p.type,
+  question: p.question,
+  required: p.required
+}));
 
 const ENUMERATOR_FIELD_MARKERS = [
   'enumerator',
@@ -27,41 +82,67 @@ const ENUMERATOR_FIELD_MARKERS = [
   'staff',
   'data collector',
   'data_collector',
-  'your '
+  'your ',
+  'জরিপকারী'
 ];
 
 const hasEnumeratorMarker = (f: Question): boolean => {
   const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  return ENUMERATOR_FIELD_MARKERS.some((m) => hay.includes(m));
+  return ENUMERATOR_FIELD_MARKERS.some((m) => hay.includes(m.toLowerCase()));
 };
 
+const keyOf = (f: Question) => (f.key || '').toLowerCase().trim();
+
 export const looksLikeEnumeratorNameField = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  if (!(/\bname\b/.test(hay) || /\bনাম/.test(hay))) return false;
-  return hasEnumeratorMarker(f) || f.key === 'enumerator_name';
+  const key = keyOf(f);
+  if (
+    key === 'enumerator_name' ||
+    key === 'enum_name' ||
+    key === 'surveyor_name' ||
+    key === 'interviewer_name'
+  ) {
+    return true;
+  }
+  const hay = `${key} ${f.question || ''}`.toLowerCase();
+  const nameHit =
+    key.includes('name') ||
+    /\bname\b/.test(hay) ||
+    (f.question || '').includes('নাম');
+  if (!nameHit) return false;
+  return hasEnumeratorMarker(f);
 };
 
 export const looksLikeEnumeratorPhoneField = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
+  const key = keyOf(f);
+  if (key === 'enumerator_phone' || key === 'enum_phone' || key === 'surveyor_phone') {
+    return true;
+  }
+  if (f.type === 'phone' && hasEnumeratorMarker(f)) return true;
+  const hay = `${key} ${f.question || ''}`.toLowerCase();
   const phoneHit =
-    /\b(phone|mobile|contact|cell)\b/.test(hay) || /\bমোবাইল|\bফোন/.test(hay);
+    /\b(phone|mobile|contact|cell)\b/.test(hay) ||
+    (f.question || '').includes('মোবাইল') ||
+    (f.question || '').includes('ফোন');
   if (!phoneHit) return false;
-  return hasEnumeratorMarker(f) || f.key === 'enumerator_phone';
+  return hasEnumeratorMarker(f);
 };
 
 export const looksLikeEnumeratorEmailField = (f: Question): boolean => {
-  const hay = `${f.key || ''} ${f.question || ''}`.toLowerCase();
-  const emailHit = /\bemail\b|\be-mail\b|\bমেইল/.test(hay) || f.type === 'email';
+  const key = keyOf(f);
+  if (key === 'enumerator_email' || key === 'enum_email' || key === 'surveyor_email') {
+    return true;
+  }
+  // Email-type rows in this section are enumerator email by convention.
+  if (f.type === 'email') return true;
+  const hay = `${key} ${f.question || ''}`.toLowerCase();
+  const emailHit = /\bemail\b|\be-mail\b/.test(hay) || (f.question || '').includes('মেইল');
   if (!emailHit) return false;
-  // Email-type fields inside enumerator-info are always enumerator email;
-  // otherwise require an enumerator marker (or the standard key).
-  if (f.type === 'email' || f.key === 'enumerator_email') return true;
   return hasEnumeratorMarker(f);
 };
 
 /** Enumerator ID / employee code / uid field. */
 export const looksLikeEnumeratorIdField = (f: Question): boolean => {
-  const key = (f.key || '').toLowerCase();
+  const key = keyOf(f);
   if (
     key === 'enumerator_id' ||
     key === 'enum_id' ||
@@ -71,14 +152,16 @@ export const looksLikeEnumeratorIdField = (f: Question): boolean => {
   ) {
     return true;
   }
-  const hay = `${key} ${f.question || ''}`.toLowerCase();
+  const qText = f.question || '';
+  const hay = `${key} ${qText}`.toLowerCase();
   const idHit =
     /\b(enumerator\s*id|enum\s*id|surveyor\s*id|employee\s*id|staff\s*id|user\s*id)\b/.test(
       hay
-    ) || /\bid\b/.test(hay);
+    ) ||
+    qText.includes('আইডি') ||
+    qText.includes('আই ডি');
   if (!idHit) return false;
-  // Bare "ID" alone is too ambiguous; require enumerator marker unless key matched above.
-  return hasEnumeratorMarker(f) || /\b(enumerator|surveyor|employee|staff|user)\s*id\b/.test(hay);
+  return hasEnumeratorMarker(f);
 };
 
 export const isEnumeratorIdentityField = (f: Question): boolean =>
@@ -86,6 +169,24 @@ export const isEnumeratorIdentityField = (f: Question): boolean =>
   looksLikeEnumeratorIdField(f) ||
   looksLikeEnumeratorPhoneField(f) ||
   looksLikeEnumeratorEmailField(f);
+
+export function presetKeyAlreadyUsed(
+  fields: Question[] | undefined,
+  presetKey: string
+): boolean {
+  const want = presetKey.toLowerCase();
+  return (fields || []).some((f) => {
+    if (keyOf(f) === want) return true;
+    if (want === 'enumerator_name') return looksLikeEnumeratorNameField(f);
+    if (want === 'enumerator_id') return looksLikeEnumeratorIdField(f);
+    if (want === 'enumerator_phone') return looksLikeEnumeratorPhoneField(f);
+    if (want === 'enumerator_email') return looksLikeEnumeratorEmailField(f);
+    if (want === 'survey_date') {
+      return keyOf(f) === 'survey_date';
+    }
+    return false;
+  });
+}
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 const formatLocalDate = (d: Date) =>
@@ -118,42 +219,6 @@ export function profileValueForIdentityField(
   return undefined;
 }
 
-/**
- * Ensure name / id / phone / email rows exist at the top of the enumerator-info
- * table. Existing matching fields are kept (admin wording preserved); only
- * missing identity rows are injected with stable `sys_*` ids.
- */
-export function ensureEnumeratorIdentityFields(
-  info: EnumeratorInfo | undefined | null
-): EnumeratorInfo | undefined {
-  if (!info || !info.enabled) return info ?? undefined;
-  const fields = [...(info.fields || [])];
-  const missing: Question[] = [];
-
-  for (const spec of ENUMERATOR_IDENTITY_SPECS) {
-    const exists = fields.some((f) => {
-      if ((f.key || '').toLowerCase() === spec.key) return true;
-      if (spec.key === 'enumerator_name') return looksLikeEnumeratorNameField(f);
-      if (spec.key === 'enumerator_id') return looksLikeEnumeratorIdField(f);
-      if (spec.key === 'enumerator_phone') return looksLikeEnumeratorPhoneField(f);
-      if (spec.key === 'enumerator_email') return looksLikeEnumeratorEmailField(f);
-      return false;
-    });
-    if (!exists) {
-      missing.push({
-        id: `sys_${spec.key}`,
-        key: spec.key,
-        type: spec.type,
-        question: spec.question,
-        required: spec.required
-      });
-    }
-  }
-
-  if (missing.length === 0) return info;
-  return { ...info, fields: [...missing, ...fields] };
-}
-
 /** Field ids that must be read-only for enumerators (profile-backed). */
 export function collectEnumeratorIdentityFieldIds(
   fields: Question[] | undefined
@@ -167,8 +232,7 @@ export function collectEnumeratorIdentityFieldIds(
 
 /**
  * Build initial enumerator-info answers: identity from profile, date/time = now.
- * Admin `defaultValue` wins for non-identity fields only — identity always
- * comes from the signed-in account when available.
+ * Only fields present on the questionnaire are filled — admins choose which.
  */
 export function buildInitialEnumeratorInfo(
   fields: Question[] | undefined,

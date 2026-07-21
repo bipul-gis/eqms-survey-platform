@@ -21,7 +21,6 @@ import {
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
 import { formatPhotoAnswerLabel } from './photoAnswers';
-import { ensureEnumeratorIdentityFields } from './enumeratorIdentityFields';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -356,7 +355,7 @@ export const buildResponsesTable = (
   q: Questionnaire,
   responses: QuestionnaireResponse[]
 ): ResponsesTable => {
-  const enumFields = ensureEnumeratorIdentityFields(q.enumeratorInfo)?.fields || [];
+  const enumFields = q.enumeratorInfo?.fields || [];
   const questions = mergeQuestionsWithResponseKeys(
     getExportOrderedQuestions(q),
     responses
@@ -473,7 +472,7 @@ export const buildResponsesExportFieldDescriptors = (
   q: Questionnaire,
   responses: QuestionnaireResponse[]
 ): ResponsesExportFieldDescriptor[] => {
-  const enumFields = ensureEnumeratorIdentityFields(q.enumeratorInfo)?.fields || [];
+  const enumFields = q.enumeratorInfo?.fields || [];
   const questions = mergeQuestionsWithResponseKeys(getExportOrderedQuestions(q), responses);
   const exportColumns = buildResponsesExportColumns(questions);
   const out: ResponsesExportFieldDescriptor[] = [...SYSTEM_EXPORT_FIELDS];

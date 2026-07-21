@@ -55,7 +55,6 @@ import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
   buildInitialEnumeratorInfo,
   collectEnumeratorIdentityFieldIds,
-  ensureEnumeratorIdentityFields,
   syncEnumeratorIdentityAnswers
 } from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
@@ -325,7 +324,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   // account and stay locked. Date/time fields get "now" on new surveys; drafts
   // keep their original survey-start values for non-identity rows.
   const [enumeratorInfo, setEnumeratorInfo] = useState<Record<string, any>>(() => {
-    const fields = ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo)?.fields;
+    const fields = questionnaire.enumeratorInfo?.fields;
     const base = existingResponse?.enumeratorInfo
       ? { ...existingResponse.enumeratorInfo }
       : buildInitialEnumeratorInfo(fields, userProfile, user);
@@ -367,14 +366,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   }, [initialLocation, existingResponse?.location]);
 
   // Questionnaire-level config — preserve old default behaviour when missing.
-  // Identity rows (name / id / phone / email) are always present when the
-  // enumerator-info section is enabled.
+  // Only fields the admin added in the builder appear here (no runtime injection).
   const descriptionBlocks = questionnaire.descriptionBlocks || [];
   const conclusionBlocks = questionnaire.conclusionBlocks || [];
-  const enumeratorInfoConfig = useMemo(
-    () => ensureEnumeratorIdentityFields(questionnaire.enumeratorInfo),
-    [questionnaire.enumeratorInfo]
-  );
+  const enumeratorInfoConfig = questionnaire.enumeratorInfo;
   const consentGate = questionnaire.consentGate;
   const submissionGpsConfig: SubmissionGpsCapture | undefined = questionnaire.submissionGps;
   const settings = questionnaire.settings || {};

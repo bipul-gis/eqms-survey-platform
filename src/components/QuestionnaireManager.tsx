@@ -35,6 +35,13 @@ import { DEFAULT_PROJECT_ID, listProjects, searchMisProjects } from '../lib/proj
 import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
+  ENUMERATOR_AUTO_FIELD_PRESETS,
+  isEnumeratorIdentityField,
+  looksLikeEnumeratorIdField,
+  presetKeyAlreadyUsed,
+  type EnumeratorAutoFieldPreset
+} from '../lib/enumeratorIdentityFields';
+import {
   FileText,
   Plus,
   Edit3,
@@ -1040,51 +1047,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       enabled: true,
       title: 'Enumerator Information',
       description:
-        'Name, ID, phone and email are filled from your account and cannot be edited.',
-      fields: [
-        {
-          id: uid('q'),
-          key: 'enumerator_name',
-          type: 'text',
-          question: 'Enumerator Name',
-          required: true
-        },
-        {
-          id: uid('q'),
-          key: 'enumerator_id',
-          type: 'text',
-          question: 'Enumerator ID',
-          required: true
-        },
-        {
-          id: uid('q'),
-          key: 'enumerator_phone',
-          type: 'phone',
-          question: 'Phone',
-          required: false
-        },
-        {
-          id: uid('q'),
-          key: 'enumerator_email',
-          type: 'email',
-          question: 'Email',
-          required: false
-        },
-        {
-          id: uid('q'),
-          key: 'survey_date',
-          type: 'date',
-          question: 'Date of Survey',
-          required: true
-        },
-        {
-          id: uid('q'),
-          key: 'survey_area',
-          type: 'text',
-          question: 'Ward / Area',
-          required: false
-        }
-      ]
+        'Select auto fields below. Name, ID, phone and email fill from the enumerator account.',
+      fields: []
     };
   });
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -1106,6 +1070,44 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     questionnaire?.id || null
   );
   const [paletteFilter, setPaletteFilter] = useState<QuestionTypeDef['group'] | 'all'>('all');
+
+  /** Stable snapshot of persistable builder fields — used for dirty detection. */
+  const builderSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        title,
+        descriptionBlocks,
+        conclusionBlocks,
+        version,
+        settings,
+        questions,
+        sections,
+        consentGate,
+        submissionGps,
+        enumeratorInfo,
+        isActive
+      }),
+    [
+      title,
+      descriptionBlocks,
+      conclusionBlocks,
+      version,
+      settings,
+      questions,
+      sections,
+      consentGate,
+      submissionGps,
+      enumeratorInfo,
+      isActive
+    ]
+  );
+  const [savedSnapshot, setSavedSnapshot] = useState(builderSnapshot);
+  const hasUnsavedChanges = builderSnapshot !== savedSnapshot;
+
+  // Drop the "Saved · just now" chip as soon as the user edits again.
+  useEffect(() => {
+    if (hasUnsavedChanges && savedAt !== null) setSavedAt(null);
+  }, [hasUnsavedChanges, savedAt]);
 
   const selectedQuestion = useMemo(
     () => questions.find((q) => q.id === selectedId) || null,
@@ -1310,6 +1312,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
    *               enumerators).
    */
   const handleSave = async (mode: 'save' | 'draft' | 'publish') => {
+    if (!hasUnsavedChanges) return;
     if (!user) {
       alert('You must be signed in to save. Please refresh and sign in again.');
       return;
@@ -1366,16 +1369,33 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         // the same row instead of inserting clones.
         setPersistedId(String((created as { id?: string }).id ?? ''));
       }
-      // Reflect the new publish state locally so the badge in the
-      // toolbar updates immediately (otherwise "Active" / "Draft"
-      // would lag until the parent reloads us).
+      // Keep local state aligned with what we persisted (normalized keys +
+      // publish flag) so dirty detection resets cleanly after inline Save.
+      const nextTitle = title.trim();
+      if (nextTitle !== title) setTitle(nextTitle);
+      setQuestions(normalized);
       if (nextIsActive !== isActive) setIsActive(nextIsActive);
+      const nextVersion = version.trim() || '1.0';
+      if (nextVersion !== version) setVersion(nextVersion);
 
       if (mode === 'save') {
         // Inline save — keep the editor open and surface a transient
         // "Saved · just now" indicator next to the toolbar buttons.
-        // The list view will pick up the change on its next snapshot;
-        // we don't need to close the modal for that.
+        setSavedSnapshot(
+          JSON.stringify({
+            title: nextTitle,
+            descriptionBlocks,
+            conclusionBlocks,
+            version: nextVersion,
+            settings,
+            questions: normalized,
+            sections,
+            consentGate,
+            submissionGps,
+            enumeratorInfo,
+            isActive: nextIsActive
+          })
+        );
         setSavedAt(Date.now());
       } else {
         onSaved();
@@ -1461,31 +1481,41 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         )}
         <button
           onClick={() => void handleSave('save')}
-          disabled={saving}
-          className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
+          disabled={saving || !hasUnsavedChanges}
+          className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
           title={
-            persistedId
-              ? isActive
-                ? 'Save edits — keeps the questionnaire published and stays on this page'
-                : 'Save edits — keeps the questionnaire as a draft and stays on this page'
-              : 'Save the current edits and stay on this page'
+            !hasUnsavedChanges
+              ? 'No changes to save'
+              : persistedId
+                ? isActive
+                  ? 'Save edits — keeps the questionnaire published and stays on this page'
+                  : 'Save edits — keeps the questionnaire as a draft and stays on this page'
+                : 'Save the current edits and stay on this page'
           }
         >
           <Save size={16} /> {saving ? 'Saving…' : 'Save'}
         </button>
         <button
           onClick={() => void handleSave('draft')}
-          disabled={saving}
-          className="px-3 py-2 text-sm font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
-          title="Save and mark as draft (hidden from enumerators)"
+          disabled={saving || !hasUnsavedChanges}
+          className="px-3 py-2 text-sm font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+          title={
+            !hasUnsavedChanges
+              ? 'No changes to save'
+              : 'Save and mark as draft (hidden from enumerators)'
+          }
         >
           <Save size={16} /> {saving ? 'Saving…' : 'Save Draft'}
         </button>
         <button
           onClick={() => void handleSave('publish')}
-          disabled={saving}
-          className="px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
-          title="Save and publish to enumerators"
+          disabled={saving || !hasUnsavedChanges}
+          className="px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
+          title={
+            !hasUnsavedChanges
+              ? 'No changes to save'
+              : 'Save and publish to enumerators'
+          }
         >
           <CheckCircle size={16} /> {saving ? 'Publishing…' : 'Save & Publish'}
         </button>
@@ -4993,9 +5023,28 @@ const EnumeratorInfoEditor: React.FC<{
     onChange({ ...info, fields: next });
   };
 
-  const addField = (type: QuestionType) => {
+  const addCustomField = (type: QuestionType) => {
     const q = newDefaultQuestion(type);
     q.question = 'New Field';
+    onChange({ ...info, fields: [...info.fields, q] });
+    setPickerOpen(false);
+  };
+
+  const addAutoPreset = (preset: EnumeratorAutoFieldPreset) => {
+    if (presetKeyAlreadyUsed(info.fields, preset.key)) {
+      setPickerOpen(false);
+      return;
+    }
+    const q: Question = {
+      id: uid('q'),
+      key: preset.key,
+      type: preset.type,
+      question: preset.question,
+      required: preset.required,
+      description: '',
+      placeholder: '',
+      validation: {}
+    };
     onChange({ ...info, fields: [...info.fields, q] });
     setPickerOpen(false);
   };
@@ -5006,31 +5055,32 @@ const EnumeratorInfoEditor: React.FC<{
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shadow-sm shadow-indigo-200">
             <IdCard size={16} className="text-white" />
-              </div>
+          </div>
           <div>
             <div className="text-xs font-bold text-indigo-700 uppercase tracking-wider">
               Enumerator Information
             </div>
             <p className="text-[11px] text-slate-500">
-              Captured as a table at the top of the survey, before questions.
-              Name, ID, phone and email are auto-filled from the enumerator account and not editable.
+              Captured as a table at the top of the survey. Use Add Field → Auto from
+              account to choose which identity rows appear; only selected fields show
+              for enumerators.
             </p>
           </div>
         </div>
         <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
-                      <input
-                        type="checkbox"
+          <input
+            type="checkbox"
             checked={info.enabled}
             onChange={(e) => onChange({ ...info, enabled: e.target.checked })}
-                      />
+          />
           Enabled
-                    </label>
-                  </div>
+        </label>
+      </div>
 
       {info.enabled && (
         <div className="p-5 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
+            <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                 Section Title
               </label>
@@ -5058,7 +5108,8 @@ const EnumeratorInfoEditor: React.FC<{
 
           {info.fields.length === 0 ? (
             <div className="border-2 border-dashed border-slate-200 rounded-lg p-5 text-center text-xs text-slate-500">
-              No enumerator-info fields yet. Add fields below.
+              No enumerator-info fields yet. Open Add Field and pick auto fields (name,
+              ID, phone, email, date) or a custom type.
             </div>
           ) : (
             <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -5087,12 +5138,13 @@ const EnumeratorInfoEditor: React.FC<{
                   ))}
                 </tbody>
               </table>
-          </div>
+            </div>
           )}
 
           <div className="inline-block">
             <button
               ref={addButtonRef}
+              type="button"
               onClick={() => (pickerOpen ? setPickerOpen(false) : openPicker())}
               className="text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded-md flex items-center gap-1.5"
             >
@@ -5107,26 +5159,64 @@ const EnumeratorInfoEditor: React.FC<{
                 />
                 <div
                   style={{ position: 'fixed', top: pickerPos.top, left: pickerPos.left }}
-                  className="z-[1012] w-56 bg-white rounded-lg shadow-xl border border-slate-200 max-h-72 overflow-y-auto py-1"
+                  className="z-[1012] w-72 bg-white rounded-lg shadow-xl border border-slate-200 max-h-80 overflow-y-auto py-1"
                 >
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
+                    Auto from account / date
+                  </div>
+                  {ENUMERATOR_AUTO_FIELD_PRESETS.map((preset) => {
+                    const used = presetKeyAlreadyUsed(info.fields, preset.key);
+                    return (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        disabled={used}
+                        onClick={() => addAutoPreset(preset)}
+                        className={`w-full flex items-start gap-2 px-3 py-2 text-left transition-colors ${
+                          used
+                            ? 'opacity-45 cursor-not-allowed'
+                            : 'hover:bg-indigo-50'
+                        }`}
+                      >
+                        <IdCard size={14} className="text-indigo-600 mt-0.5 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-slate-800">
+                            {preset.question}
+                            {used ? (
+                              <span className="ml-1.5 text-[10px] font-medium text-slate-400">
+                                (added)
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-[10px] text-slate-400">{preset.hint}</div>
+                          <div className="text-[10px] font-mono text-slate-400">{preset.key}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                  <div className="border-t border-slate-100 my-1" />
+                  <div className="px-3 pt-1 pb-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    Custom field type
+                  </div>
                   {ENUMERATOR_INFO_TYPES.map((t) => {
                     const def = QUESTION_TYPE_BY_KEY[t];
                     if (!def) return null;
                     return (
                       <button
                         key={t}
-                        onClick={() => addField(t)}
+                        type="button"
+                        onClick={() => addCustomField(t)}
                         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-indigo-50 transition-colors"
                       >
                         <def.Icon size={14} className="text-slate-500" />
                         <div>
                           <div className="text-xs font-semibold text-slate-800">{def.label}</div>
                           <div className="text-[10px] text-slate-400">{def.hint}</div>
-        </div>
+                        </div>
                       </button>
                     );
                   })}
-      </div>
+                </div>
               </>
             )}
           </div>
@@ -5147,6 +5237,8 @@ const EnumeratorInfoFieldRow: React.FC<{
 }> = ({ field, onUpdate, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) => {
   const isChoice = isChoiceType(field.type);
   const opts = ensureOptionShape(field.options);
+  const isAutoIdentity = isEnumeratorIdentityField(field);
+  const isAutoDate = (field.key || '').toLowerCase() === 'survey_date' && field.type === 'date';
 
   return (
     <tr className="hover:bg-slate-50/60">
@@ -5158,13 +5250,25 @@ const EnumeratorInfoFieldRow: React.FC<{
           placeholder="Field label"
           className="w-full text-sm font-medium px-2 py-1 border border-transparent hover:border-slate-200 focus:border-blue-500 rounded focus:outline-none"
         />
-        <input
-          type="text"
-          value={field.key || ''}
-          onChange={(e) => onUpdate({ key: e.target.value })}
-          placeholder={slugify(field.question) || 'field_key'}
-          className="w-full text-[10px] text-slate-400 px-2 py-0.5 border border-transparent hover:border-slate-200 focus:border-blue-500 rounded focus:outline-none font-mono"
-        />
+        <div className="flex items-center gap-1.5 px-2 mt-0.5">
+          <input
+            type="text"
+            value={field.key || ''}
+            onChange={(e) => onUpdate({ key: e.target.value })}
+            placeholder={slugify(field.question) || 'field_key'}
+            className="flex-1 min-w-0 text-[10px] text-slate-400 py-0.5 border border-transparent hover:border-slate-200 focus:border-blue-500 rounded focus:outline-none font-mono"
+          />
+          {isAutoIdentity && (
+            <span className="shrink-0 text-[9px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5">
+              Auto account
+            </span>
+          )}
+          {isAutoDate && !isAutoIdentity && (
+            <span className="shrink-0 text-[9px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1 py-0.5">
+              Auto today
+            </span>
+          )}
+        </div>
       </td>
       <td className="px-3 py-2 align-top">
         <select
