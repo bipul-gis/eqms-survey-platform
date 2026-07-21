@@ -54,12 +54,14 @@ import {
 import {
   allocateNextResponseId,
   collapseAccidentalResponseIdQuestions,
+  inferResponseIdPrefixQuestionId,
   invalidateResponseIdCache,
   isAllocatedResponseIdValue,
   mergeResponseIdIntoAnswers,
   resolveResponseIdPrefix,
   responseIdMatchesPrefix
 } from '../lib/responseIdSequence';
+import { normalizeBanglaDigits, parseLocaleNumber } from '../lib/banglaDigits';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
   buildInitialEnumeratorInfo,
@@ -143,7 +145,8 @@ const stripUndefined = <T extends Record<string, any>>(obj: T): T => {
 const EMAIL_REGEX = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
 
 /** Strip everything that isn't a digit so we can count phone digits regardless of formatting. */
-const phoneDigitCount = (value: string): number => value.replace(/\D/g, '').length;
+const phoneDigitCount = (value: string): number =>
+  normalizeBanglaDigits(value).replace(/\D/g, '').length;
 
 /**
  * Validate a single question against the current answer. Section dividers
@@ -182,9 +185,9 @@ const validateQuestion = (
   }
   if (q.type === 'responseId') {
     if (q.required && isEmpty) {
-      return q.logic?.enabled || q.responseIdConfig?.prefixQuestionId
-        ? 'Answer the linked question so the Response ID can be assigned.'
-        : 'Response ID is still being assigned.';
+      return inferResponseIdPrefixQuestionId(q)
+        ? 'Answer the linked question so the Auto Serial can be assigned.'
+        : 'Auto Serial is still being assigned.';
     }
     return null;
   }
@@ -244,7 +247,7 @@ const validateQuestion = (
 
   if (q.validation) {
     if (q.type === 'number') {
-      const num = Number(value);
+      const num = parseLocaleNumber(String(value));
       if (q.validation.min !== undefined && num < q.validation.min)
         return q.validation.errorMessage || `Value must be at least ${q.validation.min}`;
       if (q.validation.max !== undefined && num > q.validation.max)
@@ -675,10 +678,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   /** Changes when the linked prefix answer changes (or plain-serial mode). */
   const responseIdPrefixKey = useMemo(() => {
     if (!primaryResponseIdQuestion) return '';
-    const linkedId =
-      primaryResponseIdQuestion.responseIdConfig?.prefixQuestionId?.trim() ||
-      primaryResponseIdQuestion.logic?.conditions?.[0]?.questionId ||
-      '';
+    const linkedId = inferResponseIdPrefixQuestionId(primaryResponseIdQuestion) || '';
     if (!linkedId) return '__plain__';
     return `${linkedId}:${JSON.stringify(responses[linkedId] ?? null)}`;
   }, [primaryResponseIdQuestion, responses]);

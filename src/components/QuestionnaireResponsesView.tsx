@@ -1432,7 +1432,7 @@ const ResponseDetailDialog: React.FC<{
               {response.respondentName || response.respondentEmail || 'Unknown'}
             </h3>
             <p className="text-xs text-slate-500">
-              {fmtDate(response.submittedAt) || 'unsubmitted'} • {response.id}
+              {fmtDate(response.submittedAt) || 'unsubmitted'}
             </p>
           </div>
           <button
@@ -1446,6 +1446,11 @@ const ResponseDetailDialog: React.FC<{
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {/* Metadata */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <MetaTile
+              icon={<FileText size={14} className="text-slate-500" />}
+              label="Submission ID"
+              value={response.id}
+            />
             <MetaTile
               icon={<StatusPillIcon status={response.status} />}
               label="Status"
@@ -1555,6 +1560,11 @@ const ResponseDetailDialog: React.FC<{
                         <th className="text-left text-xs font-semibold text-slate-600 align-top bg-slate-50 px-3 py-2 w-2/5">
                           <span className="text-slate-400 mr-1">Q{i + 1}.</span>
                           {q.question || q.key || q.id}
+                          {q.type === 'responseId' && (
+                            <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1 py-0.5">
+                              Auto Serial
+                            </span>
+                          )}
                           {q.required && (
                             <span className="text-red-500 ml-1">*</span>
                           )}

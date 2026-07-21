@@ -146,7 +146,7 @@ const QUESTION_TYPES: QuestionTypeDef[] = [
   { type: 'signature',   label: 'Signature',      hint: 'Drawn signature',                   Icon: PenTool,     group: 'media' },
   { type: 'matrix',      label: 'Matrix / Grid',  hint: 'Rows × column options',             Icon: Grid3x3,     group: 'advanced' },
   { type: 'computed',    label: 'Computed',       hint: 'Auto-calculated from other answers',Icon: Sigma,       group: 'advanced' },
-  { type: 'responseId',  label: 'Response ID',    hint: 'Auto serial; prefix from logic / linked question', Icon: Hash, group: 'advanced' },
+  { type: 'responseId',  label: 'Auto Serial',    hint: 'Option-based ID e.g. একক_১ (or plain 1, 2, 3…)', Icon: Hash, group: 'advanced' },
   { type: 'section',     label: 'Section Break',  hint: 'Group questions into a section',    Icon: Layers,      group: 'advanced' }
 ];
 
@@ -273,7 +273,7 @@ const newDefaultQuestion = (type: QuestionType, existing?: Question[]): Question
   const base: Question = {
     id: uid('q'),
     type,
-    question: type === 'section' ? 'New Section' : type === 'responseId' ? 'Response ID' : 'Untitled Question',
+    question: type === 'section' ? 'New Section' : type === 'responseId' ? 'Auto Serial' : 'Untitled Question',
     required: type === 'responseId' ? true : false,
     description: '',
     placeholder: '',
@@ -2115,7 +2115,7 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
     case 'responseId':
       return (
         <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs">
-          <span className="font-mono font-bold tabular-nums text-slate-800">N-1</span>
+          <span className="font-mono font-bold tabular-nums text-slate-800">1</span>
         </div>
       );
     case 'date':
@@ -2408,11 +2408,6 @@ const ResponseIdQuestionEditor: React.FC<{
   onUpdate: (patch: Partial<Question>) => void;
 }> = ({ question, allQuestions, onUpdate }) => {
   const cfg = question.responseIdConfig || {};
-  const logicLinkedId =
-    question.logic?.enabled && question.logic.conditions?.[0]?.questionId
-      ? question.logic.conditions[0].questionId
-      : '';
-  const effectivePrefixId = cfg.prefixQuestionId || logicLinkedId || '';
   const candidates = allQuestions.filter(
     (q) =>
       q.id !== question.id &&
@@ -2427,22 +2422,22 @@ const ResponseIdQuestionEditor: React.FC<{
   return (
     <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-2">
       <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-        Response ID (auto)
+        Auto Serial ID
       </div>
       <p className="text-[11px] text-slate-600 leading-relaxed">
-        Without a linked question: plain serial{' '}
+        <span className="font-semibold">Universal rule:</span> if this field has display
+        logic (or an explicit prefix question below), the ID uses the selected option
+        label:{' '}
+        <span className="font-mono font-semibold">একক_১</span>,{' '}
+        <span className="font-mono font-semibold">বৃক্ষগুচ্ছ_২</span>. First word of the
+        label is the prefix; Bangla digits for Bangla labels. Without logic/prefix → plain{' '}
         <span className="font-mono font-semibold">1</span>,{' '}
-        <span className="font-mono font-semibold">2</span>…. With a linked question or
-        display logic: <span className="font-mono font-semibold">PREFIX-1</span>,{' '}
-        <span className="font-mono font-semibold">PREFIX-2</span>…. Locked for enumerators.
+        <span className="font-mono font-semibold">2</span>…. Locked for enumerators.
+        Separate from system <span className="font-semibold">Submission ID</span>.
       </p>
       <Field
-        label="Prefix from question"
-        hint={
-          logicLinkedId && !cfg.prefixQuestionId
-            ? `Using display-logic question automatically (${logicLinkedId}).`
-            : 'Optional. Leave blank to use the first question in display logic, or plain serial if none.'
-        }
+        label="Prefix from question (optional override)"
+        hint="Leave blank to use the question from display logic automatically."
       >
         <select
           value={cfg.prefixQuestionId || ''}
@@ -2456,9 +2451,7 @@ const ResponseIdQuestionEditor: React.FC<{
           }
           className={inputCls}
         >
-          <option value="">
-            {logicLinkedId ? 'Auto from display logic' : 'None (plain serial)'}
-          </option>
+          <option value="">Auto from display logic (or plain serial)</option>
           {candidates.map((q) => (
             <option key={q.id} value={q.id}>
               {q.question || q.key || q.id}
@@ -2466,12 +2459,6 @@ const ResponseIdQuestionEditor: React.FC<{
           ))}
         </select>
       </Field>
-      {effectivePrefixId ? (
-        <p className="text-[10px] text-emerald-700">
-          Active prefix source is set — IDs will look like{' '}
-          <span className="font-mono font-semibold">VALUE-1</span>.
-        </p>
-      ) : null}
       {question.key ? (
         <p className="text-[10px] font-mono text-slate-400">Field key: {question.key}</p>
       ) : null}
@@ -4865,7 +4852,7 @@ const PreviewQuestion: React.FC<{
       body = (
         <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
           <span className="font-mono text-base font-bold tabular-nums text-slate-900">
-            {(value as string) || 'N-1'}
+            {(value as string) || '1'}
           </span>
         </div>
       );

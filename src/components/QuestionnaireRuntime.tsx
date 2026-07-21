@@ -44,6 +44,12 @@ import { evaluateComputed } from '../lib/computedAnswers';
 import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
 import { gpsAccuracyGateEnabled, gpsCaptureSummary, gpsMeetsAccuracy } from '../lib/gpsCapture';
 import {
+  normalizeBanglaDigits,
+  parseLocaleNumber,
+  sanitizeDecimalInput,
+  sanitizeIntegerInput
+} from '../lib/banglaDigits';
+import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
   choiceAnswerToComparableString
 } from '../lib/choiceAnswers';
@@ -407,9 +413,10 @@ export const EnumeratorInfoTable: React.FC<{
         }
         return (
           <input
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={(v as string) ?? ''}
-            onChange={(e) => onChange(f.id, e.target.value)}
+            onChange={(e) => onChange(f.id, sanitizeDecimalInput(e.target.value))}
             className={cls}
           />
         );
@@ -422,9 +429,11 @@ export const EnumeratorInfoTable: React.FC<{
         const yrs = ageVal.years === undefined ? '' : String(ageVal.years);
         const mos = ageVal.months === undefined ? '' : String(ageVal.months);
         const commit = (ny: string, nm: string) => {
-          const y = ny === '' ? undefined : Math.max(0, Number(ny));
-          const mRaw = nm === '' ? undefined : Math.max(0, Number(nm));
-          const m = mRaw === undefined ? undefined : Math.min(11, mRaw);
+          const yRaw = sanitizeIntegerInput(ny);
+          const mRaw = sanitizeIntegerInput(nm);
+          const y = yRaw === '' ? undefined : Math.max(0, parseLocaleNumber(yRaw));
+          const mNum = mRaw === '' ? undefined : Math.max(0, parseLocaleNumber(mRaw));
+          const m = mNum === undefined ? undefined : Math.min(11, mNum);
           if (y === undefined && m === undefined) {
             onChange(f.id, undefined);
             return;
@@ -437,11 +446,8 @@ export const EnumeratorInfoTable: React.FC<{
           <div className="flex gap-2">
             <div className="flex-1 min-w-0 relative">
               <input
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={0}
-                max={150}
-                step={1}
                 value={yrs}
                 onChange={(e) => commit(e.target.value, mos)}
                 placeholder="0"
@@ -453,11 +459,8 @@ export const EnumeratorInfoTable: React.FC<{
             </div>
             <div className="flex-1 min-w-0 relative">
               <input
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={0}
-                max={11}
-                step={1}
                 value={mos}
                 onChange={(e) => commit(yrs, e.target.value)}
                 placeholder="0"
@@ -1474,13 +1477,19 @@ export const RuntimeQuestion: React.FC<{
             question.type === 'email' ? 'email' : question.type === 'phone' ? 'tel' : undefined
           }
           value={(value as string) || ''}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) =>
+            onChange(
+              question.type === 'phone'
+                ? normalizeBanglaDigits(e.target.value)
+                : e.target.value
+            )
+          }
           placeholder={
             question.placeholder ||
             (question.type === 'email'
               ? 'name@example.com'
               : question.type === 'phone'
-                ? '01712345678'
+                ? '০১৭১২৩৪৫৬৭৮ / 01712345678'
                 : undefined)
           }
           className={cls}
@@ -1501,13 +1510,11 @@ export const RuntimeQuestion: React.FC<{
     case 'number':
       body = (
         <input
-          type="number"
+          type="text"
+          inputMode="decimal"
           value={(value as string) ?? ''}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={question.placeholder}
-          min={question.validation?.min}
-          max={question.validation?.max}
-          step={question.validation?.step}
+          onChange={(e) => onChange(sanitizeDecimalInput(e.target.value))}
+          placeholder={question.placeholder || '০ / 0'}
           className={cls}
         />
       );
@@ -1517,6 +1524,7 @@ export const RuntimeQuestion: React.FC<{
       // totalMonths }` so admins can sort on either dimension and the CSV
       // export can render both columns. Empty input is preserved as
       // `undefined` so the "required" validator can still reject blanks.
+      // Accepts Bangla digits (০–৯) from device keyboards.
       const ageVal = (value && typeof value === 'object' ? value : {}) as {
         years?: number | string;
         months?: number | string;
@@ -1524,9 +1532,11 @@ export const RuntimeQuestion: React.FC<{
       const yrs = ageVal.years === undefined ? '' : String(ageVal.years);
       const mos = ageVal.months === undefined ? '' : String(ageVal.months);
       const commit = (nextYears: string, nextMonths: string) => {
-        const y = nextYears === '' ? undefined : Math.max(0, Number(nextYears));
-        const mRaw = nextMonths === '' ? undefined : Math.max(0, Number(nextMonths));
-        const m = mRaw === undefined ? undefined : Math.min(11, mRaw);
+        const yRaw = sanitizeIntegerInput(nextYears);
+        const mRawStr = sanitizeIntegerInput(nextMonths);
+        const y = yRaw === '' ? undefined : Math.max(0, parseLocaleNumber(yRaw));
+        const mNum = mRawStr === '' ? undefined : Math.max(0, parseLocaleNumber(mRawStr));
+        const m = mNum === undefined ? undefined : Math.min(11, mNum);
         if (y === undefined && m === undefined) {
           onChange(undefined);
           return;
@@ -1540,14 +1550,11 @@ export const RuntimeQuestion: React.FC<{
           <div className="flex-1 min-w-0">
             <div className="relative">
               <input
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={0}
-                max={150}
-                step={1}
                 value={yrs}
                 onChange={(e) => commit(e.target.value, mos)}
-                placeholder="0"
+                placeholder="০"
                 className={`${cls} pr-12`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -1558,14 +1565,11 @@ export const RuntimeQuestion: React.FC<{
           <div className="flex-1 min-w-0">
             <div className="relative">
               <input
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={0}
-                max={11}
-                step={1}
                 value={mos}
                 onChange={(e) => commit(yrs, e.target.value)}
-                placeholder="0"
+                placeholder="০"
                 className={`${cls} pr-14`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">

@@ -190,16 +190,17 @@ export interface ComputedSpec {
 }
 
 /**
- * Auto Response / Case ID question.
- * - No linked question / no display logic → plain serial `1`, `2`, `3`…
- * - Linked question or visibility logic → `{prefix}-{serial}` (e.g. `N-1`)
+ * Auto Serial / Case ID question.
+ * - No linked / no display logic → plain serial `1`, `2`, `3`…
+ * - Display logic or explicit prefix question → `{optionLabel}_{serial}`
+ *   e.g. একক গাছ → `একক_১`, বৃক্ষগুচ্ছ (ক্যানোপি) → `বৃক্ষগুচ্ছ_১`
  * Unique per enumerator × questionnaire × prefix. Locked for enumerators.
  */
 export interface ResponseIdConfig {
   /**
    * Optional question whose answer becomes the ID prefix.
    * When omitted, the first question referenced by this field's display
-   * logic is used automatically.
+   * logic is used automatically (universal for option-based show/hide).
    */
   prefixQuestionId?: string;
 }

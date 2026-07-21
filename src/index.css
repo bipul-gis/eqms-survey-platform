@@ -1,31 +1,46 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 
-/* Bundled Bangla-capable face so Android WebView / offline APK still renders
-   Bengali prompts and answers even when Google Fonts CDN is unreachable. */
+/*
+ * Local Bangla face under a dedicated family name so Google Fonts' CDN
+ * @font-face for "Noto Sans Bengali" cannot override / subset it. Digits
+ * ০–৯ live in this file; Inter/system mono must not win for those glyphs.
+ */
 @font-face {
-  font-family: "Noto Sans Bengali";
+  font-family: "EQMS Bangla";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/NotoSansBengali-Regular.woff2") format("woff2");
+  src: url("/fonts/NotoSansBengali-Standard.woff2") format("woff2");
+  unicode-range: U+0980-09FF, U+200C-200D, U+20B9, U+25CC;
 }
 @font-face {
-  font-family: "Noto Sans Bengali";
+  font-family: "EQMS Bangla";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
   src: url("/fonts/NotoSansBengali-Bold.woff2") format("woff2");
+  unicode-range: U+0980-09FF, U+200C-200D, U+20B9, U+25CC;
 }
 
 @theme {
-  --font-sans: "Noto Sans Bengali", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "EQMS Bangla", "Noto Sans Bengali", "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* Include Bangla so tabular/mono UI never draws tofu for ০–৯ */
+  --font-mono: "EQMS Bangla", "Noto Sans Bengali", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
+  font-family: var(--font-sans);
+}
+
+/* WebView / form controls often default to a Latin-only UI font */
+input,
+textarea,
+select,
+button {
   font-family: var(--font-sans);
 }
 

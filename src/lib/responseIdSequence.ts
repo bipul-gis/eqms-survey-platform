@@ -1,7 +1,11 @@
 import { getCached, invalidateCached, setCached } from './firestoreReadCache';
 import { geosurveyApi } from './geosurveyApi';
-import { choiceAnswerToComparableString } from './choiceAnswers';
-import type { Question, QuestionnaireResponse } from '../types';
+import {
+  choiceAnswerToComparableString,
+  isOtherSpecifyAnswer
+} from './choiceAnswers';
+import { normalizeBanglaDigits, toBanglaDigits } from './banglaDigits';
+import type { Question, QuestionOption, QuestionnaireResponse } from '../types';
 
 const CACHE_TTL_MS = 15_000;
 
@@ -9,26 +13,59 @@ export function invalidateResponseIdCache(questionnaireId: string): void {
   invalidateCached(`responseId:${questionnaireId}`);
 }
 
-/** Sanitize a linked-question answer into a safe ID prefix segment. */
+function optionList(q: Question | undefined): QuestionOption[] {
+  if (!q?.options) return [];
+  return q.options.map((o, i) =>
+    typeof o === 'string'
+      ? { id: `o_${i}`, value: o, label: o }
+      : o
+  );
+}
+
+/**
+ * Shorten an option label into a stable ID prefix token.
+ * Examples:
+ *   "একক গাছ"              → "একক"
+ *   "বৃক্ষগুচ্ছ (ক্যানোপি)" → "বৃক্ষগুচ্ছ"
+ *   "North Zone"            → "North"
+ */
+export function shortenOptionLabelForPrefix(label: string): string {
+  let s = String(label).trim();
+  // Drop parenthetical / bracketed notes
+  s = s.replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ').trim();
+  // First whitespace-separated token (universal for Bangla + English)
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '';
+  return parts[0];
+}
+
+/** Sanitize a prefix token — keep letters from any script, digits, underscore. */
 export function sanitizeResponseIdPrefix(raw: unknown): string {
   if (raw == null) return '';
   let text = '';
   if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
     text = String(raw);
+  } else if (isOtherSpecifyAnswer(raw)) {
+    text = raw.text.trim();
   } else {
     text = choiceAnswerToComparableString(raw) || '';
   }
-  return text
+  const cleaned = text
     .trim()
     .replace(/\s+/g, '_')
-    .replace(/[^A-Za-z0-9_-]/g, '')
-    .slice(0, 32);
+    .replace(/[^\p{L}\p{N}_-]/gu, '')
+    .replace(/_+/g, '_')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 48);
+  if (!cleaned || /^[_-]+$/.test(cleaned)) return '';
+  return cleaned;
 }
 
 /**
- * Prefix source for a Response ID question:
+ * Prefix source question:
  * 1. Explicit `responseIdConfig.prefixQuestionId`
  * 2. Else first question referenced by this field's display logic
+ *    (universal: show-when-option-equals → that option becomes the prefix)
  */
 export function inferResponseIdPrefixQuestionId(question: Question): string | undefined {
   const explicit = question.responseIdConfig?.prefixQuestionId?.trim();
@@ -42,11 +79,38 @@ export function inferResponseIdPrefixQuestionId(question: Question): string | un
   return undefined;
 }
 
+/** Resolve human label for the current answer of a linked choice question. */
+function resolveLinkedAnswerLabel(
+  linked: Question | undefined,
+  raw: unknown
+): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (Array.isArray(raw) && raw.length === 0) return null;
+
+  if (isOtherSpecifyAnswer(raw)) {
+    const t = raw.text.trim();
+    return t || null;
+  }
+
+  const comparable = choiceAnswerToComparableString(raw);
+  if (!comparable) return null;
+
+  if (linked && (linked.type === 'select' || linked.type === 'radio' || linked.type === 'checkbox' || linked.type === 'multiselect')) {
+    const opts = optionList(linked);
+    const hit =
+      opts.find((o) => o.value === comparable) ||
+      opts.find((o) => o.label === comparable);
+    if (hit) return (hit.label || hit.value || '').trim() || null;
+  }
+
+  return comparable;
+}
+
 /**
- * Resolve prefix for a responseId question.
- * - `''` → no linked question (plain serial mode), ready to allocate
- * - `null` → linked question set but unanswered / empty — wait
- * - non-empty string → prefix ready
+ * Resolve prefix for a responseId / Auto Serial question.
+ * - `''` → no linked question (plain serial), ready to allocate
+ * - `null` → linked question set but unanswered — wait
+ * - non-empty → prefix ready (e.g. "একক", "বৃক্ষগুচ্ছ")
  */
 export function resolveResponseIdPrefix(
   question: Question,
@@ -57,25 +121,29 @@ export function resolveResponseIdPrefix(
   if (!linkedId) return '';
 
   const linked = allQuestions.find((q) => q.id === linkedId);
-  const raw = answers[linkedId];
-  if (raw === undefined || raw === null || raw === '') return null;
-  if (Array.isArray(raw) && raw.length === 0) return null;
+  const label = resolveLinkedAnswerLabel(linked, answers[linkedId]);
+  if (!label) return null;
 
-  // Prefer stored option value for choice questions.
-  if (linked && (linked.type === 'select' || linked.type === 'radio')) {
-    const comparable = choiceAnswerToComparableString(raw);
-    if (!comparable) return null;
-    const prefix = sanitizeResponseIdPrefix(comparable);
-    return prefix || null;
-  }
-
-  const prefix = sanitizeResponseIdPrefix(raw);
+  const shortened = shortenOptionLabelForPrefix(label);
+  const prefix = sanitizeResponseIdPrefix(shortened);
   return prefix || null;
 }
 
+/** True when the string contains Bengali script letters (not only digits). */
+function prefixUsesBanglaScript(prefix: string): boolean {
+  return /[\u0980-\u09FF]/.test(prefix);
+}
+
+/**
+ * Format allocated id.
+ * Plain → `1` / `১` (Latin if no Bangla context)
+ * Prefixed → `একক_১`, `বৃক্ষগুচ্ছ_২`, `North_1`
+ */
 export function formatResponseId(prefix: string, serial: number): string {
-  if (!prefix) return String(serial);
-  return `${prefix}-${serial}`;
+  const useBn = prefixUsesBanglaScript(prefix);
+  const serialText = useBn ? toBanglaDigits(serial) : String(serial);
+  if (!prefix) return serialText;
+  return `${prefix}_${serialText}`;
 }
 
 function escapeRegex(s: string): string {
@@ -87,24 +155,32 @@ export function parseResponseIdSerial(value: unknown, prefix: string = ''): numb
   if (value == null) return null;
   const s = String(value).trim();
   if (!s) return null;
+
+  const parseTail = (tail: string): number | null => {
+    const ascii = normalizeBanglaDigits(tail);
+    if (!/^\d+$/.test(ascii)) return null;
+    const n = Number(ascii);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+
   if (!prefix) {
-    // Plain serial, or accept PREFIX-N and return N when scanning loosely.
-    if (/^\d+$/.test(s)) {
-      const n = Number(s);
-      return Number.isInteger(n) && n > 0 ? n : null;
-    }
-    const loose = s.match(/^(.+)-(\d+)$/);
-    if (loose) {
-      const n = Number(loose[2]);
-      return Number.isInteger(n) && n > 0 ? n : null;
-    }
+    // Plain serial (Latin or Bangla digits)
+    const plain = parseTail(s);
+    if (plain != null) return plain;
+    // Legacy / prefixed leftovers when scanning without a known prefix
+    const loose = s.match(/^(.+)[_-]([\d০-৯]+)$/u);
+    if (loose) return parseTail(loose[2]);
     return null;
   }
-  const re = new RegExp(`^${escapeRegex(prefix)}-(\\d+)$`, 'i');
+
+  // Prefer underscore (current), also accept legacy hyphen
+  const re = new RegExp(
+    `^${escapeRegex(prefix)}[_-]([\\d০-৯]+)$`,
+    'u'
+  );
   const m = s.match(re);
   if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isInteger(n) && n > 0 ? n : null;
+  return parseTail(m[1]);
 }
 
 export function responseIdMatchesPrefix(value: unknown, prefix: string): boolean {
@@ -115,8 +191,8 @@ export function isAllocatedResponseIdValue(value: unknown): boolean {
   if (value == null) return false;
   const s = String(value).trim();
   if (!s) return false;
-  if (/^\d+$/.test(s)) return true;
-  return /^.+-\d+$/.test(s);
+  if (parseResponseIdSerial(s, '') != null) return true;
+  return /^.+[_-][\d০-৯]+$/u.test(s);
 }
 
 function collectSerialsFromPools(
@@ -143,8 +219,8 @@ function collectSerialsFromPools(
 
 /**
  * Next serial for this enumerator × questionnaire × prefix bucket.
- * Plain mode → `1`, `2`, `3`…
- * Prefixed → `N-1`, `N-2`, …
+ * Plain → `1`…
+ * Prefixed Bangla option → `একক_১`, `একক_২`…
  */
 export async function allocateNextResponseId(options: {
   questionnaireId: string;
@@ -190,8 +266,6 @@ export async function allocateNextResponseId(options: {
     nextSerial = serials.length > 0 ? Math.max(...serials) + 1 : 1;
   }
 
-  // Optimistic bump so rapid consecutive opens don't reuse the same number
-  // before the first save lands.
   setCached(cacheKey, nextSerial + 1);
   return formatResponseId(prefix, nextSerial);
 }
@@ -216,8 +290,7 @@ export function mergeResponseIdIntoAnswers(
 
 /**
  * Drop accidental duplicate Response ID questions that share a key and have
- * no display logic (common when the palette fires twice). Keep the first.
- * Intentionally-branched Response IDs (enabled logic) are preserved.
+ * no display logic. Intentionally-branched Response IDs are preserved.
  */
 export function collapseAccidentalResponseIdQuestions(questions: Question[]): Question[] {
   const seenPlainKeys = new Set<string>();

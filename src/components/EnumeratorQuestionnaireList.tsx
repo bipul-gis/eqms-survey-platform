@@ -697,6 +697,15 @@ const MyResponsesPanel: React.FC<{
 
   const totalCount = stats.all.length;
 
+  const autoSerialQuestion = useMemo(
+    () => (questionnaire.questions || []).find((q) => q.type === 'responseId'),
+    [questionnaire.questions]
+  );
+  /** Column for the form Auto Serial field (not the system document id). */
+  const serialColumnLabel = autoSerialQuestion
+    ? autoSerialQuestion.question?.trim() || 'Auto Serial'
+    : null;
+
   return (
     <div className="fixed inset-0 z-[1002] bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center gap-3 shadow-sm pt-safe-top shrink-0">
@@ -807,17 +816,24 @@ const MyResponsesPanel: React.FC<{
                     </div>
                     <div>
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                        Response ID
+                        {serialColumnLabel || 'Submission ID'}
                       </p>
                       {(() => {
                         const serial = readResponseIdSerial(r, questionnaire.questions);
-                        return serial ? (
-                          <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
-                            {serial}
-                          </span>
-                        ) : (
-                          <ResponseIdCell id={r.id} variant="compact" />
-                        );
+                        if (serialColumnLabel && serial) {
+                          return (
+                            <div className="space-y-1">
+                              <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
+                                {serial}
+                              </span>
+                              <p className="text-[10px] text-slate-400">
+                                Submission ID:{' '}
+                                <span className="font-mono">{r.id.slice(0, 8)}…</span>
+                              </p>
+                            </div>
+                          );
+                        }
+                        return <ResponseIdCell id={r.id} variant="compact" />;
                       })()}
                     </div>
                     <div>
@@ -877,7 +893,7 @@ const MyResponsesPanel: React.FC<{
                     #
                   </th>
                   <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Response ID
+                    {serialColumnLabel || 'Submission ID'}
                   </th>
                   <th className="px-3 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                     Last Updated
@@ -901,13 +917,19 @@ const MyResponsesPanel: React.FC<{
                       <td className="px-3 py-3 max-w-[14rem]">
                         {(() => {
                           const serial = readResponseIdSerial(r, questionnaire.questions);
-                          return serial ? (
-                            <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
-                              {serial}
-                            </span>
-                          ) : (
-                            <ResponseIdCell id={r.id} variant="compact" />
-                          );
+                          if (serialColumnLabel && serial) {
+                            return (
+                              <div className="space-y-0.5">
+                                <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
+                                  {serial}
+                                </span>
+                                <div className="text-[10px] text-slate-400 truncate" title={r.id}>
+                                  Submission: {r.id.slice(0, 10)}…
+                                </div>
+                              </div>
+                            );
+                          }
+                          return <ResponseIdCell id={r.id} variant="compact" />;
                         })()}
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">
