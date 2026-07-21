@@ -213,9 +213,10 @@ export interface ResponseIdConfig {
  * queries.
  */
 export interface AgeValue {
-  years: number;
-  months: number;
-  /** Convenience field: years * 12 + months. */
+  /** May be a number or a digit string (Latin or Bangla) as typed. */
+  years: number | string;
+  months: number | string;
+  /** Convenience field: years * 12 + months (always numeric). */
   totalMonths?: number;
 }
 

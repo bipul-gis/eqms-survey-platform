@@ -37,19 +37,18 @@ export function containsBanglaDigits(input: string): boolean {
 }
 
 /**
- * Keep only characters valid in a decimal number field, accepting Bangla
- * digits. Returns the normalized ASCII form for storage.
+ * Keep only characters valid in a decimal number field.
+ * Preserves Bangla (০–৯) or Latin digits as typed — does not force English.
  */
 export function sanitizeDecimalInput(raw: string): string {
-  const n = normalizeBanglaDigits(raw).replace(/,/g, '');
-  // Allow empty, optional leading minus, digits, one dot.
   let sign = '';
-  let body = n;
-  if (body.startsWith('-')) {
+  let body = String(raw).replace(/,/g, '');
+  if (body.startsWith('-') || body.startsWith('\u2212')) {
     sign = '-';
     body = body.slice(1);
   }
-  body = body.replace(/[^\d.]/g, '');
+  // Latin digits, Bangla digits, one decimal point
+  body = body.replace(/[^\d০-৯.]/g, '');
   const dot = body.indexOf('.');
   if (dot >= 0) {
     body = body.slice(0, dot + 1) + body.slice(dot + 1).replace(/\./g, '');
@@ -58,10 +57,11 @@ export function sanitizeDecimalInput(raw: string): string {
 }
 
 /**
- * Integer-only field (age years/months, etc.). Accepts Bangla digits.
+ * Integer-only field (age years/months, etc.).
+ * Preserves Bangla or Latin digits as typed.
  */
 export function sanitizeIntegerInput(raw: string): string {
-  return normalizeBanglaDigits(raw).replace(/[^\d]/g, '');
+  return String(raw).replace(/[^\d০-৯]/g, '');
 }
 
 /** Parse a user-typed number that may contain Bangla digits. */

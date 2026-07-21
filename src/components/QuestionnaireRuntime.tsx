@@ -431,16 +431,18 @@ export const EnumeratorInfoTable: React.FC<{
         const commit = (ny: string, nm: string) => {
           const yRaw = sanitizeIntegerInput(ny);
           const mRaw = sanitizeIntegerInput(nm);
-          const y = yRaw === '' ? undefined : Math.max(0, parseLocaleNumber(yRaw));
-          const mNum = mRaw === '' ? undefined : Math.max(0, parseLocaleNumber(mRaw));
-          const m = mNum === undefined ? undefined : Math.min(11, mNum);
-          if (y === undefined && m === undefined) {
+          if (yRaw === '' && mRaw === '') {
             onChange(f.id, undefined);
             return;
           }
-          const yy = y ?? 0;
-          const mm = m ?? 0;
-          onChange(f.id, { years: yy, months: mm, totalMonths: yy * 12 + mm });
+          const yy = yRaw === '' ? 0 : Math.max(0, parseLocaleNumber(yRaw));
+          const mm = mRaw === '' ? 0 : Math.min(11, Math.max(0, parseLocaleNumber(mRaw)));
+          // Keep Bangla/Latin digits as typed in the field; totalMonths is numeric.
+          onChange(f.id, {
+            years: yRaw === '' ? 0 : yRaw,
+            months: mRaw === '' ? 0 : mRaw,
+            totalMonths: yy * 12 + mm
+          });
         };
         return (
           <div className="flex gap-2">
@@ -450,7 +452,7 @@ export const EnumeratorInfoTable: React.FC<{
                 inputMode="numeric"
                 value={yrs}
                 onChange={(e) => commit(e.target.value, mos)}
-                placeholder="0"
+                placeholder="Enter years"
                 className={`${cls} pr-12`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -463,7 +465,7 @@ export const EnumeratorInfoTable: React.FC<{
                 inputMode="numeric"
                 value={mos}
                 onChange={(e) => commit(yrs, e.target.value)}
-                placeholder="0"
+                placeholder="Enter months"
                 className={`${cls} pr-14`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -1514,7 +1516,7 @@ export const RuntimeQuestion: React.FC<{
           inputMode="decimal"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(sanitizeDecimalInput(e.target.value))}
-          placeholder={question.placeholder || '০ / 0'}
+          placeholder={question.placeholder || 'Enter number'}
           className={cls}
         />
       );
@@ -1534,16 +1536,18 @@ export const RuntimeQuestion: React.FC<{
       const commit = (nextYears: string, nextMonths: string) => {
         const yRaw = sanitizeIntegerInput(nextYears);
         const mRawStr = sanitizeIntegerInput(nextMonths);
-        const y = yRaw === '' ? undefined : Math.max(0, parseLocaleNumber(yRaw));
-        const mNum = mRawStr === '' ? undefined : Math.max(0, parseLocaleNumber(mRawStr));
-        const m = mNum === undefined ? undefined : Math.min(11, mNum);
-        if (y === undefined && m === undefined) {
+        if (yRaw === '' && mRawStr === '') {
           onChange(undefined);
           return;
         }
-        const yy = y ?? 0;
-        const mm = m ?? 0;
-        onChange({ years: yy, months: mm, totalMonths: yy * 12 + mm });
+        const yy = yRaw === '' ? 0 : Math.max(0, parseLocaleNumber(yRaw));
+        const mm =
+          mRawStr === '' ? 0 : Math.min(11, Math.max(0, parseLocaleNumber(mRawStr)));
+        onChange({
+          years: yRaw === '' ? 0 : yRaw,
+          months: mRawStr === '' ? 0 : mRawStr,
+          totalMonths: yy * 12 + mm
+        });
       };
       body = (
         <div className="flex items-stretch gap-2">
@@ -1554,7 +1558,7 @@ export const RuntimeQuestion: React.FC<{
                 inputMode="numeric"
                 value={yrs}
                 onChange={(e) => commit(e.target.value, mos)}
-                placeholder="০"
+                placeholder="Enter years"
                 className={`${cls} pr-12`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -1569,7 +1573,7 @@ export const RuntimeQuestion: React.FC<{
                 inputMode="numeric"
                 value={mos}
                 onChange={(e) => commit(yrs, e.target.value)}
-                placeholder="০"
+                placeholder="Enter months"
                 className={`${cls} pr-14`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">

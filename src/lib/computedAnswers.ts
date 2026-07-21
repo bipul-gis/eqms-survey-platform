@@ -25,6 +25,7 @@
  */
 
 import { ComputedSpec, Question } from '../types';
+import { normalizeBanglaDigits } from './banglaDigits';
 
 /**
  * Coerce a stored answer into a finite number, or `null` when it
@@ -38,7 +39,7 @@ export const coerceAnswerToNumber = (v: unknown): number | null => {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   if (typeof v === 'boolean') return v ? 1 : 0;
   if (typeof v === 'string') {
-    const trimmed = v.trim();
+    const trimmed = normalizeBanglaDigits(v.trim()).replace(/,/g, '');
     if (trimmed === '') return null;
     const n = Number(trimmed);
     return Number.isFinite(n) ? n : null;
@@ -47,8 +48,8 @@ export const coerceAnswerToNumber = (v: unknown): number | null => {
   if (typeof v === 'object') {
     const obj = v as { years?: number | string; months?: number | string };
     if (obj.years !== undefined || obj.months !== undefined) {
-      const y = Number(obj.years ?? 0);
-      const m = Number(obj.months ?? 0);
+      const y = Number(normalizeBanglaDigits(String(obj.years ?? 0)));
+      const m = Number(normalizeBanglaDigits(String(obj.months ?? 0)));
       const yy = Number.isFinite(y) ? y : 0;
       const mm = Number.isFinite(m) ? m : 0;
       return yy + mm / 12;
