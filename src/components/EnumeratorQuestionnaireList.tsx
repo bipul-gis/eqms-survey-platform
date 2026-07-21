@@ -33,6 +33,7 @@ import { AppFooter } from './AppFooter';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { fmtDate, tsToDate } from '../lib/responseExport';
 import { ResponseIdCell } from './ResponseIdCell';
+import { readResponseIdSerial } from '../lib/responseIdSequence';
 
 interface EnumeratorQuestionnaireListProps {
   userProfile: UserProfile;
@@ -808,7 +809,16 @@ const MyResponsesPanel: React.FC<{
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                         Response ID
                       </p>
-                      <ResponseIdCell id={r.id} variant="compact" />
+                      {(() => {
+                        const serial = readResponseIdSerial(r, questionnaire.questions);
+                        return serial ? (
+                          <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
+                            {serial}
+                          </span>
+                        ) : (
+                          <ResponseIdCell id={r.id} variant="compact" />
+                        );
+                      })()}
                     </div>
                     <div>
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
@@ -889,7 +899,16 @@ const MyResponsesPanel: React.FC<{
                     <tr key={r.id} className="hover:bg-slate-50/60">
                       <td className="px-3 py-3 text-xs text-slate-400">{idx + 1}</td>
                       <td className="px-3 py-3 max-w-[14rem]">
-                        <ResponseIdCell id={r.id} variant="compact" />
+                        {(() => {
+                          const serial = readResponseIdSerial(r, questionnaire.questions);
+                          return serial ? (
+                            <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
+                              {serial}
+                            </span>
+                          ) : (
+                            <ResponseIdCell id={r.id} variant="compact" />
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-700 whitespace-nowrap">
                         {lastTouched ? (

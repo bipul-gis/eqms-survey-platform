@@ -53,7 +53,23 @@ export const tsToDate = (v: unknown): Date | null => {
 
 export const fmtDate = (v: unknown): string => {
   const d = tsToDate(v);
-  return d ? d.toLocaleString() : '';
+  if (!d) return '';
+  // Always render in Bangladesh time so CSV / admin views match field reality
+  // regardless of the viewer browser's timezone.
+  try {
+    return d.toLocaleString('en-GB', {
+      timeZone: 'Asia/Dhaka',
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
+  } catch {
+    return d.toLocaleString();
+  }
 };
 
 const ensureOptions = (opts: Question['options']): QuestionOption[] => {
@@ -356,6 +372,7 @@ export const buildResponsesTable = (
   responses: QuestionnaireResponse[]
 ): ResponsesTable => {
   const enumFields = q.enumeratorInfo?.fields || [];
+  const consentEnabled = !!q.consentGate?.enabled;
   const questions = mergeQuestionsWithResponseKeys(
     getExportOrderedQuestions(q),
     responses
@@ -372,8 +389,7 @@ export const buildResponsesTable = (
     'Latitude',
     'Longitude',
     'Ward',
-    'Consent Granted',
-    'Consent Granted At',
+    ...(consentEnabled ? (['Consent Granted', 'Consent Granted At'] as const) : []),
     'Submission GPS Latitude',
     'Submission GPS Longitude',
     'Submission GPS Accuracy (m)',
@@ -400,8 +416,9 @@ export const buildResponsesTable = (
       exportLat,
       exportLng,
       r.location?.ward || '',
-      r.consentGranted ? 'Yes' : 'No',
-      fmtDate(r.consentGrantedAt),
+      ...(consentEnabled
+        ? [r.consentGranted ? 'Yes' : 'No', fmtDate(r.consentGrantedAt)]
+        : []),
       sub?.lat != null ? String(sub.lat) : '',
       sub?.lng != null ? String(sub.lng) : '',
       sub?.accuracy != null ? String(sub.accuracy) : '',
@@ -435,8 +452,6 @@ const SYSTEM_EXPORT_FIELDS: ResponsesExportFieldDescriptor[] = [
   { csvHeader: 'Latitude', sourceType: 'system', sourceDetail: 'Export lat: location.lat or submissionLocation.lat' },
   { csvHeader: 'Longitude', sourceType: 'system', sourceDetail: 'Export lng: location.lng or submissionLocation.lng' },
   { csvHeader: 'Ward', sourceType: 'system', sourceDetail: 'location.ward when present' },
-  { csvHeader: 'Consent Granted', sourceType: 'system', sourceDetail: 'Yes / No' },
-  { csvHeader: 'Consent Granted At', sourceType: 'system', sourceDetail: 'consentGrantedAt' },
   {
     csvHeader: 'Submission GPS Latitude',
     sourceType: 'system',
@@ -464,6 +479,11 @@ const SYSTEM_EXPORT_FIELDS: ResponsesExportFieldDescriptor[] = [
   }
 ];
 
+const CONSENT_EXPORT_FIELDS: ResponsesExportFieldDescriptor[] = [
+  { csvHeader: 'Consent Granted', sourceType: 'system', sourceDetail: 'Yes / No' },
+  { csvHeader: 'Consent Granted At', sourceType: 'system', sourceDetail: 'consentGrantedAt' }
+];
+
 /**
  * Ordered list of export columns: system metadata, enumerator info, then
  * survey questions (matrix → one column per row label).
@@ -475,7 +495,15 @@ export const buildResponsesExportFieldDescriptors = (
   const enumFields = q.enumeratorInfo?.fields || [];
   const questions = mergeQuestionsWithResponseKeys(getExportOrderedQuestions(q), responses);
   const exportColumns = buildResponsesExportColumns(questions);
-  const out: ResponsesExportFieldDescriptor[] = [...SYSTEM_EXPORT_FIELDS];
+  const out: ResponsesExportFieldDescriptor[] = [];
+
+  for (const f of SYSTEM_EXPORT_FIELDS) {
+    out.push(f);
+    // Consent columns sit after Ward, only when the gate is enabled.
+    if (f.csvHeader === 'Ward' && q.consentGate?.enabled) {
+      out.push(...CONSENT_EXPORT_FIELDS);
+    }
+  }
 
   for (const f of enumFields) {
     const label = f.question || f.key || f.id;

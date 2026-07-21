@@ -1451,19 +1451,21 @@ const ResponseDetailDialog: React.FC<{
               label="Status"
               value={response.status}
             />
-            <MetaTile
-              icon={<ShieldCheck size={14} className="text-emerald-500" />}
-              label="Consent"
-              value={
-                response.consentGranted
-                  ? `Granted${
-                      response.consentGrantedAt
-                        ? ` (${fmtDate(response.consentGrantedAt)})`
-                        : ''
-                    }`
-                  : 'Not granted'
-              }
-            />
+            {questionnaire.consentGate?.enabled ? (
+              <MetaTile
+                icon={<ShieldCheck size={14} className="text-emerald-500" />}
+                label="Consent"
+                value={
+                  response.consentGranted
+                    ? `Granted${
+                        response.consentGrantedAt
+                          ? ` (${fmtDate(response.consentGrantedAt)})`
+                          : ''
+                      }`
+                    : 'Not granted'
+                }
+              />
+            ) : null}
             {response.location && (
               <MetaTile
                 icon={<MapPin size={14} className="text-indigo-500" />}
@@ -1486,7 +1488,18 @@ const ResponseDetailDialog: React.FC<{
               <MetaTile
                 icon={<Satellite size={14} className="text-emerald-500" />}
                 label="Submission GPS"
-                value={`${response.submissionLocation.lat.toFixed(6)}, ${response.submissionLocation.lng.toFixed(6)} (±${response.submissionLocation.accuracy.toFixed(1)} m)`}
+                value={`${response.submissionLocation.lat.toFixed(6)}, ${response.submissionLocation.lng.toFixed(6)} (±${response.submissionLocation.accuracy.toFixed(1)} m)${
+                  response.submissionLocation.capturedAt
+                    ? ` · ${fmtDate(response.submissionLocation.capturedAt)}`
+                    : ''
+                }`}
+              />
+            )}
+            {(response.submittedAt || response.status === 'submitted') && (
+              <MetaTile
+                icon={<Clock size={14} className="text-slate-500" />}
+                label="Submitted At"
+                value={fmtDate(response.submittedAt) || '—'}
               />
             )}
           </div>

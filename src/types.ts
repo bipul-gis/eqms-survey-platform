@@ -132,6 +132,7 @@ export type QuestionType =
   | 'signature'
   | 'matrix'
   | 'computed'
+  | 'responseId'
   | 'section';
 
 /**
@@ -186,6 +187,18 @@ export interface ComputedSpec {
   suffix?: string;
   /** For `concat` only. Joiner between operand strings (defaults to a single space). */
   separator?: string;
+}
+
+/**
+ * Auto Response / Case ID question. Plain integer serial unique per
+ * enumerator × questionnaire (`1`, `2`, `3`…). Locked for enumerators.
+ */
+export interface ResponseIdConfig {
+  /**
+   * Reserved for future use (e.g. optional prefix). Current allocation
+   * always uses a plain numeric serial.
+   */
+  prefixQuestionId?: string;
 }
 
 /**
@@ -345,6 +358,12 @@ export interface Question {
    * runtime — enumerators never type it directly. See `ComputedSpec`.
    */
   computed?: ComputedSpec;
+  /**
+   * Config for `type === 'responseId'`. Auto serial per enumerator ×
+   * questionnaire (and optional prefix from a linked question). Locked
+   * for enumerators — assigned on first save / when the prefix is ready.
+   */
+  responseIdConfig?: ResponseIdConfig;
   /**
    * Parent question id when this question is a **sub-question** (e.g.
    * 1.a, 1.b under question 1). Single-level nesting only — a

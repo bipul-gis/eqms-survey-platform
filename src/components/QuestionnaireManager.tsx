@@ -144,6 +144,7 @@ const QUESTION_TYPES: QuestionTypeDef[] = [
   { type: 'signature',   label: 'Signature',      hint: 'Drawn signature',                   Icon: PenTool,     group: 'media' },
   { type: 'matrix',      label: 'Matrix / Grid',  hint: 'Rows × column options',             Icon: Grid3x3,     group: 'advanced' },
   { type: 'computed',    label: 'Computed',       hint: 'Auto-calculated from other answers',Icon: Sigma,       group: 'advanced' },
+  { type: 'responseId',  label: 'Response ID',    hint: 'Auto serial number per enumerator (1, 2, 3…)', Icon: Hash, group: 'advanced' },
   { type: 'section',     label: 'Section Break',  hint: 'Group questions into a section',    Icon: Layers,      group: 'advanced' }
 ];
 
@@ -270,12 +271,16 @@ const newDefaultQuestion = (type: QuestionType): Question => {
   const base: Question = {
     id: uid('q'),
     type,
-    question: type === 'section' ? 'New Section' : 'Untitled Question',
-    required: false,
+    question: type === 'section' ? 'New Section' : type === 'responseId' ? 'Response ID' : 'Untitled Question',
+    required: type === 'responseId' ? true : false,
     description: '',
     placeholder: '',
     validation: {}
   };
+  if (type === 'responseId') {
+    base.key = 'response_id';
+    base.responseIdConfig = {};
+  }
   if (isChoiceType(type)) {
     base.options = [
       { id: uid('o'), value: 'option_1', label: 'Option 1' },
@@ -1150,8 +1155,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   /**
    * Set / clear the `parentId` for a single question. Enforces the
    * single-level nesting rule:
-   * - Sections, computed, and matrix questions never become sub-
-   *   questions (they're structural blocks).
+   * - Sections, computed, matrix, and responseId questions never become sub-
+   *   questions (they're structural / system blocks).
    * - A question that already has its own children can't itself
    *   become a child (would make a grandchild).
    * - The new parent must be a top-level, non-section question
@@ -1163,7 +1168,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     setQuestions((prev) => {
       const target = prev.find((q) => q.id === id);
       if (!target) return prev;
-      if (target.type === 'section') return prev;
+      if (target.type === 'section' || target.type === 'responseId') return prev;
       // Children can't become parents (single-level only).
       const hasChildren = prev.some((q) => q.parentId === id);
       if (newParentId && hasChildren) {
@@ -2094,6 +2099,13 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
           <Sigma size={11} className="shrink-0" />
         </div>
       );
+    case 'responseId':
+      return (
+        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs">
+          <span className="text-[10px] font-bold text-slate-500 uppercase">Serial</span>
+          <span className="font-mono font-bold tabular-nums text-slate-800">1</span>
+        </div>
+      );
     case 'date':
       return <input type="date" disabled className={inputClass} />;
     case 'time':
@@ -2357,7 +2369,36 @@ const PropertiesPanel: React.FC<{
           onUpdate={onUpdate}
         />
       )}
+
+      {question.type === 'responseId' && (
+        <ResponseIdQuestionEditor question={question} />
+      )}
         </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// ResponseIdQuestionEditor — optional prefix question for auto Response ID.
+// ---------------------------------------------------------------------------
+
+const ResponseIdQuestionEditor: React.FC<{
+  question: Question;
+}> = ({ question }) => {
+  return (
+    <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-1.5">
+      <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+        Response ID (auto serial)
+      </div>
+      <p className="text-[11px] text-slate-600 leading-relaxed">
+        Assigns a plain number for each enumerator on this questionnaire:{' '}
+        <span className="font-mono font-semibold">1</span>,{' '}
+        <span className="font-mono font-semibold">2</span>,{' '}
+        <span className="font-mono font-semibold">3</span>…. Locked — enumerators cannot edit it.
+      </p>
+      {question.key ? (
+        <p className="text-[10px] font-mono text-slate-400">Field key: {question.key}</p>
+      ) : null}
+    </div>
   );
 };
 
@@ -4721,6 +4762,18 @@ const PreviewQuestion: React.FC<{
       );
       break;
     }
+    case 'responseId':
+      body = (
+        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+            Serial
+          </span>
+          <span className="font-mono text-base font-bold tabular-nums text-slate-900">
+            {(value as string) || '1'}
+          </span>
+        </div>
+      );
+      break;
     case 'date':
       body = (
         <input type="date" value={(value as string) || ''} onChange={(e) => onChange(e.target.value)} className={cls} />

@@ -706,7 +706,14 @@ export interface GpsCaptureWidgetProps {
   description?: string;
   variant?: 'card' | 'inline';
   onChange?: (
-    sample: { lat: number; lng: number; accuracy: number; durationSeconds: number } | null
+    sample: {
+      lat: number;
+      lng: number;
+      accuracy: number;
+      durationSeconds: number;
+      /** ISO timestamp when the GPS sample was locked. */
+      capturedAt: string;
+    } | null
   ) => void;
 }
 
@@ -742,7 +749,8 @@ export const SubmissionGpsCaptureWidget: React.FC<GpsCaptureWidgetProps> = ({
         lat: state.best.lat,
         lng: state.best.lng,
         accuracy: state.best.accuracy,
-        durationSeconds: state.durationSeconds
+        durationSeconds: state.durationSeconds,
+        capturedAt: new Date(state.best.takenAt).toISOString()
       });
     } else if (state.phase === 'idle') {
       onChange(null);
@@ -1219,21 +1227,20 @@ const compressImageFile = async (
 };
 
 /**
- * Live camera capture for questionnaire Photo questions.
- * Primary path: device camera preview + Capture button.
- * Fallback: open camera app via `capture="environment"`, plus optional gallery pick.
+ * Photo capture for questionnaire Photo questions.
+ *
+ * Uses the device camera app via `<input capture="environment">` — reliable on
+ * Android / Capacitor WebViews where live `getUserMedia` often fails with
+ * "Requested device not found". Gallery pick remains available separately.
  */
 export const PhotoCaptureWidget: React.FC<{
   value: unknown;
   onChange: (v: PhotoAnswer | null) => void;
   disabled?: boolean;
 }> = ({ value, onChange, disabled = false }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
-  const [starting, setStarting] = useState(false);
-  const [streaming, setStreaming] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const filled = isPhotoAnswerFilled(value);
@@ -1244,75 +1251,11 @@ export const PhotoCaptureWidget: React.FC<{
         ? (value as PhotoAnswer).dataUrl
         : '';
 
-  const stopCamera = useCallback(() => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-    setStreaming(false);
-  }, []);
-
-  useEffect(() => () => stopCamera(), [stopCamera]);
-
-  const startCamera = useCallback(async () => {
-    if (disabled) return;
-    setError(null);
-    setStarting(true);
-    try {
-      stopCamera();
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Camera API is not available in this browser.');
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
-      }
-      setStreaming(true);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Unable to open the camera.';
-      setError(message);
-      setStreaming(false);
-    } finally {
-      setStarting(false);
-    }
-  }, [disabled, stopCamera]);
-
-  const captureFrame = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video || !streaming) return;
-    const width = video.videoWidth || 1280;
-    const height = video.videoHeight || 720;
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, width, height);
-    const mimeType = 'image/jpeg';
-    const dataUrl = canvas.toDataURL(mimeType, 0.72);
-    onChange({
-      dataUrl,
-      mimeType,
-      capturedAt: new Date().toISOString(),
-      source: 'camera',
-      fileName: buildPhotoFileName('camera', mimeType)
-    });
-    stopCamera();
-  }, [onChange, stopCamera, streaming]);
-
   const ingestFile = useCallback(
     async (file: File | undefined, source: 'camera' | 'gallery') => {
       if (!file || disabled) return;
       setError(null);
+      setBusy(true);
       try {
         const compressed = await compressImageFile(file);
         onChange({
@@ -1322,13 +1265,20 @@ export const PhotoCaptureWidget: React.FC<{
           source,
           fileName: buildPhotoFileName(source, compressed.mimeType)
         });
-        stopCamera();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to process photo.');
+      } finally {
+        setBusy(false);
       }
     },
-    [disabled, onChange, stopCamera]
+    [disabled, onChange]
   );
+
+  const openCamera = useCallback(() => {
+    if (disabled || busy) return;
+    setError(null);
+    cameraInputRef.current?.click();
+  }, [busy, disabled]);
 
   return (
     <div className="space-y-2">
@@ -1348,39 +1298,12 @@ export const PhotoCaptureWidget: React.FC<{
             </div>
           )}
         </div>
-      ) : streaming ? (
-        <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            autoPlay
-            className="max-h-72 w-full object-contain"
-          />
-          <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/60 to-transparent p-3 flex justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => void captureFrame()}
-              disabled={disabled}
-              className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-slate-900 shadow"
-            >
-              <Camera size={14} /> Capture photo
-            </button>
-            <button
-              type="button"
-              onClick={stopCamera}
-              className="inline-flex items-center gap-1.5 rounded-full bg-slate-800/80 px-3 py-2 text-xs font-semibold text-white"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
       ) : (
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-6 text-center">
           <Camera className="mx-auto mb-2 text-slate-400" size={28} />
           <p className="text-xs font-semibold text-slate-700">Take a photo with the device camera</p>
           <p className="mt-1 text-[11px] text-slate-500">
-            Opens the rear camera when available. You can also pick from the gallery if needed.
+            Opens the phone camera app. You can also pick from the gallery if needed.
           </p>
         </div>
       )}
@@ -1395,33 +1318,26 @@ export const PhotoCaptureWidget: React.FC<{
       {!disabled && (
         <div className="flex flex-wrap gap-2">
           {!filled && (
-            <>
-              <button
-                type="button"
-                onClick={() => void startCamera()}
-                disabled={starting || streaming}
-                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-60"
-              >
-                {starting ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-                {starting ? 'Opening camera…' : streaming ? 'Camera open' : 'Open camera'}
-              </button>
-              <button
-                type="button"
-                onClick={() => cameraInputRef.current?.click()}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                <Camera size={14} /> Use camera app
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={openCamera}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-60"
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+              {busy ? 'Processing…' : 'Open camera'}
+            </button>
           )}
           {filled && (
             <button
               type="button"
               onClick={() => {
                 onChange(null);
-                void startCamera();
+                // Let React clear the preview, then open the camera app.
+                window.setTimeout(() => openCamera(), 0);
               }}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
             >
               <RefreshCcw size={14} /> Retake
             </button>
@@ -1429,18 +1345,17 @@ export const PhotoCaptureWidget: React.FC<{
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
           >
             <ImagePlus size={14} /> {filled ? 'Replace from gallery' : 'Choose from gallery'}
           </button>
           {filled && (
             <button
               type="button"
-              onClick={() => {
-                onChange(null);
-                stopCamera();
-              }}
-              className="inline-flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+              onClick={() => onChange(null)}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
             >
               <Trash2 size={14} /> Remove
             </button>
@@ -1448,6 +1363,7 @@ export const PhotoCaptureWidget: React.FC<{
         </div>
       )}
 
+      {/* Native camera app (rear when available). One functional camera path. */}
       <input
         ref={cameraInputRef}
         type="file"
@@ -1675,6 +1591,18 @@ export const RuntimeQuestion: React.FC<{
       );
       break;
     }
+    case 'responseId':
+      body = (
+        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+            Serial
+          </span>
+          <span className="font-mono text-base font-bold tabular-nums text-slate-900">
+            {(value as string) || '…'}
+          </span>
+        </div>
+      );
+      break;
     case 'date':
       body = <input type="date" value={(value as string) || ''} onChange={(e) => onChange(e.target.value)} className={cls} />;
       break;

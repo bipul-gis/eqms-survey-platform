@@ -36,11 +36,18 @@ export async function upsertResponse(
   const questionnaireId = String(payload.questionnaireId || '');
   const respondentId = String(payload.respondentId || '');
   const status = String(payload.status || 'draft');
-  const full = {
+  const nowIso = new Date().toISOString();
+  const full: Record<string, unknown> = {
     ...payload,
     id: rid,
-    updatedAt: new Date().toISOString(),
+    updatedAt: nowIso
   };
+  // Guarantee a submit timestamp when status flips to submitted (covers
+  // clients that omit it, and keeps server clock as the source of truth
+  // when the field is missing).
+  if (status === 'submitted' && !full.submittedAt) {
+    full.submittedAt = nowIso;
+  }
   await pool.query(
     `INSERT INTO questionnaire_responses (id, questionnaire_id, respondent_id, status, payload, updated_at)
      VALUES ($1, $2, $3, $4, $5, NOW())

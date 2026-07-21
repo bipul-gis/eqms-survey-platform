@@ -51,6 +51,12 @@ import {
   invalidateDwellingIdCache,
   mergeDwellingIntoAnswerMaps
 } from '../lib/slumDwellingSequence';
+import {
+  allocateNextResponseId,
+  invalidateResponseIdCache,
+  isPlainResponseIdValue,
+  mergeResponseIdIntoAnswers
+} from '../lib/responseIdSequence';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
   buildInitialEnumeratorInfo,
@@ -112,6 +118,8 @@ interface CapturedGps {
   lng: number;
   accuracy: number;
   durationSeconds: number;
+  /** When the GPS reading was locked (ISO). */
+  capturedAt?: string;
 }
 
   /** Remove `undefined` values from API payloads. */
@@ -166,6 +174,12 @@ const validateQuestion = (
   if (q.type === 'computed') {
     if (q.required && isEmpty) {
       return 'Fill the questions that feed this calculation.';
+    }
+    return null;
+  }
+  if (q.type === 'responseId') {
+    if (q.required && isEmpty) {
+      return 'Response ID is still being assigned.';
     }
     return null;
   }
@@ -349,7 +363,13 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       lat: s.lat,
       lng: s.lng,
       accuracy: s.accuracy,
-      durationSeconds: s.durationSeconds ?? 0
+      durationSeconds: s.durationSeconds ?? 0,
+      capturedAt:
+        typeof s.capturedAt === 'string'
+          ? s.capturedAt
+          : s.capturedAt
+            ? new Date(s.capturedAt as string).toISOString()
+            : undefined
     };
   });
 
@@ -619,8 +639,68 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     for (const r of appliedDefaultRules) {
       if (r.mode === 'lock') ids.add(r.questionId);
     }
+    for (const q of questionnaire.questions || []) {
+      if (q.type === 'responseId') ids.add(q.id);
+    }
     return ids;
-  }, [appliedDefaultRules, slumAutoFieldIds]);
+  }, [appliedDefaultRules, slumAutoFieldIds, questionnaire.questions]);
+
+  const responseIdFieldIds = useMemo(
+    () => (questionnaire.questions || []).filter((q) => q.type === 'responseId').map((q) => q.id),
+    [questionnaire.questions]
+  );
+
+  const responsesRef = useRef(responses);
+  responsesRef.current = responses;
+
+  // Allocate plain numeric Response ID (1, 2, 3…) per enumerator × questionnaire.
+  // Locked; shared across all responseId questions on this form.
+  useEffect(() => {
+    if (readOnly || !user?.uid || responseIdFieldIds.length === 0) return;
+
+    const liveAnswers = responsesRef.current;
+    const current = responseIdFieldIds
+      .map((id) => liveAnswers[id])
+      .find((v) => v != null && v !== '');
+
+    if (existingResponse && current && String(current).trim()) {
+      const shared = String(current).trim();
+      setResponses((prev) => mergeResponseIdIntoAnswers(shared, responseIdFieldIds, prev));
+      return;
+    }
+
+    if (current && isPlainResponseIdValue(current)) {
+      const shared = String(parseInt(String(current), 10));
+      setResponses((prev) => mergeResponseIdIntoAnswers(shared, responseIdFieldIds, prev));
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const nextId = await allocateNextResponseId({
+          questionnaireId: questionnaire.id,
+          respondentId: user.uid,
+          responseIdFieldIds,
+          excludeResponseId: draftDocIdRef.current || existingResponse?.id
+        });
+        if (cancelled) return;
+        setResponses((prev) => mergeResponseIdIntoAnswers(nextId, responseIdFieldIds, prev));
+      } catch (e) {
+        console.warn('QuestionnaireForm: response id allocation failed', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    readOnly,
+    user?.uid,
+    responseIdFieldIds,
+    questionnaire.id,
+    existingResponse
+  ]);
 
   const identityEnumeratorFieldIds = useMemo(
     () => collectEnumeratorIdentityFieldIds(enumeratorInfoConfig?.fields),
@@ -817,10 +897,19 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         lng: submissionGps.lng,
         accuracy: submissionGps.accuracy,
         durationSeconds: submissionGps.durationSeconds,
-        capturedAt: new Date().toISOString()
+        // Prefer the moment GPS was locked — not the later Submit click.
+        capturedAt: submissionGps.capturedAt || new Date().toISOString()
       });
     }
-    if (status === 'submitted') base.submittedAt = new Date().toISOString();
+    if (status === 'submitted') {
+      // Keep the original submit time if this response was already submitted
+      // (e.g. admin re-save); otherwise stamp now.
+      const prevSubmitted = existingResponse?.submittedAt;
+      base.submittedAt =
+        prevSubmitted && existingResponse?.status === 'submitted'
+          ? prevSubmitted
+          : new Date().toISOString();
+    }
     base.updatedAt = new Date().toISOString();
     return stripUndefined(base) as Omit<QuestionnaireResponse, 'id'>;
   };
@@ -895,10 +984,42 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     }
   };
 
+  const applyResponseIdBeforeSave = async (
+    data: Omit<QuestionnaireResponse, 'id'>,
+    excludeResponseId?: string
+  ): Promise<Omit<QuestionnaireResponse, 'id'>> => {
+    if (!user?.uid || responseIdFieldIds.length === 0) return data;
+    const answers = data.responses || {};
+    const existing = responseIdFieldIds.map((id) => answers[id]).find((v) => v != null && v !== '');
+    if (existing && isPlainResponseIdValue(existing)) {
+      const shared = String(parseInt(String(existing), 10));
+      return {
+        ...data,
+        responses: mergeResponseIdIntoAnswers(shared, responseIdFieldIds, answers)
+      };
+    }
+
+    try {
+      const nextId = await allocateNextResponseId({
+        questionnaireId: questionnaire.id,
+        respondentId: user.uid,
+        responseIdFieldIds,
+        excludeResponseId
+      });
+      const merged = mergeResponseIdIntoAnswers(nextId, responseIdFieldIds, answers);
+      setResponses(merged);
+      return { ...data, responses: merged };
+    } catch (e) {
+      console.warn('QuestionnaireForm: response id allocation before save failed', e);
+      return data;
+    }
+  };
+
   const persistResponse = async (status: 'draft' | 'submitted'): Promise<string> => {
     const existingId = draftDocIdRef.current;
     let responseData = buildResponseData(status);
     responseData = await applyDwellingIdBeforeSave(responseData, status, existingId);
+    responseData = await applyResponseIdBeforeSave(responseData, existingId);
     const optimisticId = existingId || `resp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     if (!existingId) {
@@ -937,6 +1058,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     try {
       await persistResponse('draft');
       invalidateDwellingIdCache(questionnaire.id);
+      invalidateResponseIdCache(questionnaire.id);
       const offline = await isDeviceOffline();
       alert(
         offline
@@ -980,6 +1102,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       const responseData = buildResponseData('submitted');
       const savedId = await persistResponse('submitted');
       invalidateDwellingIdCache(questionnaire.id);
+      invalidateResponseIdCache(questionnaire.id);
       onSubmit?.({ ...(responseData as any), id: savedId } as QuestionnaireResponse);
       const offline = await isDeviceOffline();
       alert(
