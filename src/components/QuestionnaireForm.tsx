@@ -53,9 +53,12 @@ import {
 } from '../lib/slumDwellingSequence';
 import {
   allocateNextResponseId,
+  collapseAccidentalResponseIdQuestions,
   invalidateResponseIdCache,
-  isPlainResponseIdValue,
-  mergeResponseIdIntoAnswers
+  isAllocatedResponseIdValue,
+  mergeResponseIdIntoAnswers,
+  resolveResponseIdPrefix,
+  responseIdMatchesPrefix
 } from '../lib/responseIdSequence';
 import { enumeratorResolvedDisplayName } from '../lib/userDisplayName';
 import {
@@ -179,7 +182,9 @@ const validateQuestion = (
   }
   if (q.type === 'responseId') {
     if (q.required && isEmpty) {
-      return 'Response ID is still being assigned.';
+      return q.logic?.enabled || q.responseIdConfig?.prefixQuestionId
+        ? 'Answer the linked question so the Response ID can be assigned.'
+        : 'Response ID is still being assigned.';
     }
     return null;
   }
@@ -420,9 +425,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   // Gate: questions only revealed once consent ticked (when consent is enabled).
   const questionsUnlocked = !consentGate?.enabled || consentGranted;
 
+  // Drop accidental plain Response ID duplicates (same key, no logic).
+  const surveyQuestions = useMemo(
+    () => collapseAccidentalResponseIdQuestions(questionnaire.questions || []),
+    [questionnaire.questions]
+  );
+
   // Visible questions respect display logic AND the consent gate.
   const visibleQuestions = useMemo(() => {
-    const all = questionnaire.questions || [];
+    const all = surveyQuestions;
     // Compute logic visibility per question first.
     const visibleById = new Map<string, boolean>();
     for (const q of all) visibleById.set(q.id, evaluateLogic(q.logic, responses));
@@ -437,7 +448,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       }
       return true;
     });
-  }, [questionnaire.questions, responses]);
+  }, [surveyQuestions, responses]);
 
   /** Merged map for cross-field rules (enumerator info + survey answers). */
   const answersForOptionLogic = useMemo(
@@ -639,38 +650,81 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     for (const r of appliedDefaultRules) {
       if (r.mode === 'lock') ids.add(r.questionId);
     }
-    for (const q of questionnaire.questions || []) {
+    for (const q of surveyQuestions) {
       if (q.type === 'responseId') ids.add(q.id);
     }
     return ids;
-  }, [appliedDefaultRules, slumAutoFieldIds, questionnaire.questions]);
+  }, [appliedDefaultRules, slumAutoFieldIds, surveyQuestions]);
 
   const responseIdFieldIds = useMemo(
-    () => (questionnaire.questions || []).filter((q) => q.type === 'responseId').map((q) => q.id),
-    [questionnaire.questions]
+    () => surveyQuestions.filter((q) => q.type === 'responseId').map((q) => q.id),
+    [surveyQuestions]
   );
 
   const responsesRef = useRef(responses);
   responsesRef.current = responses;
 
-  // Allocate plain numeric Response ID (1, 2, 3…) per enumerator × questionnaire.
-  // Locked; shared across all responseId questions on this form.
+  /** Prefer a currently-visible Response ID (logic branch), else first. */
+  const primaryResponseIdQuestion = useMemo(() => {
+    const ridQuestions = surveyQuestions.filter((q) => q.type === 'responseId');
+    if (ridQuestions.length === 0) return null;
+    const visibleRid = visibleQuestions.find((q) => q.type === 'responseId');
+    return visibleRid || ridQuestions[0];
+  }, [surveyQuestions, visibleQuestions]);
+
+  /** Changes when the linked prefix answer changes (or plain-serial mode). */
+  const responseIdPrefixKey = useMemo(() => {
+    if (!primaryResponseIdQuestion) return '';
+    const linkedId =
+      primaryResponseIdQuestion.responseIdConfig?.prefixQuestionId?.trim() ||
+      primaryResponseIdQuestion.logic?.conditions?.[0]?.questionId ||
+      '';
+    if (!linkedId) return '__plain__';
+    return `${linkedId}:${JSON.stringify(responses[linkedId] ?? null)}`;
+  }, [primaryResponseIdQuestion, responses]);
+
+  // Allocate Response ID: plain serial, or `{prefix}-{serial}` when linked
+  // via config / display logic. Locked; shared across all responseId fields.
   useEffect(() => {
     if (readOnly || !user?.uid || responseIdFieldIds.length === 0) return;
+    if (!primaryResponseIdQuestion) return;
 
     const liveAnswers = responsesRef.current;
+    const prefix = resolveResponseIdPrefix(
+      primaryResponseIdQuestion,
+      liveAnswers,
+      surveyQuestions
+    );
+    if (prefix === null) {
+      setResponses((prev) => {
+        let dirty = false;
+        const next = { ...prev };
+        for (const id of responseIdFieldIds) {
+          if (next[id] !== undefined && next[id] !== '') {
+            delete next[id];
+            dirty = true;
+          }
+        }
+        return dirty ? next : prev;
+      });
+      return;
+    }
+
     const current = responseIdFieldIds
       .map((id) => liveAnswers[id])
       .find((v) => v != null && v !== '');
 
     if (existingResponse && current && String(current).trim()) {
       const shared = String(current).trim();
-      setResponses((prev) => mergeResponseIdIntoAnswers(shared, responseIdFieldIds, prev));
-      return;
+      // Keep saved value unless prefix bucket changed (e.g. area switched).
+      if (responseIdMatchesPrefix(shared, prefix)) {
+        setResponses((prev) => mergeResponseIdIntoAnswers(shared, responseIdFieldIds, prev));
+        return;
+      }
     }
 
-    if (current && isPlainResponseIdValue(current)) {
-      const shared = String(parseInt(String(current), 10));
+    if (current && responseIdMatchesPrefix(current, prefix)) {
+      const shared = String(current).trim();
       setResponses((prev) => mergeResponseIdIntoAnswers(shared, responseIdFieldIds, prev));
       return;
     }
@@ -681,6 +735,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         const nextId = await allocateNextResponseId({
           questionnaireId: questionnaire.id,
           respondentId: user.uid,
+          prefix,
           responseIdFieldIds,
           excludeResponseId: draftDocIdRef.current || existingResponse?.id
         });
@@ -699,7 +754,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     user?.uid,
     responseIdFieldIds,
     questionnaire.id,
-    existingResponse
+    existingResponse,
+    primaryResponseIdQuestion,
+    surveyQuestions,
+    responseIdPrefixKey
   ]);
 
   const identityEnumeratorFieldIds = useMemo(
@@ -989,13 +1047,28 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     excludeResponseId?: string
   ): Promise<Omit<QuestionnaireResponse, 'id'>> => {
     if (!user?.uid || responseIdFieldIds.length === 0) return data;
+    const ridPrimary = primaryResponseIdQuestion;
+    if (!ridPrimary) return data;
     const answers = data.responses || {};
+    const prefix = resolveResponseIdPrefix(ridPrimary, answers, surveyQuestions);
+    if (prefix === null) return data;
+
     const existing = responseIdFieldIds.map((id) => answers[id]).find((v) => v != null && v !== '');
-    if (existing && isPlainResponseIdValue(existing)) {
-      const shared = String(parseInt(String(existing), 10));
+    if (existing && responseIdMatchesPrefix(existing, prefix)) {
+      const shared = String(existing).trim();
       return {
         ...data,
         responses: mergeResponseIdIntoAnswers(shared, responseIdFieldIds, answers)
+      };
+    }
+    if (existing && isAllocatedResponseIdValue(existing) && prefix === '') {
+      return {
+        ...data,
+        responses: mergeResponseIdIntoAnswers(
+          String(existing).trim(),
+          responseIdFieldIds,
+          answers
+        )
       };
     }
 
@@ -1003,6 +1076,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       const nextId = await allocateNextResponseId({
         questionnaireId: questionnaire.id,
         respondentId: user.uid,
+        prefix,
         responseIdFieldIds,
         excludeResponseId
       });
@@ -1129,6 +1203,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
 
   const submissionGpsForm: GpsCaptureSettings | undefined = submissionGpsConfig?.enabled
     ? {
+        accuracyEnabled: submissionGpsConfig.accuracyEnabled,
         accuracyMeters: submissionGpsConfig.accuracyMeters,
         stabilizationSeconds: submissionGpsConfig.stabilizationSeconds,
         required: submissionGpsConfig.required,

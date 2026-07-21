@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthProvider';
 import { AppFooter } from './AppFooter';
 import { ChoiceWithOtherFields } from './ChoiceWithOtherFields';
@@ -26,6 +26,8 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
+import { collapseAccidentalResponseIdQuestions } from '../lib/responseIdSequence';
+import { gpsAccuracyGateEnabled, gpsCaptureSummary, gpsMeetsAccuracy } from '../lib/gpsCapture';
 import { isChoiceOptionDisabled, ConsentGateForm, PhotoCaptureWidget } from './QuestionnaireRuntime';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
@@ -144,7 +146,7 @@ const QUESTION_TYPES: QuestionTypeDef[] = [
   { type: 'signature',   label: 'Signature',      hint: 'Drawn signature',                   Icon: PenTool,     group: 'media' },
   { type: 'matrix',      label: 'Matrix / Grid',  hint: 'Rows × column options',             Icon: Grid3x3,     group: 'advanced' },
   { type: 'computed',    label: 'Computed',       hint: 'Auto-calculated from other answers',Icon: Sigma,       group: 'advanced' },
-  { type: 'responseId',  label: 'Response ID',    hint: 'Auto serial number per enumerator (1, 2, 3…)', Icon: Hash, group: 'advanced' },
+  { type: 'responseId',  label: 'Response ID',    hint: 'Auto serial; prefix from logic / linked question', Icon: Hash, group: 'advanced' },
   { type: 'section',     label: 'Section Break',  hint: 'Group questions into a section',    Icon: Layers,      group: 'advanced' }
 ];
 
@@ -267,7 +269,7 @@ const ensureOptionShape = (options: Question['options']): QuestionOption[] => {
   return options as QuestionOption[];
 };
 
-const newDefaultQuestion = (type: QuestionType): Question => {
+const newDefaultQuestion = (type: QuestionType, existing?: Question[]): Question => {
   const base: Question = {
     id: uid('q'),
     type,
@@ -278,7 +280,8 @@ const newDefaultQuestion = (type: QuestionType): Question => {
     validation: {}
   };
   if (type === 'responseId') {
-    base.key = 'response_id';
+    const n = (existing || []).filter((q) => q.type === 'responseId').length;
+    base.key = n === 0 ? 'response_id' : `response_id_${n + 1}`;
     base.responseIdConfig = {};
   }
   if (isChoiceType(type)) {
@@ -1002,7 +1005,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     }
   );
   const [questions, setQuestions] = useState<Question[]>(() => {
-    const src = questionnaire?.questions || [];
+    const src = collapseAccidentalResponseIdQuestions(questionnaire?.questions || []);
     return src.map((q) => ({
       ...q,
       options: ensureOptionShape(q.options),
@@ -1038,6 +1041,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       title: 'Submission GPS Location',
       description:
         'At the end of the survey we capture your device location. Please remain stationary; the GPS will stabilize for a few seconds before a high-accuracy reading is accepted.',
+      accuracyEnabled: true,
       accuracyMeters: 10,
       stabilizationSeconds: 10,
       required: true
@@ -1075,6 +1079,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     questionnaire?.id || null
   );
   const [paletteFilter, setPaletteFilter] = useState<QuestionTypeDef['group'] | 'all'>('all');
+  const addQuestionGuardRef = useRef<{ type: QuestionType; at: number } | null>(null);
 
   /** Stable snapshot of persistable builder fields — used for dirty detection. */
   const builderSnapshot = useMemo(
@@ -1121,7 +1126,13 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
 
   // ----- Question mutation helpers -----------------------------------------
   const addQuestion = (type: QuestionType) => {
-    const q = newDefaultQuestion(type);
+    const now = Date.now();
+    const guard = addQuestionGuardRef.current;
+    // Guard against double-tap / touch+click on the palette (common on tablets).
+    if (guard && guard.type === type && now - guard.at < 500) return;
+    addQuestionGuardRef.current = { type, at: now };
+
+    const q = newDefaultQuestion(type, questions);
     setQuestions((prev) => {
       const selIdx = prev.findIndex((x) => x.id === selectedId);
       if (selIdx < 0) return [...prev, q];
@@ -1213,7 +1224,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   const addChildQuestion = (parentId: string, type: QuestionType) => {
     const parent = questions.find((q) => q.id === parentId);
     if (!parent || parent.type === 'section' || parent.parentId) return;
-    const child: Question = { ...newDefaultQuestion(type), parentId };
+    if (type === 'responseId') return; // Response ID stays top-level only
+    const child: Question = { ...newDefaultQuestion(type, questions), parentId };
     setQuestions((prev) => {
       const next = [...prev];
       const parentIdx = next.findIndex((q) => q.id === parentId);
@@ -1332,7 +1344,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     }
 
     // Auto-fill key (variable name) from question prompt if missing.
-    const normalized = questions.map<Question>((q) => ({
+    // Also drop accidental plain Response ID duplicates (same key, no logic).
+    const normalized = collapseAccidentalResponseIdQuestions(questions).map<Question>((q) => ({
       ...q,
       key: (q.key && q.key.trim()) || slugify(q.question) || q.id
     }));
@@ -2101,9 +2114,8 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
       );
     case 'responseId':
       return (
-        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs">
-          <span className="text-[10px] font-bold text-slate-500 uppercase">Serial</span>
-          <span className="font-mono font-bold tabular-nums text-slate-800">1</span>
+        <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs">
+          <span className="font-mono font-bold tabular-nums text-slate-800">N-1</span>
         </div>
       );
     case 'date':
@@ -2171,14 +2183,19 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
       );
     }
     case 'location': {
-      const acc = question.gpsSettings?.accuracyMeters ?? 10;
-      const sec = question.gpsSettings?.stabilizationSeconds ?? 10;
+      const gps = {
+        accuracyEnabled: question.gpsSettings?.accuracyEnabled,
+        accuracyMeters: question.gpsSettings?.accuracyMeters ?? 10,
+        stabilizationSeconds: question.gpsSettings?.stabilizationSeconds ?? 10
+      };
       return (
         <div className={`${inputClass} flex items-center gap-2`}>
           <MapPin size={14} />
           <span>Auto-captured GPS</span>
           <span className="ml-auto text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
-            ≤ {acc} m · {sec} s
+            {gpsAccuracyGateEnabled(gps)
+              ? `≤ ${gps.accuracyMeters} m · ${gps.stabilizationSeconds} s`
+              : `${gps.stabilizationSeconds} s only`}
           </span>
         </div>
       );
@@ -2371,7 +2388,11 @@ const PropertiesPanel: React.FC<{
       )}
 
       {question.type === 'responseId' && (
-        <ResponseIdQuestionEditor question={question} />
+        <ResponseIdQuestionEditor
+          question={question}
+          allQuestions={allQuestions}
+          onUpdate={onUpdate}
+        />
       )}
         </div>
   );
@@ -2383,18 +2404,74 @@ const PropertiesPanel: React.FC<{
 
 const ResponseIdQuestionEditor: React.FC<{
   question: Question;
-}> = ({ question }) => {
+  allQuestions: Question[];
+  onUpdate: (patch: Partial<Question>) => void;
+}> = ({ question, allQuestions, onUpdate }) => {
+  const cfg = question.responseIdConfig || {};
+  const logicLinkedId =
+    question.logic?.enabled && question.logic.conditions?.[0]?.questionId
+      ? question.logic.conditions[0].questionId
+      : '';
+  const effectivePrefixId = cfg.prefixQuestionId || logicLinkedId || '';
+  const candidates = allQuestions.filter(
+    (q) =>
+      q.id !== question.id &&
+      q.type !== 'section' &&
+      q.type !== 'responseId' &&
+      q.type !== 'matrix' &&
+      q.type !== 'photo' &&
+      q.type !== 'signature' &&
+      q.type !== 'location'
+  );
+
   return (
-    <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-1.5">
+    <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-2">
       <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-        Response ID (auto serial)
+        Response ID (auto)
       </div>
       <p className="text-[11px] text-slate-600 leading-relaxed">
-        Assigns a plain number for each enumerator on this questionnaire:{' '}
+        Without a linked question: plain serial{' '}
         <span className="font-mono font-semibold">1</span>,{' '}
-        <span className="font-mono font-semibold">2</span>,{' '}
-        <span className="font-mono font-semibold">3</span>…. Locked — enumerators cannot edit it.
+        <span className="font-mono font-semibold">2</span>…. With a linked question or
+        display logic: <span className="font-mono font-semibold">PREFIX-1</span>,{' '}
+        <span className="font-mono font-semibold">PREFIX-2</span>…. Locked for enumerators.
       </p>
+      <Field
+        label="Prefix from question"
+        hint={
+          logicLinkedId && !cfg.prefixQuestionId
+            ? `Using display-logic question automatically (${logicLinkedId}).`
+            : 'Optional. Leave blank to use the first question in display logic, or plain serial if none.'
+        }
+      >
+        <select
+          value={cfg.prefixQuestionId || ''}
+          onChange={(e) =>
+            onUpdate({
+              responseIdConfig: {
+                ...cfg,
+                prefixQuestionId: e.target.value || undefined
+              }
+            })
+          }
+          className={inputCls}
+        >
+          <option value="">
+            {logicLinkedId ? 'Auto from display logic' : 'None (plain serial)'}
+          </option>
+          {candidates.map((q) => (
+            <option key={q.id} value={q.id}>
+              {q.question || q.key || q.id}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {effectivePrefixId ? (
+        <p className="text-[10px] text-emerald-700">
+          Active prefix source is set — IDs will look like{' '}
+          <span className="font-mono font-semibold">VALUE-1</span>.
+        </p>
+      ) : null}
       {question.key ? (
         <p className="text-[10px] font-mono text-slate-400">Field key: {question.key}</p>
       ) : null}
@@ -2708,6 +2785,7 @@ const ComputedQuestionEditor: React.FC<{
 // ---------------------------------------------------------------------------
 
 const DEFAULT_QUESTION_GPS: GpsCaptureSettings = {
+  accuracyEnabled: true,
   accuracyMeters: 10,
   stabilizationSeconds: 10,
   required: false,
@@ -2721,6 +2799,7 @@ const GpsQuestionSettingsEditor: React.FC<{
 }> = ({ settings, onChange }) => {
   const cur: GpsCaptureSettings = { ...DEFAULT_QUESTION_GPS, ...(settings || {}) };
   const patch = (p: Partial<GpsCaptureSettings>) => onChange({ ...cur, ...p });
+  const accuracyOn = gpsAccuracyGateEnabled(cur);
 
   return (
     <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50/30 overflow-hidden">
@@ -2731,8 +2810,17 @@ const GpsQuestionSettingsEditor: React.FC<{
         </span>
       </div>
       <div className="p-3 space-y-3">
+        <label className="flex items-center gap-2 text-xs text-slate-700">
+          <input
+            type="checkbox"
+            checked={accuracyOn}
+            onChange={(e) => patch({ accuracyEnabled: e.target.checked })}
+          />
+          Require accuracy threshold
+        </label>
+
         <div className="grid grid-cols-2 gap-3">
-          <div>
+          <div className={accuracyOn ? undefined : 'opacity-50'}>
             <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
               Required Accuracy
             </label>
@@ -2741,6 +2829,7 @@ const GpsQuestionSettingsEditor: React.FC<{
                 type="number"
                 min={1}
                 step={1}
+                disabled={!accuracyOn}
                 value={cur.accuracyMeters}
                 onChange={(e) =>
                   patch({ accuracyMeters: Math.max(1, Number(e.target.value) || 0) })
@@ -2749,6 +2838,11 @@ const GpsQuestionSettingsEditor: React.FC<{
               />
               <span className="text-xs font-semibold text-slate-500">m</span>
             </div>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {accuracyOn
+                ? 'Capture accepted once reported accuracy ≤ this value.'
+                : 'Disabled — lock after stabilization delay only.'}
+            </p>
           </div>
           <div>
             <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
@@ -2767,6 +2861,9 @@ const GpsQuestionSettingsEditor: React.FC<{
               />
               <span className="text-xs font-semibold text-slate-500">s</span>
             </div>
+            <p className="text-[10px] text-slate-400 mt-1">
+              Minimum continuous watch time before a sample can lock.
+            </p>
           </div>
         </div>
 
@@ -2788,9 +2885,12 @@ const GpsQuestionSettingsEditor: React.FC<{
           Auto-start capture when the question is shown
         </label>
 
-        <label className="flex items-center gap-2 text-xs text-slate-700">
+        <label
+          className={`flex items-center gap-2 text-xs text-slate-700 ${accuracyOn ? '' : 'opacity-50'}`}
+        >
           <input
             type="checkbox"
+            disabled={!accuracyOn}
             checked={!!cur.allowManualOverride}
             onChange={(e) => patch({ allowManualOverride: e.target.checked })}
           />
@@ -2798,9 +2898,8 @@ const GpsQuestionSettingsEditor: React.FC<{
         </label>
 
         <p className="text-[10px] text-slate-500 italic">
-          Same capture pipeline as the end-of-survey submission GPS. Configure each
-          location question independently — e.g. a quick "Approximate landmark"
-          could use a relaxed 25 m gate, while "Household entrance" demands ≤ 5 m.
+          Same capture pipeline as the end-of-survey submission GPS. Turn off accuracy to
+          accept the best sample after the stabilization delay only.
         </p>
           </div>
         </div>
@@ -4764,12 +4863,9 @@ const PreviewQuestion: React.FC<{
     }
     case 'responseId':
       body = (
-        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-            Serial
-          </span>
+        <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
           <span className="font-mono text-base font-bold tabular-nums text-slate-900">
-            {(value as string) || '1'}
+            {(value as string) || 'N-1'}
           </span>
         </div>
       );
@@ -4917,6 +5013,7 @@ const PreviewQuestion: React.FC<{
     }
     case 'location': {
       const gpsCfg: GpsCaptureSettings = {
+        accuracyEnabled: question.gpsSettings?.accuracyEnabled,
         accuracyMeters: question.gpsSettings?.accuracyMeters ?? 10,
         stabilizationSeconds: question.gpsSettings?.stabilizationSeconds ?? 10,
         required: question.gpsSettings?.required ?? question.required ?? false,
@@ -5718,14 +5815,24 @@ const SubmissionGpsEditor: React.FC<{
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+              <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                <input
+                  type="checkbox"
+                  checked={gps.accuracyEnabled !== false}
+                  onChange={(e) =>
+                    onChange({ ...gps, accuracyEnabled: e.target.checked })
+                  }
+                />
                 Required Accuracy
               </label>
-              <div className="flex items-center gap-2">
+              <div
+                className={`flex items-center gap-2 ${gps.accuracyEnabled === false ? 'opacity-50' : ''}`}
+              >
                 <input
                   type="number"
                   min={1}
                   step={1}
+                  disabled={gps.accuracyEnabled === false}
                   value={gps.accuracyMeters}
                   onChange={(e) =>
                     onChange({
@@ -5733,12 +5840,14 @@ const SubmissionGpsEditor: React.FC<{
                       accuracyMeters: Math.max(1, Number(e.target.value) || 0)
                     })
                   }
-                  className="w-full text-sm px-2.5 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full text-sm px-2.5 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-50"
                 />
                 <span className="text-xs font-semibold text-slate-500">m</span>
               </div>
               <p className="text-[10px] text-slate-400 mt-1">
-                Capture only accepted once the reported accuracy ≤ this value.
+                {gps.accuracyEnabled === false
+                  ? 'Disabled — lock after stabilization delay only (best sample).'
+                  : 'Capture only accepted once the reported accuracy ≤ this value.'}
               </p>
             </div>
             <div>
@@ -5898,7 +6007,7 @@ const SubmissionGpsCaptureWidget: React.FC<GpsCaptureWidgetProps> = ({
         setElapsedSec(Math.floor(elapsedMs / 100) / 10);
         if (
           cur.best &&
-          cur.best.accuracy <= config.accuracyMeters &&
+          gpsMeetsAccuracy(config, cur.best.accuracy) &&
           elapsedMs >= config.stabilizationSeconds * 1000
         ) {
           // Lock!
@@ -5996,8 +6105,7 @@ const SubmissionGpsCaptureWidget: React.FC<GpsCaptureWidgetProps> = ({
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold">{title || 'Submission GPS Location'}</div>
             <div className="text-[11px] text-white/90">
-              Target accuracy ≤ {config.accuracyMeters} m • Stabilization{' '}
-              {config.stabilizationSeconds} s
+              {gpsCaptureSummary(config)}
               {config.required && <> • Required</>}
             </div>
           </div>
@@ -6073,17 +6181,19 @@ const WatchingPanel: React.FC<{
 }> = ({ state, elapsedSec, config, onCancel, onOverride }) => {
   const stabilizeProgress = Math.min(100, (elapsedSec / config.stabilizationSeconds) * 100);
   const bestAccuracy = state.best?.accuracy;
-  const accuracyOk = typeof bestAccuracy === 'number' && bestAccuracy <= config.accuracyMeters;
+  const accuracyGateOn = gpsAccuracyGateEnabled(config);
+  const accuracyOk =
+    typeof bestAccuracy === 'number' && gpsMeetsAccuracy(config, bestAccuracy);
   const stabilized = elapsedSec >= config.stabilizationSeconds;
   const canOverride =
-    config.allowManualOverride && stabilized && state.best && !accuracyOk;
+    accuracyGateOn && config.allowManualOverride && stabilized && state.best && !accuracyOk;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-sm">
         <Loader2 size={16} className="text-emerald-600 animate-spin" />
         <span className="font-semibold text-emerald-700">
-          Acquiring high-accuracy GPS…
+          {accuracyGateOn ? 'Acquiring high-accuracy GPS…' : 'Acquiring GPS…'}
         </span>
       </div>
 
@@ -6101,8 +6211,8 @@ const WatchingPanel: React.FC<{
               ? `${bestAccuracy.toFixed(1)} m`
               : '—'
           }
-          hint={`target ≤ ${config.accuracyMeters} m`}
-          ok={accuracyOk}
+          hint={accuracyGateOn ? `target ≤ ${config.accuracyMeters} m` : 'no accuracy gate'}
+          ok={accuracyGateOn ? accuracyOk : typeof bestAccuracy === 'number'}
         />
       </div>
 

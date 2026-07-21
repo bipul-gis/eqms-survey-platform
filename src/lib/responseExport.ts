@@ -380,7 +380,7 @@ export const buildResponsesTable = (
   const exportColumns = buildResponsesExportColumns(questions);
 
   const header: string[] = [
-    'Response ID',
+    'Submission ID',
     'Status',
     'Submitted At',
     'Enumerator',
@@ -443,7 +443,7 @@ export type ResponsesExportFieldDescriptor = {
 };
 
 const SYSTEM_EXPORT_FIELDS: ResponsesExportFieldDescriptor[] = [
-  { csvHeader: 'Response ID', sourceType: 'system', sourceDetail: 'Firestore response document id' },
+  { csvHeader: 'Submission ID', sourceType: 'system', sourceDetail: 'Firestore response document id' },
   { csvHeader: 'Status', sourceType: 'system', sourceDetail: 'draft | submitted | reviewed' },
   { csvHeader: 'Submitted At', sourceType: 'system', sourceDetail: 'Submission timestamp' },
   { csvHeader: 'Enumerator', sourceType: 'system', sourceDetail: 'Respondent display name' },

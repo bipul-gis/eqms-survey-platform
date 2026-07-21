@@ -42,6 +42,7 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
+import { gpsAccuracyGateEnabled, gpsCaptureSummary, gpsMeetsAccuracy } from '../lib/gpsCapture';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
   choiceAnswerToComparableString
@@ -788,7 +789,7 @@ export const SubmissionGpsCaptureWidget: React.FC<GpsCaptureWidgetProps> = ({
         setElapsedSec(Math.floor(elapsedMs / 100) / 10);
         if (
           cur.best &&
-          cur.best.accuracy <= config.accuracyMeters &&
+          gpsMeetsAccuracy(config, cur.best.accuracy) &&
           elapsedMs >= config.stabilizationSeconds * 1000
         ) {
           clearWatch();
@@ -876,8 +877,7 @@ export const SubmissionGpsCaptureWidget: React.FC<GpsCaptureWidgetProps> = ({
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold">{title || 'Submission GPS Location'}</div>
             <div className="text-[11px] text-white/90">
-              Target accuracy ≤ {config.accuracyMeters} m • Stabilization{' '}
-              {config.stabilizationSeconds} s
+              {gpsCaptureSummary(config)}
               {config.required && <> • Required</>}
             </div>
           </div>
@@ -1080,15 +1080,20 @@ const WatchingPanel: React.FC<{
 }> = ({ state, elapsedSec, config, onCancel, onOverride }) => {
   const stabilizeProgress = Math.min(100, (elapsedSec / config.stabilizationSeconds) * 100);
   const bestAccuracy = state.best?.accuracy;
-  const accuracyOk = typeof bestAccuracy === 'number' && bestAccuracy <= config.accuracyMeters;
+  const accuracyGateOn = gpsAccuracyGateEnabled(config);
+  const accuracyOk =
+    typeof bestAccuracy === 'number' && gpsMeetsAccuracy(config, bestAccuracy);
   const stabilized = elapsedSec >= config.stabilizationSeconds;
-  const canOverride = config.allowManualOverride && stabilized && state.best && !accuracyOk;
+  const canOverride =
+    accuracyGateOn && config.allowManualOverride && stabilized && state.best && !accuracyOk;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-sm">
         <Loader2 size={16} className="text-emerald-600 animate-spin" />
-        <span className="font-semibold text-emerald-700">Acquiring high-accuracy GPS…</span>
+        <span className="font-semibold text-emerald-700">
+          {accuracyGateOn ? 'Acquiring high-accuracy GPS…' : 'Acquiring GPS…'}
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -1101,8 +1106,8 @@ const WatchingPanel: React.FC<{
         <Stat
           label="Best Accuracy"
           value={typeof bestAccuracy === 'number' ? `${bestAccuracy.toFixed(1)} m` : '—'}
-          hint={`target ≤ ${config.accuracyMeters} m`}
-          ok={accuracyOk}
+          hint={accuracyGateOn ? `target ≤ ${config.accuracyMeters} m` : 'no accuracy gate'}
+          ok={accuracyGateOn ? accuracyOk : typeof bestAccuracy === 'number'}
         />
       </div>
 
@@ -1593,10 +1598,7 @@ export const RuntimeQuestion: React.FC<{
     }
     case 'responseId':
       body = (
-        <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-            Serial
-          </span>
+        <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
           <span className="font-mono text-base font-bold tabular-nums text-slate-900">
             {(value as string) || '…'}
           </span>
@@ -1734,6 +1736,7 @@ export const RuntimeQuestion: React.FC<{
     }
     case 'location': {
       const gpsCfg: GpsCaptureSettings = {
+        accuracyEnabled: question.gpsSettings?.accuracyEnabled,
         accuracyMeters: question.gpsSettings?.accuracyMeters ?? 10,
         stabilizationSeconds: question.gpsSettings?.stabilizationSeconds ?? 10,
         required: question.gpsSettings?.required ?? question.required ?? false,

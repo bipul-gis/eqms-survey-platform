@@ -190,13 +190,16 @@ export interface ComputedSpec {
 }
 
 /**
- * Auto Response / Case ID question. Plain integer serial unique per
- * enumerator × questionnaire (`1`, `2`, `3`…). Locked for enumerators.
+ * Auto Response / Case ID question.
+ * - No linked question / no display logic → plain serial `1`, `2`, `3`…
+ * - Linked question or visibility logic → `{prefix}-{serial}` (e.g. `N-1`)
+ * Unique per enumerator × questionnaire × prefix. Locked for enumerators.
  */
 export interface ResponseIdConfig {
   /**
-   * Reserved for future use (e.g. optional prefix). Current allocation
-   * always uses a plain numeric serial.
+   * Optional question whose answer becomes the ID prefix.
+   * When omitted, the first question referenced by this field's display
+   * logic is used automatically.
    */
   prefixQuestionId?: string;
 }
@@ -446,7 +449,12 @@ export interface ConsentGate {
  * GPS and per-question `location`-type questions.
  */
 export interface GpsCaptureSettings {
-  /** Required GPS accuracy threshold in meters (e.g. 10 m). */
+  /**
+   * When `false`, accuracy is not gated — capture locks after the
+   * stabilization delay once any sample is received. Defaults to `true`.
+   */
+  accuracyEnabled?: boolean;
+  /** Required GPS accuracy threshold in meters (e.g. 10 m). Ignored when accuracyEnabled is false. */
   accuracyMeters: number;
   /** Minimum continuous watch duration before locking in a sample, in seconds. */
   stabilizationSeconds: number;
