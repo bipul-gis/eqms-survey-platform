@@ -180,14 +180,53 @@ function resolveChoiceAnswerLabel(linked: Question | undefined, raw: unknown): s
   return comparable;
 }
 
+/** True when a label/value is a binary yes/no style answer (not a survey type). */
+function isYesNoStyleToken(raw: string): boolean {
+  const s = raw.trim().toLowerCase();
+  if (!s) return false;
+  return /^(yes|no|y|n|true|false|হ্যাঁ|হাঁ|না|ok|okay)$/i.test(s);
+}
+
+function isYesNoChoiceQuestion(q: Question | undefined): boolean {
+  if (!q) return false;
+  if (
+    q.type !== 'select' &&
+    q.type !== 'radio' &&
+    q.type !== 'checkbox' &&
+    q.type !== 'multiselect'
+  ) {
+    return false;
+  }
+  const opts = optionList(q);
+  if (opts.length === 0 || opts.length > 3) return false;
+  const ynCount = opts.filter(
+    (o) => isYesNoStyleToken(o.label || '') || isYesNoStyleToken(o.value || '')
+  ).length;
+  // Treat as yes/no when every option is yes/no-like (হ্যাঁ/না, Yes/No, …).
+  return ynCount === opts.length;
+}
+
+/** If Auto Serial is `একক_১` / `North_12`, return the type prefix folder. */
+function folderFromStoredAutoSerial(auto: string): string {
+  const s = String(auto || '').trim();
+  if (!s) return '';
+  const m = s.match(/^(.+)_([\d\u09E6-\u09EF]+)$/u);
+  if (!m) return '';
+  const prefix = sanitizeResponseIdPrefix(m[1]);
+  if (!prefix || isYesNoStyleToken(prefix)) return '';
+  return prefix;
+}
+
 /**
- * Infer the "survey type" / branch folder for a photo from the questionnaire
- * structure (generic — works for any parent choice + show-when logic):
+ * Infer the "survey type" / branch folder for a photo (generic):
  *
- * 1. Photo question's own display logic → parent choice's selected option label
- * 2. Else Auto Serial / responseId prefix parent for this questionnaire
- * 3. Else most-referenced choice parent among all questions' display logic
- * 4. Else empty (photos land directly under `photos/`)
+ * Prefer the same parent used for Auto Serial (e.g. জরিপের ধরণ → একক /
+ * বৃক্ষগুচ্ছ). Never use yes/no (হ্যাঁ/না) answers as folder names.
+ *
+ * 1. Auto Serial prefix parent / stored Auto Serial prefix
+ * 2. Photo display-logic parents that are not yes/no questions
+ * 3. Most-referenced non-yes/no choice parent in the questionnaire
+ * 4. Else empty → files under `photos/` directly
  */
 export function resolvePhotoTypeFolder(
   photoQuestion: Question | undefined,
@@ -197,29 +236,39 @@ export function resolvePhotoTypeFolder(
   const toFolder = (label: string | null | undefined): string => {
     if (!label) return '';
     const shortened = shortenOptionLabelForPrefix(label);
-    return sanitizeResponseIdPrefix(shortened) || safePhotoPathToken(shortened);
+    const folder = sanitizeResponseIdPrefix(shortened) || safePhotoPathToken(shortened);
+    if (!folder || isYesNoStyleToken(folder)) return '';
+    return folder;
   };
 
-  // 1. This photo's display-logic parent
+  // 1a. Auto Serial prefix (canonical survey-type branch)
+  for (const q of allQuestions) {
+    if (q.type !== 'responseId') continue;
+    const prefix = resolveResponseIdPrefix(q, answers, allQuestions);
+    if (prefix && !isYesNoStyleToken(prefix)) return prefix;
+  }
+
+  // 1b. Derive from stored Auto Serial value (e.g. একক_১ → একক)
+  const storedAuto = readResponseIdSerial({ responses: answers }, allQuestions);
+  if (storedAuto) {
+    const fromSerial = folderFromStoredAutoSerial(storedAuto);
+    if (fromSerial) return fromSerial;
+  }
+
+  // 2. This photo's display-logic parents — skip yes/no gates
   if (photoQuestion?.logic?.enabled && photoQuestion.logic.conditions?.length) {
     for (const c of photoQuestion.logic.conditions) {
       const parentId = c.questionId?.trim();
       if (!parentId) continue;
       const parent = allQuestions.find((q) => q.id === parentId);
+      if (isYesNoChoiceQuestion(parent)) continue;
       const label = resolveChoiceAnswerLabel(parent, answers[parentId]);
       const folder = toFolder(label);
       if (folder) return folder;
     }
   }
 
-  // 2. Auto Serial prefix parent (same pattern as একক / বৃক্ষগুচ্ছ serials)
-  for (const q of allQuestions) {
-    if (q.type !== 'responseId') continue;
-    const prefix = resolveResponseIdPrefix(q, answers, allQuestions);
-    if (prefix) return prefix;
-  }
-
-  // 3. Choice question most often referenced as a logic parent (branch root)
+  // 3. Most-referenced non-yes/no choice parent (branch root)
   const refCounts = new Map<string, number>();
   for (const q of allQuestions) {
     if (!q.logic?.enabled || !q.logic.conditions?.length) continue;
@@ -241,6 +290,7 @@ export function resolvePhotoTypeFolder(
     ) {
       continue;
     }
+    if (isYesNoChoiceQuestion(parent)) continue;
     const label = resolveChoiceAnswerLabel(parent, answers[parentId]);
     const folder = toFolder(label);
     if (folder) return folder;
