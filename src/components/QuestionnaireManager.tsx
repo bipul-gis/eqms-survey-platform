@@ -32,6 +32,8 @@ import {
   isChoiceOptionDisabled,
   isChoiceOptionHidden,
   isChoiceOptionUnavailable,
+  isOtherChoiceDisabled,
+  isOtherChoiceHidden,
   ConsentGateForm,
   PhotoCaptureWidget
 } from './QuestionnaireRuntime';
@@ -2360,7 +2362,10 @@ const PropertiesPanel: React.FC<{
         <OptionsEditor
           options={ensureOptionShape(question.options)}
           allowOther={question.allowOther || false}
-          onChange={(options, allowOther) => onUpdate({ options, allowOther })}
+          otherRequired={question.otherRequired || false}
+          otherDisabledWhen={question.otherDisabledWhen}
+          otherHiddenWhen={question.otherHiddenWhen}
+          onChange={(patch) => onUpdate(patch)}
           allQuestions={allQuestions}
           owningQuestionId={question.id}
         />
@@ -3115,13 +3120,31 @@ const OptionDisableWhenEditor: React.FC<{
 const OptionsEditor: React.FC<{
   options: QuestionOption[];
   allowOther: boolean;
-  onChange: (options: QuestionOption[], allowOther: boolean) => void;
+  otherRequired: boolean;
+  otherDisabledWhen?: LogicRule;
+  otherHiddenWhen?: LogicRule;
+  onChange: (patch: {
+    options?: QuestionOption[];
+    allowOther?: boolean;
+    otherRequired?: boolean;
+    otherDisabledWhen?: LogicRule | undefined;
+    otherHiddenWhen?: LogicRule | undefined;
+  }) => void;
   allQuestions: Question[];
   owningQuestionId: string;
-}> = ({ options, allowOther, onChange, allQuestions, owningQuestionId }) => {
+}> = ({
+  options,
+  allowOther,
+  otherRequired,
+  otherDisabledWhen,
+  otherHiddenWhen,
+  onChange,
+  allQuestions,
+  owningQuestionId
+}) => {
   const update = (idx: number, patch: Partial<QuestionOption>) => {
     const next = options.map((o, i) => (i === idx ? { ...o, ...patch } : o));
-    onChange(next, allowOther);
+    onChange({ options: next });
   };
   const add = () => {
     const next: QuestionOption[] = [
@@ -3132,20 +3155,17 @@ const OptionsEditor: React.FC<{
         label: `Option ${options.length + 1}`
       }
     ];
-    onChange(next, allowOther);
+    onChange({ options: next });
   };
   const remove = (idx: number) => {
-    onChange(
-      options.filter((_, i) => i !== idx),
-      allowOther
-    );
+    onChange({ options: options.filter((_, i) => i !== idx) });
   };
   const move = (idx: number, dir: -1 | 1) => {
     const target = idx + dir;
     if (target < 0 || target >= options.length) return;
     const next = [...options];
     [next[idx], next[target]] = [next[target], next[idx]];
-    onChange(next, allowOther);
+    onChange({ options: next });
   };
 
   return (
@@ -3211,15 +3231,58 @@ const OptionsEditor: React.FC<{
       >
         <Plus size={12} /> Add option
       </button>
-      <label className="flex items-center gap-2 text-xs text-slate-700 mt-3">
-            <input
-              type="checkbox"
-          checked={allowOther}
-          onChange={(e) => onChange(options, e.target.checked)}
-        />
-        Add "Other / specify" option
-      </label>
-          </div>
+
+      <div className="mt-3 rounded-md border border-slate-200 bg-slate-50/60 p-2.5 space-y-2">
+        <label className="flex items-center gap-2 text-xs text-slate-700">
+          <input
+            type="checkbox"
+            checked={allowOther}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              onChange(
+                checked
+                  ? { allowOther: true }
+                  : {
+                      allowOther: false,
+                      otherRequired: false,
+                      otherDisabledWhen: undefined,
+                      otherHiddenWhen: undefined
+                    }
+              );
+            }}
+          />
+          Add &quot;Other / specify&quot; option
+        </label>
+        {allowOther && (
+          <>
+            <label className="flex items-center gap-2 text-xs text-slate-700 pl-0.5">
+              <input
+                type="checkbox"
+                checked={otherRequired}
+                onChange={(e) => onChange({ otherRequired: e.target.checked })}
+              />
+              Require specify text when Other is selected
+            </label>
+            <OptionDisableWhenEditor
+              rule={otherDisabledWhen}
+              onChange={(next) => onChange({ otherDisabledWhen: next })}
+              allQuestions={allQuestions}
+              owningQuestionId={owningQuestionId}
+              label="Disable Other when (based on other answers)"
+              accentClass="border-amber-300/90"
+            />
+            <OptionDisableWhenEditor
+              rule={otherHiddenWhen}
+              onChange={(next) => onChange({ otherHiddenWhen: next })}
+              allQuestions={allQuestions}
+              owningQuestionId={owningQuestionId}
+              label="Hide Other when (based on other answers)"
+              accentClass="border-violet-300/90"
+            />
+          </>
+        )}
+      </div>
+    </div>
   );
 };
 
@@ -4919,11 +4982,14 @@ const PreviewQuestion: React.FC<{
           name={question.id}
           options={opts}
           allowOther={question.allowOther}
+          otherRequired={question.otherRequired}
           value={value}
           onChange={onChange}
           className={cls}
           getOptionDisabled={getOptionDisabled}
           getOptionHidden={getOptionHidden}
+          otherDisabled={isOtherChoiceDisabled(question, answersMap)}
+          otherHidden={isOtherChoiceHidden(question, answersMap)}
         />
       );
       break;
@@ -4965,11 +5031,14 @@ const PreviewQuestion: React.FC<{
           name={question.id}
           options={opts}
           allowOther={question.allowOther}
+          otherRequired={question.otherRequired}
           value={value}
           onChange={onChange}
           className={cls}
           getOptionDisabled={getOptionDisabled}
           getOptionHidden={getOptionHidden}
+          otherDisabled={isOtherChoiceDisabled(question, answersMap)}
+          otherHidden={isOtherChoiceHidden(question, answersMap)}
         />
       );
       break;
@@ -5680,11 +5749,14 @@ const EnumeratorInfoTable: React.FC<{
             name={f.id}
             options={opts}
             allowOther={f.allowOther}
+            otherRequired={f.otherRequired}
             value={v}
             onChange={(next) => onChange(f.id, next)}
             className={cls}
             getOptionDisabled={getOptionDisabled}
             getOptionHidden={getOptionHidden}
+            otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
+            otherHidden={isOtherChoiceHidden(f, logicCtx)}
           />
         );
       case 'radio':
@@ -5694,11 +5766,14 @@ const EnumeratorInfoTable: React.FC<{
             name={f.id}
             options={opts}
             allowOther={f.allowOther}
+            otherRequired={f.otherRequired}
             value={v}
             onChange={(next) => onChange(f.id, next)}
             className={cls}
             getOptionDisabled={getOptionDisabled}
             getOptionHidden={getOptionHidden}
+            otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
+            otherHidden={isOtherChoiceHidden(f, logicCtx)}
           />
         );
       case 'checkbox': {

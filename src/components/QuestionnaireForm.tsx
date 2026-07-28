@@ -69,7 +69,7 @@ import {
   syncEnumeratorIdentityAnswers
 } from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
-import { choiceAnswerIsEmpty, choiceAnswerIsFilled } from '../lib/choiceAnswers';
+import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer } from '../lib/choiceAnswers';
 import {
   matrixAllRowsAnswered,
   validateMatrixQuestion
@@ -84,6 +84,7 @@ import {
   ensureOptionShape,
   evaluateLogic,
   isChoiceOptionUnavailable,
+  isOtherChoiceUnavailable,
   isPhotoAnswerFilled,
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
@@ -194,7 +195,14 @@ const validateQuestion = (
   if (q.required && isEmpty) return 'This field is required';
 
   if (q.type === 'select' || q.type === 'radio') {
-    if (typeof value === 'string' && value) {
+    if (isOtherSpecifyAnswer(value)) {
+      if (isOtherChoiceUnavailable(q, answers)) {
+        return 'Other is not available given your other answers. Please choose again.';
+      }
+      if (q.otherRequired && !value.text.trim()) {
+        return 'Please specify the Other value.';
+      }
+    } else if (typeof value === 'string' && value) {
       const opts = ensureOptionShape(q.options);
       const opt = opts.find((o) => o.value === value);
       if (opt && isChoiceOptionUnavailable(opt, answers)) {

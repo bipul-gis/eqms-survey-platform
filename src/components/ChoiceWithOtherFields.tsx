@@ -11,6 +11,8 @@ export interface ChoiceWithOtherFieldsProps {
   name: string;
   options: QuestionOption[];
   allowOther?: boolean;
+  /** When Other is selected, show required cue on the specify field. */
+  otherRequired?: boolean;
   value: unknown;
   onChange: (v: unknown) => void;
   className: string;
@@ -24,6 +26,10 @@ export interface ChoiceWithOtherFieldsProps {
    * the list (and any current selection of it is cleared).
    */
   getOptionHidden?: (optionValue: string) => boolean;
+  /** Disable the synthetic Other option (same UX as option disable rules). */
+  otherDisabled?: boolean;
+  /** Hide the synthetic Other option entirely. */
+  otherHidden?: boolean;
 }
 
 /**
@@ -36,20 +42,29 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
   name,
   options,
   allowOther,
+  otherRequired,
   value,
   onChange,
   className,
   getOptionDisabled,
-  getOptionHidden
+  getOptionHidden,
+  otherDisabled = false,
+  otherHidden = false
 }) => {
   const isOther = isOtherSpecifyAnswer(value);
   const selectedValue = isOther ? OTHER_OPTION_VALUE : ((value as string) || '');
   const otherText = isOther ? value.text : '';
   const visibleOptions = options.filter((o) => !getOptionHidden?.(o.value));
+  const showOther = !!(allowOther && !otherHidden);
 
   React.useEffect(() => {
     const unavailable = (optValue: string) =>
       !!getOptionHidden?.(optValue) || !!getOptionDisabled?.(optValue);
+
+    if (isOther && (otherHidden || otherDisabled)) {
+      onChange('');
+      return;
+    }
 
     if (mode === 'select') {
       if (
@@ -71,8 +86,25 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
     isOther,
     getOptionDisabled,
     getOptionHidden,
+    otherDisabled,
+    otherHidden,
     onChange
   ]);
+
+  const otherSpecifyInput =
+    showOther && isOther ? (
+      <input
+        type="text"
+        className={className}
+        value={otherText}
+        placeholder={
+          otherRequired ? 'Please specify… (required)' : 'Please specify…'
+        }
+        required={!!otherRequired}
+        aria-required={otherRequired ? true : undefined}
+        onChange={(e) => onChange({ other: true, text: e.target.value })}
+      />
+    ) : null;
 
   if (mode === 'select') {
     return (
@@ -82,6 +114,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
           onChange={(e) => {
             const v = e.target.value;
             if (v === OTHER_OPTION_VALUE) {
+              if (otherDisabled) return;
               onChange({ other: true, text: otherText });
             } else {
               onChange(v);
@@ -104,19 +137,14 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
               {o.label}
             </option>
           ))}
-          {allowOther && (
-            <option value={OTHER_OPTION_VALUE}>Other (please specify)</option>
+          {showOther && (
+            <option value={OTHER_OPTION_VALUE} disabled={otherDisabled}>
+              Other (please specify)
+              {otherRequired ? ' *' : ''}
+            </option>
           )}
         </select>
-        {allowOther && selectedValue === OTHER_OPTION_VALUE && (
-          <input
-            type="text"
-            className={className}
-            value={otherText}
-            placeholder="Please specify…"
-            onChange={(e) => onChange({ other: true, text: e.target.value })}
-          />
-        )}
+        {otherSpecifyInput}
       </div>
     );
   }
@@ -146,28 +174,33 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
             </label>
           );
         })}
-        {allowOther && (
-          <label className="flex items-center gap-2 text-sm text-slate-700">
+        {showOther && (
+          <label
+            className={`flex items-center gap-2 text-sm ${
+              otherDisabled ? 'text-slate-400' : 'text-slate-700'
+            }`}
+          >
             <input
               type="radio"
               name={name}
               value={OTHER_OPTION_VALUE}
+              disabled={otherDisabled}
               checked={isOther}
-              onChange={() => onChange({ other: true, text: otherText })}
+              onChange={() => {
+                if (otherDisabled) return;
+                onChange({ other: true, text: otherText });
+              }}
             />
             Other (please specify)
+            {otherRequired ? (
+              <span className="text-red-500 font-semibold" title="Specify text required">
+                *
+              </span>
+            ) : null}
           </label>
         )}
       </div>
-      {allowOther && isOther && (
-        <input
-          type="text"
-          className={className}
-          value={otherText}
-          placeholder="Please specify…"
-          onChange={(e) => onChange({ other: true, text: e.target.value })}
-        />
-      )}
+      {otherSpecifyInput}
     </div>
   );
 };

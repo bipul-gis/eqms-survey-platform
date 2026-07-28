@@ -349,6 +349,15 @@ export interface Question {
   options?: string[] | QuestionOption[];
   /** Allow "Other / specify" free-text option on choice questions. */
   allowOther?: boolean;
+  /**
+   * When Other is selected, the free-text "please specify" field is required
+   * (even if the question itself is not marked required).
+   */
+  otherRequired?: boolean;
+  /** Disable the Other option while this rule matches (same as option `disabledWhen`). */
+  otherDisabledWhen?: LogicRule;
+  /** Hide the Other option while this rule matches (same as option `hiddenWhen`). */
+  otherHiddenWhen?: LogicRule;
   placeholder?: string;
   /** Default pre-filled value (string, number, or array depending on type). */
   defaultValue?: unknown;

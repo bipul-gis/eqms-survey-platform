@@ -185,6 +185,33 @@ export const isChoiceOptionUnavailable = (
 ): boolean =>
   isChoiceOptionHidden(option, answers) || isChoiceOptionDisabled(option, answers);
 
+/** True when the question's "Other / specify" choice should be greyed out. */
+export const isOtherChoiceDisabled = (
+  question: Pick<Question, 'otherDisabledWhen'>,
+  answers: Record<string, unknown>
+): boolean => {
+  const w = question.otherDisabledWhen;
+  if (!w?.enabled || !w.conditions?.length) return false;
+  return evaluateLogic(w, answers);
+};
+
+/** True when the question's "Other / specify" choice should be hidden. */
+export const isOtherChoiceHidden = (
+  question: Pick<Question, 'otherHiddenWhen'>,
+  answers: Record<string, unknown>
+): boolean => {
+  const w = question.otherHiddenWhen;
+  if (!w?.enabled || !w.conditions?.length) return false;
+  return evaluateLogic(w, answers);
+};
+
+/** True when Other must not remain selected. */
+export const isOtherChoiceUnavailable = (
+  question: Pick<Question, 'otherDisabledWhen' | 'otherHiddenWhen'>,
+  answers: Record<string, unknown>
+): boolean =>
+  isOtherChoiceHidden(question, answers) || isOtherChoiceDisabled(question, answers);
+
 // ---------------------------------------------------------------------------
 // Default-value rules — auto-fill or lock answers based on other answers.
 // Pure helpers, used by both the admin preview and the live form.
@@ -530,11 +557,14 @@ export const EnumeratorInfoTable: React.FC<{
             name={f.id}
             options={opts}
             allowOther={f.allowOther}
+            otherRequired={f.otherRequired}
             value={v}
             onChange={(next) => onChange(f.id, next)}
             className={cls}
             getOptionDisabled={getOptionDisabled}
             getOptionHidden={getOptionHidden}
+            otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
+            otherHidden={isOtherChoiceHidden(f, logicCtx)}
           />
         );
       case 'radio':
@@ -544,11 +574,14 @@ export const EnumeratorInfoTable: React.FC<{
             name={f.id}
             options={opts}
             allowOther={f.allowOther}
+            otherRequired={f.otherRequired}
             value={v}
             onChange={(next) => onChange(f.id, next)}
             className={cls}
             getOptionDisabled={getOptionDisabled}
             getOptionHidden={getOptionHidden}
+            otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
+            otherHidden={isOtherChoiceHidden(f, logicCtx)}
           />
         );
       case 'checkbox': {
@@ -1668,11 +1701,14 @@ export const RuntimeQuestion: React.FC<{
           name={question.id}
           options={opts}
           allowOther={question.allowOther}
+          otherRequired={question.otherRequired}
           value={value}
           onChange={onChange}
           className={cls}
           getOptionDisabled={getOptionDisabled}
           getOptionHidden={getOptionHidden}
+          otherDisabled={isOtherChoiceDisabled(question, answersMap)}
+          otherHidden={isOtherChoiceHidden(question, answersMap)}
         />
       );
       break;
@@ -1714,11 +1750,14 @@ export const RuntimeQuestion: React.FC<{
           name={question.id}
           options={opts}
           allowOther={question.allowOther}
+          otherRequired={question.otherRequired}
           value={value}
           onChange={onChange}
           className={cls}
           getOptionDisabled={getOptionDisabled}
           getOptionHidden={getOptionHidden}
+          otherDisabled={isOtherChoiceDisabled(question, answersMap)}
+          otherHidden={isOtherChoiceHidden(question, answersMap)}
         />
       );
       break;
