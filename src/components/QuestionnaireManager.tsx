@@ -2365,6 +2365,7 @@ const PropertiesPanel: React.FC<{
           otherRequired={question.otherRequired || false}
           otherDisabledWhen={question.otherDisabledWhen}
           otherHiddenWhen={question.otherHiddenWhen}
+          otherAvailableWhen={question.otherAvailableWhen}
           onChange={(patch) => onUpdate(patch)}
           allQuestions={allQuestions}
           owningQuestionId={question.id}
@@ -3123,12 +3124,14 @@ const OptionsEditor: React.FC<{
   otherRequired: boolean;
   otherDisabledWhen?: LogicRule;
   otherHiddenWhen?: LogicRule;
+  otherAvailableWhen?: LogicRule;
   onChange: (patch: {
     options?: QuestionOption[];
     allowOther?: boolean;
     otherRequired?: boolean;
     otherDisabledWhen?: LogicRule | undefined;
     otherHiddenWhen?: LogicRule | undefined;
+    otherAvailableWhen?: LogicRule | undefined;
   }) => void;
   allQuestions: Question[];
   owningQuestionId: string;
@@ -3138,6 +3141,7 @@ const OptionsEditor: React.FC<{
   otherRequired,
   otherDisabledWhen,
   otherHiddenWhen,
+  otherAvailableWhen,
   onChange,
   allQuestions,
   owningQuestionId
@@ -3246,7 +3250,8 @@ const OptionsEditor: React.FC<{
                       allowOther: false,
                       otherRequired: false,
                       otherDisabledWhen: undefined,
-                      otherHiddenWhen: undefined
+                      otherHiddenWhen: undefined,
+                      otherAvailableWhen: undefined
                     }
               );
             }}
@@ -3263,6 +3268,14 @@ const OptionsEditor: React.FC<{
               />
               Require specify text when Other is selected
             </label>
+            <OptionDisableWhenEditor
+              rule={otherAvailableWhen}
+              onChange={(next) => onChange({ otherAvailableWhen: next })}
+              allQuestions={allQuestions}
+              owningQuestionId={owningQuestionId}
+              label="Only available when (based on other answers)"
+              accentClass="border-emerald-300/90"
+            />
             <OptionDisableWhenEditor
               rule={otherDisabledWhen}
               onChange={(next) => onChange({ otherDisabledWhen: next })}

@@ -358,6 +358,11 @@ export interface Question {
   otherDisabledWhen?: LogicRule;
   /** Hide the Other option while this rule matches (same as option `hiddenWhen`). */
   otherHiddenWhen?: LogicRule;
+  /**
+   * When set, Other is only shown/available while this rule matches
+   * (inverse of hide — default unavailable until conditions are met).
+   */
+  otherAvailableWhen?: LogicRule;
   placeholder?: string;
   /** Default pre-filled value (string, number, or array depending on type). */
   defaultValue?: unknown;

@@ -197,17 +197,27 @@ export const isOtherChoiceDisabled = (
 
 /** True when the question's "Other / specify" choice should be hidden. */
 export const isOtherChoiceHidden = (
-  question: Pick<Question, 'otherHiddenWhen'>,
+  question: Pick<Question, 'otherHiddenWhen' | 'otherAvailableWhen'>,
   answers: Record<string, unknown>
 ): boolean => {
-  const w = question.otherHiddenWhen;
-  if (!w?.enabled || !w.conditions?.length) return false;
-  return evaluateLogic(w, answers);
+  const hide = question.otherHiddenWhen;
+  if (hide?.enabled && hide.conditions?.length && evaluateLogic(hide, answers)) {
+    return true;
+  }
+  const available = question.otherAvailableWhen;
+  if (available?.enabled && available.conditions?.length) {
+    // Only-available-when: hide unless the rule matches.
+    return !evaluateLogic(available, answers);
+  }
+  return false;
 };
 
 /** True when Other must not remain selected. */
 export const isOtherChoiceUnavailable = (
-  question: Pick<Question, 'otherDisabledWhen' | 'otherHiddenWhen'>,
+  question: Pick<
+    Question,
+    'otherDisabledWhen' | 'otherHiddenWhen' | 'otherAvailableWhen'
+  >,
   answers: Record<string, unknown>
 ): boolean =>
   isOtherChoiceHidden(question, answers) || isOtherChoiceDisabled(question, answers);

@@ -67,20 +67,89 @@ export function sanitizeResponseIdPrefix(raw: unknown): string {
   return cleaned;
 }
 
+function isYesNoStyleToken(raw: string): boolean {
+  return /^(yes|no|y|n|true|false|হ্যাঁ|হাঁ|না|ok|okay)$/i.test(String(raw || '').trim());
+}
+
+function isYesNoChoiceQuestion(q: Question | undefined): boolean {
+  if (!q) return false;
+  if (
+    q.type !== 'select' &&
+    q.type !== 'radio' &&
+    q.type !== 'checkbox' &&
+    q.type !== 'multiselect'
+  ) {
+    return false;
+  }
+  const opts = optionList(q);
+  if (opts.length === 0 || opts.length > 3) return false;
+  return opts.every(
+    (o) => isYesNoStyleToken(o.label || '') || isYesNoStyleToken(o.value || '')
+  );
+}
+
+/**
+ * Questionnaire-wide survey-type parent: the non-yes/no choice question most
+ * often referenced by display logic (e.g. জরিপের ধরন → একক / বৃক্ষগুচ্ছ).
+ */
+export function inferBranchingPrefixQuestionId(
+  allQuestions: Question[]
+): string | undefined {
+  const refCounts = new Map<string, number>();
+  for (const q of allQuestions) {
+    if (!q.logic?.enabled || !q.logic.conditions?.length) continue;
+    for (const c of q.logic.conditions) {
+      const id = c.questionId?.trim();
+      if (!id) continue;
+      refCounts.set(id, (refCounts.get(id) || 0) + 1);
+    }
+  }
+  const ranked = [...refCounts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [id] of ranked) {
+    const parent = allQuestions.find((q) => q.id === id);
+    if (
+      !parent ||
+      (parent.type !== 'select' &&
+        parent.type !== 'radio' &&
+        parent.type !== 'checkbox' &&
+        parent.type !== 'multiselect')
+    ) {
+      continue;
+    }
+    if (isYesNoChoiceQuestion(parent)) continue;
+    return id;
+  }
+  return undefined;
+}
+
 /**
  * Prefix source question:
  * 1. Explicit `responseIdConfig.prefixQuestionId`
- * 2. Else first question referenced by this field's display logic
- *    (universal: show-when-option-equals → that option becomes the prefix)
+ * 2. Else first non-yes/no question referenced by this field's display logic
+ * 3. Else questionnaire branching choice parent (most-referenced type question)
  */
-export function inferResponseIdPrefixQuestionId(question: Question): string | undefined {
+export function inferResponseIdPrefixQuestionId(
+  question: Question,
+  allQuestions?: Question[]
+): string | undefined {
   const explicit = question.responseIdConfig?.prefixQuestionId?.trim();
   if (explicit) return explicit;
+
   const logic = question.logic;
-  if (!logic?.enabled || !logic.conditions?.length) return undefined;
-  for (const c of logic.conditions) {
-    const id = c.questionId?.trim();
-    if (id) return id;
+  if (logic?.enabled && logic.conditions?.length) {
+    for (const c of logic.conditions) {
+      const id = c.questionId?.trim();
+      if (!id) continue;
+      if (allQuestions?.length) {
+        const parent = allQuestions.find((q) => q.id === id);
+        if (isYesNoChoiceQuestion(parent)) continue;
+      }
+      return id;
+    }
+  }
+
+  if (allQuestions?.length) {
+    return inferBranchingPrefixQuestionId(allQuestions);
   }
   return undefined;
 }
@@ -123,7 +192,7 @@ export function resolveResponseIdPrefix(
   answers: Record<string, unknown>,
   allQuestions: Question[]
 ): string | null {
-  const linkedId = inferResponseIdPrefixQuestionId(question);
+  const linkedId = inferResponseIdPrefixQuestionId(question, allQuestions);
   if (!linkedId) return '';
 
   const linked = allQuestions.find((q) => q.id === linkedId);

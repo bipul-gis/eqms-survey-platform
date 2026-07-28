@@ -694,10 +694,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   /** Changes when the linked prefix answer changes (or plain-serial mode). */
   const responseIdPrefixKey = useMemo(() => {
     if (!primaryResponseIdQuestion) return '';
-    const linkedId = inferResponseIdPrefixQuestionId(primaryResponseIdQuestion) || '';
+    const linkedId =
+      inferResponseIdPrefixQuestionId(primaryResponseIdQuestion, surveyQuestions) || '';
     if (!linkedId) return '__plain__';
     return `${linkedId}:${JSON.stringify(responses[linkedId] ?? null)}`;
-  }, [primaryResponseIdQuestion, responses]);
+  }, [primaryResponseIdQuestion, responses, surveyQuestions]);
 
   // Allocate Response ID: plain serial, or `{prefix}-{serial}` when linked
   // via config / display logic. Locked; shared across all responseId fields.
