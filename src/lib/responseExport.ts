@@ -20,7 +20,7 @@ import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
-import { formatPhotoAnswerLabel } from './photoAnswers';
+import { formatPhotoAnswerLabel, collectResponsePhotoAttachment, type ExportPhotoAttachment } from './photoAnswers';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -125,10 +125,15 @@ const stringifyAge = (v: unknown): string => {
 };
 
 /** Convert raw answer values into a human-readable string. */
-const stringifyAnswer = (v: unknown, q?: Question): string => {
+const stringifyAnswer = (
+  v: unknown,
+  q?: Question,
+  photoPath?: string | null
+): string => {
   if (v == null) return '';
-  // Photo answers store a dataUrl for preview — never dump base64 into CSV.
+  // Photo answers: export ZIP uses relative path; preview uses short label.
   if (q?.type === 'photo') {
+    if (photoPath) return photoPath;
     return formatPhotoAnswerLabel(v);
   }
   // Age objects need a custom serializer — the generic object branch
@@ -178,6 +183,7 @@ const stringifyAnswer = (v: unknown, q?: Question): string => {
       typeof (v as { dataUrl?: unknown }).dataUrl === 'string' &&
       String((v as { dataUrl: string }).dataUrl).startsWith('data:image')
     ) {
+      if (photoPath) return photoPath;
       return formatPhotoAnswerLabel(v);
     }
     // Matrix-style answers: { row: column } → "row: column; row: column"
@@ -312,11 +318,12 @@ const responsesExportColumnHeader = (col: ResponsesExportColumn): string => {
 
 const responsesExportColumnCell = (
   col: ResponsesExportColumn,
-  r: QuestionnaireResponse
+  r: QuestionnaireResponse,
+  photoPath?: string | null
 ): string => {
   const raw = r.responses?.[col.question.id];
   if (col.kind === 'question') {
-    return stringifyAnswer(raw, col.question);
+    return stringifyAnswer(raw, col.question, photoPath);
   }
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return '';
   const cell = (raw as Record<string, unknown>)[col.row];
@@ -367,10 +374,25 @@ export interface ResponsesTable {
   rows: string[][];
 }
 
+export type BuildResponsesTableOptions = {
+  /**
+   * When true, photo columns get `photos/...` relative paths and image bytes
+   * are collected into `photoAttachments` for ZIP packaging.
+   */
+  attachPhotos?: boolean;
+};
+
+export type ResponsesTableWithPhotos = ResponsesTable & {
+  photoAttachments: ExportPhotoAttachment[];
+};
+
 export const buildResponsesTable = (
   q: Questionnaire,
-  responses: QuestionnaireResponse[]
-): ResponsesTable => {
+  responses: QuestionnaireResponse[],
+  options?: BuildResponsesTableOptions
+): ResponsesTableWithPhotos => {
+  const attachPhotos = !!options?.attachPhotos;
+  const photoMap = new Map<string, ExportPhotoAttachment>();
   const enumFields = q.enumeratorInfo?.fields || [];
   const consentEnabled = !!q.consentGate?.enabled;
   const questions = mergeQuestionsWithResponseKeys(
@@ -400,10 +422,32 @@ export const buildResponsesTable = (
   ];
 
   const rows: string[][] = responses.map((r) => {
-    const enumValues = enumFields.map((f) =>
-      stringifyAnswer(r.enumeratorInfo?.[f.id], f)
-    );
-    const answerValues = exportColumns.map((col) => responsesExportColumnCell(col, r));
+    const enumValues = enumFields.map((f) => {
+      const raw = r.enumeratorInfo?.[f.id];
+      let photoPath: string | null = null;
+      if (attachPhotos && f.type === 'photo') {
+        photoPath = collectResponsePhotoAttachment(
+          r.id,
+          `info_${f.key || f.id}`,
+          raw,
+          photoMap
+        );
+      }
+      return stringifyAnswer(raw, f, photoPath);
+    });
+    const answerValues = exportColumns.map((col) => {
+      const raw = r.responses?.[col.question.id];
+      let photoPath: string | null = null;
+      if (attachPhotos && col.kind === 'question' && col.question.type === 'photo') {
+        photoPath = collectResponsePhotoAttachment(
+          r.id,
+          col.question.key || col.question.id,
+          raw,
+          photoMap
+        );
+      }
+      return responsesExportColumnCell(col, r, photoPath);
+    });
     const sub = r.submissionLocation;
     const { lat: exportLat, lng: exportLng } = exportLatLng(r);
     return [
@@ -429,7 +473,11 @@ export const buildResponsesTable = (
     ];
   });
 
-  return { header, rows };
+  return {
+    header,
+    rows,
+    photoAttachments: Array.from(photoMap.values())
+  };
 };
 
 /** How one export column maps to questionnaire / system data. */
@@ -591,9 +639,10 @@ export const buildResponsesShpFieldMappingCsv = (
 /** Build a CSV string for all responses to a questionnaire. */
 export const buildResponsesCsv = (
   q: Questionnaire,
-  responses: QuestionnaireResponse[]
+  responses: QuestionnaireResponse[],
+  options?: BuildResponsesTableOptions
 ): string => {
-  const { header, rows } = buildResponsesTable(q, responses);
+  const { header, rows } = buildResponsesTable(q, responses, options);
   const csv = [header, ...rows]
     .map((row) => row.map(csvEscape).join(','))
     .join('\r\n');
@@ -602,12 +651,43 @@ export const buildResponsesCsv = (
   return '\uFEFF' + csv;
 };
 
-export const downloadResponsesCsv = (
+/** Add collected photo files under `photos/` inside a JSZip archive. */
+export const addPhotoAttachmentsToZip = (
+  zip: { file: (path: string, data: Uint8Array | Blob) => unknown },
+  photos: ExportPhotoAttachment[]
+): number => {
+  for (const photo of photos) {
+    zip.file(photo.relativePath, photo.bytes);
+  }
+  return photos.length;
+};
+
+export type ResponsesCsvExportResult = {
+  photoCount: number;
+};
+
+/**
+ * Download responses as a ZIP: `*.csv` plus attached `photos/*.jpg` files.
+ * Photo columns contain relative paths like `photos/resp_xxx_qkey.jpg`.
+ */
+export const downloadResponsesCsv = async (
   q: Questionnaire,
   responses: QuestionnaireResponse[]
-) => {
-  const csv = buildResponsesCsv(q, responses);
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const filename = `${slugify(q.title)}_responses_${Date.now()}.csv`;
-  triggerDownload(blob, filename);
+): Promise<ResponsesCsvExportResult> => {
+  const { header, rows, photoAttachments } = buildResponsesTable(q, responses, {
+    attachPhotos: true
+  });
+  const csv =
+    '\uFEFF' +
+    [header, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
+
+  const baseName = `${slugify(q.title)}_responses`;
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  zip.file(`${baseName}.csv`, csv);
+  addPhotoAttachmentsToZip(zip, photoAttachments);
+
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  triggerDownload(blob, `${baseName}_${Date.now()}.zip`);
+  return { photoCount: photoAttachments.length };
 };

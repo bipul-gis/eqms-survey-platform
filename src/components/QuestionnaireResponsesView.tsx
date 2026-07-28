@@ -488,12 +488,22 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     }
   };
 
-  const handleExportCsv = () => {
+  const handleExportCsv = async () => {
     if (filtered.length === 0) {
       alert('Nothing to export — no responses match the current filter.');
       return;
     }
-    downloadResponsesCsv(questionnaire, filtered);
+    try {
+      const { photoCount } = await downloadResponsesCsv(questionnaire, filtered);
+      alert(
+        photoCount > 0
+          ? `CSV ZIP ready with ${photoCount} photo file(s) in the photos/ folder. Photo columns show relative paths.`
+          : 'CSV ZIP ready (no photo answers in this export).'
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`Failed to export CSV: ${message}`);
+    }
   };
 
   const handleExportShp = async () => {
@@ -504,15 +514,22 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     setExportingShp(true);
     try {
       const downloadShp = await loadDownloadResponsesShpZip();
-      const { exported, skippedNoGps } = await downloadShp(questionnaire, filtered);
+      const { exported, skippedNoGps, photoCount } = await downloadShp(
+        questionnaire,
+        filtered
+      );
+      const photoNote =
+        photoCount > 0
+          ? ` Includes ${photoCount} photo(s) in photos/.`
+          : '';
       const mappingNote =
         ' Open *_field_mapping.csv inside the ZIP for CSV column → SHP DBF name lookup.';
       if (skippedNoGps > 0) {
         alert(
-          `SHP ZIP ready: ${exported} point(s) exported. Skipped ${skippedNoGps} response(s) with no GPS coordinates.${mappingNote}`
+          `SHP ZIP ready: ${exported} point(s) exported. Skipped ${skippedNoGps} response(s) with no GPS coordinates.${photoNote}${mappingNote}`
         );
       } else {
-        alert(`SHP ZIP ready: ${exported} point(s).${mappingNote}`);
+        alert(`SHP ZIP ready: ${exported} point(s).${photoNote}${mappingNote}`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -565,10 +582,10 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         )}
         <div className="flex items-center gap-2">
           <button
-            onClick={handleExportCsv}
+            onClick={() => void handleExportCsv()}
             disabled={loading || filtered.length === 0}
             className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
-            title="Download all matching responses as a CSV file"
+            title="Download matching responses as a ZIP (CSV + photos/ folder with attached images)"
           >
             <FileSpreadsheet size={15} /> Export CSV ({filtered.length})
           </button>
@@ -576,7 +593,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
             onClick={() => void handleExportShp()}
             disabled={loading || exportingShp || filtered.length === 0}
             className="px-3 py-2 text-sm font-semibold bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
-            title="Download zipped shapefile (WGS84). Includes field_mapping.csv: CSV column labels vs 8-character DBF field names per question."
+            title="Download zipped shapefile (WGS84) with photos/ attached. Includes field_mapping.csv for CSV column → DBF name lookup."
           >
             <MapIcon size={15} /> {exportingShp ? 'Exporting SHP…' : `Export SHP ZIP (${filtered.length})`}
           </button>

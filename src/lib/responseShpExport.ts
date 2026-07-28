@@ -1,12 +1,13 @@
 /**
  * Shapefile (ZIP) export for questionnaire responses — point layer with the
- * same attribute columns as the CSV export.
+ * same attribute columns as the CSV export, plus attached photo files.
  */
 
 import JSZip from 'jszip';
 import { Questionnaire, QuestionnaireResponse } from '../types';
 import { patchShapefileZipUtf8Dbf } from './dbfUtf8';
 import {
+  addPhotoAttachmentsToZip,
   buildResponsesShpFieldMappingCsv,
   buildResponsesTable,
   responsePointForShp,
@@ -29,13 +30,16 @@ const toShpPrimitive = (v: unknown): string | number | boolean => {
 export type ResponsesShpExportResult = {
   exported: number;
   skippedNoGps: number;
+  photoCount: number;
 };
 
 export async function downloadResponsesShpZip(
   q: Questionnaire,
   responses: QuestionnaireResponse[]
 ): Promise<ResponsesShpExportResult> {
-  const { header, rows } = buildResponsesTable(q, responses);
+  const { header, rows, photoAttachments } = buildResponsesTable(q, responses, {
+    attachPhotos: true
+  });
   const features: Array<{
     type: 'Feature';
     geometry: { type: 'Point'; coordinates: [number, number] };
@@ -95,6 +99,7 @@ export async function downloadResponsesShpZip(
   const mappingCsv = buildResponsesShpFieldMappingCsv(q, responses);
   const zip = await JSZip.loadAsync(await blob.arrayBuffer());
   zip.file(`${baseName}_field_mapping.csv`, mappingCsv);
+  addPhotoAttachmentsToZip(zip, photoAttachments);
   blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
 
   const url = URL.createObjectURL(blob);
@@ -106,5 +111,9 @@ export async function downloadResponsesShpZip(
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
 
-  return { exported: features.length, skippedNoGps };
+  return {
+    exported: features.length,
+    skippedNoGps,
+    photoCount: photoAttachments.length
+  };
 }
