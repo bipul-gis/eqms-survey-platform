@@ -22,9 +22,9 @@ import { useOnlineStatus } from '../hooks/useOnlineStatus';
 export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
   className = ''
 }) => {
-  const { online, syncing } = useOnlineStatus();
+  const { online, syncing, pendingCount } = useOnlineStatus();
 
-  if (online && !syncing) return null;
+  if (online && !syncing && pendingCount === 0) return null;
 
   if (!online) {
     return (
@@ -38,15 +38,14 @@ export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
     );
   }
 
-  // Online + syncing — show briefly after reconnect while Firestore flushes
-  // any queued writes.
+  // Online + syncing — show while the offline queue is flushing.
   return (
     <div
       className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className}`}
-      title="Connected. Synchronising the offline queue with the server."
+      title="Connected. Uploading offline drafts and submissions."
     >
       <RefreshCw size={12} className="shrink-0 animate-spin" />
-      <span>Syncing…</span>
+      <span>Syncing{pendingCount > 0 ? ` (${pendingCount})` : '…'}</span>
     </div>
   );
 };
@@ -59,7 +58,7 @@ export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
 export const NetworkStatusBadgeAlways: React.FC<{ className?: string }> = ({
   className = ''
 }) => {
-  const { online, syncing } = useOnlineStatus();
+  const { online, syncing, pendingCount } = useOnlineStatus();
 
   if (!online) {
     return (
@@ -71,13 +70,13 @@ export const NetworkStatusBadgeAlways: React.FC<{ className?: string }> = ({
       </div>
     );
   }
-  if (syncing) {
+  if (syncing || pendingCount > 0) {
     return (
       <div
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className}`}
       >
         <RefreshCw size={12} className="shrink-0 animate-spin" />
-        <span>Syncing…</span>
+        <span>Syncing{pendingCount > 0 ? ` (${pendingCount})` : '…'}</span>
       </div>
     );
   }

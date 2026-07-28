@@ -268,6 +268,14 @@ const validateQuestion = (
 
 const friendlyError = (e: unknown): string => {
   const raw = e instanceof Error ? e.message : String(e);
+  if (
+    /failed to fetch/i.test(raw) ||
+    /networkerror/i.test(raw) ||
+    /network request failed/i.test(raw) ||
+    /load failed/i.test(raw)
+  ) {
+    return 'You appear to be offline. Your work is saved on this device and will sync when you reconnect.';
+  }
   try {
     const parsed = JSON.parse(raw);
     if (parsed?.error) return String(parsed.error);

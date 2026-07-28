@@ -2,6 +2,12 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { geosurveyApi, setStoredSessionToken, getStoredSessionToken } from '../lib/geosurveyApi';
 import { UserProfile } from '../types';
 import { normalizedFullName } from '../lib/userDisplayName';
+import {
+  cacheAuthProfile,
+  clearCachedAuthProfile,
+  getCachedAuthProfile,
+  isNetworkFailure
+} from '../lib/offlineResponses';
 
 export interface AuthUser {
   uid: string;
@@ -30,6 +36,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Login succeeded but user profile was incomplete. Please try again.');
     }
     setStoredSessionToken(token);
+    cacheAuthProfile(profile, token);
     setUser({
       uid: profile.uid,
       email: profile.email,
@@ -45,11 +52,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUserProfile(null);
       return;
     }
-    const session = await geosurveyApi.session();
-    if (!session?.profile?.uid || !session.sessionToken) {
-      throw new Error('Session expired. Please sign in again.');
+    try {
+      const session = await geosurveyApi.session();
+      if (!session?.profile?.uid || !session.sessionToken) {
+        throw new Error('Session expired. Please sign in again.');
+      }
+      applySession(session.profile, session.sessionToken);
+    } catch (error) {
+      // Keep the last good session while offline; only clear on real auth failure.
+      if (isNetworkFailure(error)) return;
+      clearCachedAuthProfile();
+      setStoredSessionToken(null);
+      setUser(null);
+      setUserProfile(null);
+      throw error;
     }
-    applySession(session.profile, session.sessionToken);
   }, [applySession]);
 
   useEffect(() => {
@@ -61,15 +78,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!cancelled) setLoading(false);
           return;
         }
-        const session = await geosurveyApi.session();
-        if (!cancelled) {
-          applySession(session.profile, session.sessionToken);
-        }
-      } catch {
-        setStoredSessionToken(null);
-        if (!cancelled) {
-          setUser(null);
-          setUserProfile(null);
+        try {
+          const session = await geosurveyApi.session();
+          if (!cancelled) {
+            applySession(session.profile, session.sessionToken);
+          }
+        } catch (error) {
+          if (isNetworkFailure(error)) {
+            const cached = getCachedAuthProfile();
+            if (cached && cached.token === token && !cancelled) {
+              applySession(cached.profile as unknown as UserProfile, cached.token);
+              return;
+            }
+          }
+          setStoredSessionToken(null);
+          clearCachedAuthProfile();
+          if (!cancelled) {
+            setUser(null);
+            setUserProfile(null);
+          }
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -103,6 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // ignore
     }
     setStoredSessionToken(null);
+    clearCachedAuthProfile();
     setUser(null);
     setUserProfile(null);
   };

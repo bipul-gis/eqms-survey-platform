@@ -9,6 +9,9 @@ import {
   type SurveyLocationLoadMode
 } from './hooks/useQuestionnaireSurveyLocations';
 import { FeatureStatus, GeoFeature, Project, Questionnaire, UserProfile } from './types';
+import { initOfflineSupport } from './lib/offlineFirestore';
+
+initOfflineSupport();
 
 // Code-split heavy screens so the initial bundle stays small. Each of these
 // pulls in big dependencies (Leaflet, Firebase admin queries, jsPDF, etc.)

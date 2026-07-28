@@ -227,6 +227,10 @@ function collectSerialsFromPools(
  * Next serial for this enumerator × questionnaire × prefix bucket.
  * Plain → `1`…
  * Prefixed Bangla option → `একক_১`, `একক_২`…
+ *
+ * Important: this only *peeks* the next free serial from saved (and offline-
+ * queued) responses. It does **not** reserve/advance a counter — closing a
+ * form without saving must not burn IDs.
  */
 export async function allocateNextResponseId(options: {
   questionnaireId: string;
@@ -243,12 +247,14 @@ export async function allocateNextResponseId(options: {
     excludeResponseId
   } = options;
 
-  const cacheKey = `responseId:${questionnaireId}:${respondentId}:${prefix || '_'}:${excludeResponseId || ''}`;
-  const cachedNext = getCached<number>(cacheKey, CACHE_TTL_MS);
+  // Cache the observed max serial (not max+1) so reopening an unsaved form
+  // within the TTL still yields the same next ID.
+  const cacheKey = `responseId:max:${questionnaireId}:${respondentId}:${prefix || '_'}:${excludeResponseId || ''}`;
+  const cachedMax = getCached<number>(cacheKey, CACHE_TTL_MS);
 
-  let nextSerial: number;
-  if (typeof cachedNext === 'number' && cachedNext > 0) {
-    nextSerial = cachedNext;
+  let maxSerial = 0;
+  if (typeof cachedMax === 'number' && cachedMax >= 0) {
+    maxSerial = cachedMax;
   } else {
     const result = await geosurveyApi.listResponses({ respondentId });
     const serials: number[] = [];
@@ -269,11 +275,11 @@ export async function allocateNextResponseId(options: {
         )
       );
     }
-    nextSerial = serials.length > 0 ? Math.max(...serials) + 1 : 1;
+    maxSerial = serials.length > 0 ? Math.max(...serials) : 0;
+    setCached(cacheKey, maxSerial);
   }
 
-  setCached(cacheKey, nextSerial + 1);
-  return formatResponseId(prefix, nextSerial);
+  return formatResponseId(prefix, maxSerial + 1);
 }
 
 /** Apply one allocated ID onto every responseId question field. */

@@ -1,4 +1,12 @@
-/** Online-first stubs — offline queue deferred to mobile app phase. */
+/**
+ * Online / offline helpers for enumerator field work.
+ * Response drafts & submissions queue via `offlineResponses.ts`.
+ */
+
+import {
+  ensureOfflineFlushListener,
+  isNetworkFailure
+} from './offlineResponses';
 
 export function isCapacitorNative(): boolean {
   return (
@@ -16,6 +24,9 @@ export async function isDeviceOffline(): Promise<boolean> {
   return isBrowserOffline();
 }
 
+export { isNetworkFailure };
+
+/** Prefer online write; callers that need local queue use geosurveyApi.saveResponse. */
 export async function writeWithOfflineFallback<T>(
   writeFn: () => Promise<T>,
   _label: string
@@ -25,4 +36,9 @@ export async function writeWithOfflineFallback<T>(
 
 export async function readQueryPreferCache<T>(readFn: () => Promise<T>): Promise<T> {
   return readFn();
+}
+
+/** Call once from app root so queued responses flush on reconnect. */
+export function initOfflineSupport(): void {
+  ensureOfflineFlushListener();
 }

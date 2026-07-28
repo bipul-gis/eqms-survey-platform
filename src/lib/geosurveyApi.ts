@@ -173,9 +173,30 @@ export const geosurveyApi = {
 
   questionnaireCounts: () => apiFetch<Record<string, number>>('/api/questionnaires/counts'),
 
-  listQuestionnaires: (projectId?: string) => {
+  listQuestionnaires: async (projectId?: string) => {
+    const {
+      cacheQuestionnaires,
+      getCachedQuestionnaires,
+      isNetworkFailure
+    } = await import('./offlineResponses');
     const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
-    return apiFetch<{ items: Record<string, unknown>[] }>(`/api/questionnaires${q}`);
+    try {
+      const result = await apiFetch<{ items: Record<string, unknown>[] }>(
+        `/api/questionnaires${q}`
+      );
+      cacheQuestionnaires(result.items || []);
+      return result;
+    } catch (error) {
+      if (!isNetworkFailure(error)) throw error;
+      const cached = getCachedQuestionnaires();
+      if (cached.length > 0) {
+        const items = projectId
+          ? cached.filter((item) => item.projectId === projectId)
+          : cached;
+        return { items };
+      }
+      throw error;
+    }
   },
 
   saveQuestionnaire: (payload: Record<string, unknown>) =>
@@ -190,23 +211,99 @@ export const geosurveyApi = {
   deleteQuestionnaire: (id: string) =>
     apiFetch<{ ok: boolean }>(`/api/questionnaires/${id}`, { method: 'DELETE' }),
 
-  listResponses: (params?: { questionnaireId?: string; respondentId?: string; status?: string }) => {
+  listResponses: async (params?: {
+    questionnaireId?: string;
+    respondentId?: string;
+    status?: string;
+  }) => {
+    const {
+      cacheResponses,
+      getCachedResponses,
+      isNetworkFailure,
+      mergeResponsesWithOffline
+    } = await import('./offlineResponses');
     const search = new URLSearchParams();
     if (params?.questionnaireId) search.set('questionnaireId', params.questionnaireId);
     if (params?.respondentId) search.set('respondentId', params.respondentId);
     if (params?.status) search.set('status', params.status);
     const q = search.toString() ? `?${search}` : '';
-    return apiFetch<{ items: Record<string, unknown>[] }>(`/api/responses${q}`);
+    try {
+      const result = await apiFetch<{ items: Record<string, unknown>[] }>(
+        `/api/responses${q}`
+      );
+      // Cache unfiltered enumerator lists so offline allocate/list still work.
+      if (!params?.status && params?.respondentId) {
+        cacheResponses(result.items || []);
+      } else if (!params?.status && !params?.questionnaireId && !params?.respondentId) {
+        cacheResponses(result.items || []);
+      } else {
+        // Merge this page into existing cache by id.
+        const byId = new Map<string, Record<string, unknown>>();
+        for (const item of getCachedResponses()) {
+          if (typeof item.id === 'string') byId.set(item.id, item);
+        }
+        for (const item of result.items || []) {
+          if (typeof item.id === 'string') byId.set(item.id, item);
+        }
+        cacheResponses(Array.from(byId.values()));
+      }
+      return { items: mergeResponsesWithOffline(result.items || [], params) };
+    } catch (error) {
+      if (!isNetworkFailure(error)) throw error;
+      return { items: mergeResponsesWithOffline(getCachedResponses(), params) };
+    }
   },
 
-  saveResponse: (payload: Record<string, unknown>) =>
-    apiFetch<Record<string, unknown>>(
-      payload.id ? `/api/responses/${payload.id}` : '/api/responses',
-      {
-        method: payload.id ? 'PUT' : 'POST',
-        body: JSON.stringify(payload),
+  saveResponse: async (
+    payload: Record<string, unknown>,
+    options?: { skipOfflineQueue?: boolean }
+  ) => {
+    const {
+      enqueueOfflineResponse,
+      isNetworkFailure,
+      cacheResponses,
+      getCachedResponses
+    } = await import('./offlineResponses');
+
+    const persistOnline = () =>
+      apiFetch<Record<string, unknown>>(
+        payload.id ? `/api/responses/${payload.id}` : '/api/responses',
+        {
+          method: payload.id ? 'PUT' : 'POST',
+          body: JSON.stringify(payload)
+        }
+      );
+
+    const queueLocally = () => {
+      const queued = enqueueOfflineResponse(payload);
+      return queued as Record<string, unknown>;
+    };
+
+    if (options?.skipOfflineQueue) {
+      return persistOnline();
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return queueLocally();
+    }
+
+    try {
+      const saved = await persistOnline();
+      const id = typeof saved.id === 'string' ? saved.id : String(payload.id || '');
+      if (id) {
+        const byId = new Map<string, Record<string, unknown>>();
+        for (const item of getCachedResponses()) {
+          if (typeof item.id === 'string') byId.set(item.id, item);
+        }
+        byId.set(id, { ...payload, ...saved, id });
+        cacheResponses(Array.from(byId.values()));
       }
-    ),
+      return saved;
+    } catch (error) {
+      if (isNetworkFailure(error)) return queueLocally();
+      throw error;
+    }
+  },
 
   deleteResponse: (id: string) =>
     apiFetch<{ ok: boolean }>(`/api/responses/${id}`, { method: 'DELETE' }),

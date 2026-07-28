@@ -130,7 +130,12 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       } catch (err) {
         if (cancelled) return;
         console.error('Failed to load questionnaires:', err);
-        setError(err instanceof Error ? err.message : String(err));
+        const raw = err instanceof Error ? err.message : String(err);
+        setError(
+          /failed to fetch/i.test(raw)
+            ? 'You are offline and no saved questionnaires are on this device yet. Connect once to download your assigned surveys.'
+            : raw
+        );
       } finally {
         if (!cancelled) setLoading(false);
       }
