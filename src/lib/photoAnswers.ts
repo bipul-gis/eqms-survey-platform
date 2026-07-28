@@ -1,9 +1,25 @@
 /**
  * Helpers for questionnaire `photo` answers.
  * Capture keeps the image dataUrl for preview/storage in the response JSON.
- * CSV / SHP downloads attach real image files under `photos/` and write
- * relative paths in the attribute cells — never the base64 payload.
+ * CSV / SHP downloads attach real image files under `photos/{typeFolder}/`
+ * with names `enumeratorId_enumeratorName_responseId_serial.ext`.
+ *
+ * Type folders are resolved generically from the parent choice answer that
+ * gates the photo (display logic), or from the Auto Serial prefix parent —
+ * not hard-coded to any one survey.
  */
+
+import type { Question, QuestionnaireResponse } from '../types';
+import {
+  readResponseIdSerial,
+  resolveResponseIdPrefix,
+  sanitizeResponseIdPrefix,
+  shortenOptionLabelForPrefix
+} from './responseIdSequence';
+import {
+  choiceAnswerToComparableString,
+  isOtherSpecifyAnswer
+} from './choiceAnswers';
 
 export type PhotoAnswer = {
   dataUrl: string;
@@ -64,12 +80,21 @@ export const formatPhotoAnswerLabel = (value: unknown): string => {
   return buildPhotoFileName(source, o.mimeType || 'image/jpeg');
 };
 
-const safePathToken = (raw: string, max = 40): string =>
-  String(raw || 'x')
+/**
+ * Keep Unicode letters/marks (Bangla) + digits for folder/file tokens.
+ * Spaces → underscore; drop path separators and punctuation.
+ */
+export const safePhotoPathToken = (raw: string, max = 64): string => {
+  const cleaned = String(raw || '')
     .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, max) || 'x';
+    .replace(/\s+/g, '_')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/[^\p{L}\p{M}\p{N}_\-\u200C\u200D]/gu, '')
+    .replace(/_+/g, '_')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, max);
+  return cleaned || 'x';
+};
 
 /** Decode a stored photo answer into raw bytes for ZIP attachment. */
 export const extractPhotoBytes = (
@@ -106,23 +131,192 @@ export const extractPhotoBytes = (
   }
 };
 
+function optionList(q: Question | undefined): { value: string; label: string }[] {
+  if (!q?.options) return [];
+  return q.options.map((o, i) =>
+    typeof o === 'string' ? { value: o, label: o } : { value: o.value, label: o.label || o.value || `o${i}` }
+  );
+}
+
+/** Resolve the human label for a linked choice answer (option label preferred). */
+function resolveChoiceAnswerLabel(linked: Question | undefined, raw: unknown): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (Array.isArray(raw) && raw.length === 0) return null;
+
+  if (isOtherSpecifyAnswer(raw)) {
+    const t = raw.text.trim();
+    return t || null;
+  }
+
+  const comparable = choiceAnswerToComparableString(raw);
+  if (!comparable) return null;
+
+  if (
+    linked &&
+    (linked.type === 'select' ||
+      linked.type === 'radio' ||
+      linked.type === 'checkbox' ||
+      linked.type === 'multiselect')
+  ) {
+    const opts = optionList(linked);
+    const hit =
+      opts.find((o) => o.value === comparable) || opts.find((o) => o.label === comparable);
+    if (hit) return (hit.label || hit.value || '').trim() || null;
+  }
+
+  // Multi-select: use first selected label
+  if (Array.isArray(raw) && linked) {
+    const opts = optionList(linked);
+    const labels = raw
+      .map((v) => {
+        const c = choiceAnswerToComparableString(v);
+        const hit = opts.find((o) => o.value === c) || opts.find((o) => o.label === c);
+        return (hit?.label || hit?.value || c || '').trim();
+      })
+      .filter(Boolean);
+    if (labels.length > 0) return labels[0];
+  }
+
+  return comparable;
+}
+
 /**
- * Relative path written into CSV / SHP attribute cells, e.g.
- * `photos/resp_abc123_tree_photo.jpg`
+ * Infer the "survey type" / branch folder for a photo from the questionnaire
+ * structure (generic — works for any parent choice + show-when logic):
+ *
+ * 1. Photo question's own display logic → parent choice's selected option label
+ * 2. Else Auto Serial / responseId prefix parent for this questionnaire
+ * 3. Else most-referenced choice parent among all questions' display logic
+ * 4. Else empty (photos land directly under `photos/`)
  */
-export const buildPhotoExportRelativePath = (
-  responseId: string,
-  questionIdOrKey: string,
-  value: unknown
-): string | null => {
-  const extracted = extractPhotoBytes(value);
+export function resolvePhotoTypeFolder(
+  photoQuestion: Question | undefined,
+  answers: Record<string, unknown>,
+  allQuestions: Question[]
+): string {
+  const toFolder = (label: string | null | undefined): string => {
+    if (!label) return '';
+    const shortened = shortenOptionLabelForPrefix(label);
+    return sanitizeResponseIdPrefix(shortened) || safePhotoPathToken(shortened);
+  };
+
+  // 1. This photo's display-logic parent
+  if (photoQuestion?.logic?.enabled && photoQuestion.logic.conditions?.length) {
+    for (const c of photoQuestion.logic.conditions) {
+      const parentId = c.questionId?.trim();
+      if (!parentId) continue;
+      const parent = allQuestions.find((q) => q.id === parentId);
+      const label = resolveChoiceAnswerLabel(parent, answers[parentId]);
+      const folder = toFolder(label);
+      if (folder) return folder;
+    }
+  }
+
+  // 2. Auto Serial prefix parent (same pattern as একক / বৃক্ষগুচ্ছ serials)
+  for (const q of allQuestions) {
+    if (q.type !== 'responseId') continue;
+    const prefix = resolveResponseIdPrefix(q, answers, allQuestions);
+    if (prefix) return prefix;
+  }
+
+  // 3. Choice question most often referenced as a logic parent (branch root)
+  const refCounts = new Map<string, number>();
+  for (const q of allQuestions) {
+    if (!q.logic?.enabled || !q.logic.conditions?.length) continue;
+    for (const c of q.logic.conditions) {
+      const id = c.questionId?.trim();
+      if (!id) continue;
+      refCounts.set(id, (refCounts.get(id) || 0) + 1);
+    }
+  }
+  const ranked = [...refCounts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [parentId] of ranked) {
+    const parent = allQuestions.find((q) => q.id === parentId);
+    if (
+      !parent ||
+      (parent.type !== 'select' &&
+        parent.type !== 'radio' &&
+        parent.type !== 'checkbox' &&
+        parent.type !== 'multiselect')
+    ) {
+      continue;
+    }
+    const label = resolveChoiceAnswerLabel(parent, answers[parentId]);
+    const folder = toFolder(label);
+    if (folder) return folder;
+  }
+
+  return '';
+}
+
+/** Prefer Auto Serial value; fall back to submission document id. */
+export function resolvePhotoResponseIdToken(
+  response: Pick<QuestionnaireResponse, 'id' | 'responses'>,
+  questions: Question[]
+): string {
+  const auto = readResponseIdSerial(response, questions);
+  if (auto) return safePhotoPathToken(auto, 72);
+  return safePhotoPathToken(response.id || 'response', 48);
+}
+
+export type PhotoExportNamingContext = {
+  response: Pick<
+    QuestionnaireResponse,
+    'id' | 'respondentId' | 'respondentName' | 'responses' | 'enumeratorInfo'
+  >;
+  /** Photo question (or enumerator-info photo field). */
+  photoQuestion?: Question;
+  allQuestions: Question[];
+  /** 1-based photo index within this response for uniqueness. */
+  photoSerial: number;
+  value: unknown;
+  /** Optional disambiguator if two photos collide on the same path. */
+  questionKey?: string;
+};
+
+/**
+ * Build relative ZIP path, e.g.
+ * `photos/একক/uid_Rahim_একক_১_1.jpg`
+ * or without branch: `photos/uid_Rahim_resp123_1.jpg`
+ */
+export function buildPhotoExportRelativePath(
+  ctx: PhotoExportNamingContext
+): string | null {
+  const extracted = extractPhotoBytes(ctx.value);
   if (!extracted) {
-    const label = formatPhotoAnswerLabel(value);
+    const label = formatPhotoAnswerLabel(ctx.value);
     return label || null;
   }
-  const base = `${safePathToken(responseId, 48)}_${safePathToken(questionIdOrKey, 32)}`;
-  return `photos/${base}.${extracted.ext}`;
-};
+
+  const typeFolder = resolvePhotoTypeFolder(
+    ctx.photoQuestion,
+    ctx.response.responses || {},
+    ctx.allQuestions
+  );
+
+  const enumeratorId = safePhotoPathToken(
+    ctx.response.respondentId || 'enumerator',
+    48
+  );
+  const enumeratorName = safePhotoPathToken(
+    ctx.response.respondentName || 'unknown',
+    48
+  );
+  const responseId = resolvePhotoResponseIdToken(ctx.response, ctx.allQuestions);
+  const serial = String(Math.max(1, Math.floor(ctx.photoSerial) || 1));
+
+  let base = `${enumeratorId}_${enumeratorName}_${responseId}_${serial}`;
+  if (ctx.questionKey) {
+    // Only append key on demand (collision handling)
+  }
+  base = safePhotoPathToken(base, 180);
+
+  const fileName = `${base}.${extracted.ext}`;
+  if (typeFolder) {
+    return `photos/${typeFolder}/${fileName}`;
+  }
+  return `photos/${fileName}`;
+}
 
 export type ExportPhotoAttachment = {
   relativePath: string;
@@ -132,16 +326,24 @@ export type ExportPhotoAttachment = {
 
 /** Register an embeddable photo and return the path for the table cell. */
 export const collectResponsePhotoAttachment = (
-  responseId: string,
-  questionIdOrKey: string,
-  value: unknown,
+  ctx: PhotoExportNamingContext,
   into: Map<string, ExportPhotoAttachment>
 ): string => {
-  const path = buildPhotoExportRelativePath(responseId, questionIdOrKey, value);
+  let path = buildPhotoExportRelativePath(ctx);
   if (!path) return '';
   if (!path.startsWith('photos/')) return path;
+
+  if (into.has(path) && ctx.questionKey) {
+    // Collision: append question key before extension
+    const extracted = extractPhotoBytes(ctx.value);
+    if (extracted) {
+      const withoutExt = path.replace(/\.[^.]+$/, '');
+      path = `${withoutExt}_${safePhotoPathToken(ctx.questionKey, 24)}.${extracted.ext}`;
+    }
+  }
+
   if (!into.has(path)) {
-    const extracted = extractPhotoBytes(value);
+    const extracted = extractPhotoBytes(ctx.value);
     if (extracted) {
       into.set(path, {
         relativePath: path,

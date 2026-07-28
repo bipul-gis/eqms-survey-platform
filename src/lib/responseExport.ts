@@ -422,14 +422,21 @@ export const buildResponsesTable = (
   ];
 
   const rows: string[][] = responses.map((r) => {
+    let photoSerial = 0;
     const enumValues = enumFields.map((f) => {
       const raw = r.enumeratorInfo?.[f.id];
       let photoPath: string | null = null;
       if (attachPhotos && f.type === 'photo') {
+        photoSerial += 1;
         photoPath = collectResponsePhotoAttachment(
-          r.id,
-          `info_${f.key || f.id}`,
-          raw,
+          {
+            response: r,
+            photoQuestion: f,
+            allQuestions: questions,
+            photoSerial,
+            value: raw,
+            questionKey: `info_${f.key || f.id}`
+          },
           photoMap
         );
       }
@@ -439,10 +446,16 @@ export const buildResponsesTable = (
       const raw = r.responses?.[col.question.id];
       let photoPath: string | null = null;
       if (attachPhotos && col.kind === 'question' && col.question.type === 'photo') {
+        photoSerial += 1;
         photoPath = collectResponsePhotoAttachment(
-          r.id,
-          col.question.key || col.question.id,
-          raw,
+          {
+            response: r,
+            photoQuestion: col.question,
+            allQuestions: questions,
+            photoSerial,
+            value: raw,
+            questionKey: col.question.key || col.question.id
+          },
           photoMap
         );
       }

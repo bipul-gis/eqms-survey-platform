@@ -497,7 +497,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       const { photoCount } = await downloadResponsesCsv(questionnaire, filtered);
       alert(
         photoCount > 0
-          ? `CSV ZIP ready with ${photoCount} photo file(s) in the photos/ folder. Photo columns show relative paths.`
+          ? `CSV ZIP ready with ${photoCount} photo file(s) under photos/{survey-type}/. Names: enumeratorId_enumeratorName_responseId_serial.`
           : 'CSV ZIP ready (no photo answers in this export).'
       );
     } catch (error) {
