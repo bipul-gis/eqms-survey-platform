@@ -91,6 +91,7 @@ function isYesNoChoiceQuestion(q: Question | undefined): boolean {
 /**
  * Questionnaire-wide survey-type parent: the non-yes/no choice question most
  * often referenced by display logic (e.g. জরিপের ধরন → একক / বৃক্ষগুচ্ছ).
+ * Falls back to the first select/radio with 2–8 real options.
  */
 export function inferBranchingPrefixQuestionId(
   allQuestions: Question[]
@@ -119,39 +120,83 @@ export function inferBranchingPrefixQuestionId(
     if (isYesNoChoiceQuestion(parent)) continue;
     return id;
   }
+
+  // Fallback: first select/radio that looks like a survey-type discriminator
+  for (const q of allQuestions) {
+    if (q.type !== 'select' && q.type !== 'radio') continue;
+    if (isYesNoChoiceQuestion(q)) continue;
+    const n = optionList(q).length;
+    if (n < 2 || n > 8) continue;
+    return q.id;
+  }
   return undefined;
+}
+
+/** Collect candidate prefix-source choice questions (best first). */
+function collectPrefixCandidateIds(
+  question: Question,
+  allQuestions: Question[]
+): string[] {
+  const ids: string[] = [];
+  const push = (id: string | undefined) => {
+    const t = id?.trim();
+    if (!t || ids.includes(t)) return;
+    ids.push(t);
+  };
+
+  push(question.responseIdConfig?.prefixQuestionId);
+
+  const considerLogic = (logic: Question['logic'] | undefined) => {
+    if (!logic?.enabled || !logic.conditions?.length) return;
+    for (const c of logic.conditions) {
+      const id = c.questionId?.trim();
+      if (!id) continue;
+      const parent = allQuestions.find((q) => q.id === id);
+      if (isYesNoChoiceQuestion(parent)) continue;
+      push(id);
+    }
+  };
+
+  considerLogic(question.logic);
+
+  // Walk parentId chain — sub-questions often inherit branch from a parent.
+  let walk: Question | undefined = question;
+  const seen = new Set<string>();
+  while (walk?.parentId && !seen.has(walk.id)) {
+    seen.add(walk.id);
+    const parent = allQuestions.find((q) => q.id === walk!.parentId);
+    if (!parent) break;
+    considerLogic(parent.logic);
+    walk = parent;
+  }
+
+  push(inferBranchingPrefixQuestionId(allQuestions));
+  return ids;
 }
 
 /**
  * Prefix source question:
  * 1. Explicit `responseIdConfig.prefixQuestionId`
- * 2. Else first non-yes/no question referenced by this field's display logic
- * 3. Else questionnaire branching choice parent (most-referenced type question)
+ * 2. Else non-yes/no question from this field's (or parent’s) display logic
+ * 3. Else questionnaire branching / first survey-type choice question
  */
 export function inferResponseIdPrefixQuestionId(
   question: Question,
   allQuestions?: Question[]
 ): string | undefined {
-  const explicit = question.responseIdConfig?.prefixQuestionId?.trim();
-  if (explicit) return explicit;
-
-  const logic = question.logic;
-  if (logic?.enabled && logic.conditions?.length) {
-    for (const c of logic.conditions) {
-      const id = c.questionId?.trim();
-      if (!id) continue;
-      if (allQuestions?.length) {
-        const parent = allQuestions.find((q) => q.id === id);
-        if (isYesNoChoiceQuestion(parent)) continue;
+  if (!allQuestions?.length) {
+    const explicit = question.responseIdConfig?.prefixQuestionId?.trim();
+    if (explicit) return explicit;
+    const logic = question.logic;
+    if (logic?.enabled && logic.conditions?.length) {
+      for (const c of logic.conditions) {
+        const id = c.questionId?.trim();
+        if (id) return id;
       }
-      return id;
     }
+    return undefined;
   }
-
-  if (allQuestions?.length) {
-    return inferBranchingPrefixQuestionId(allQuestions);
-  }
-  return undefined;
+  return collectPrefixCandidateIds(question, allQuestions)[0];
 }
 
 /** Resolve human label for the current answer of a linked choice question. */
@@ -192,16 +237,38 @@ export function resolveResponseIdPrefix(
   answers: Record<string, unknown>,
   allQuestions: Question[]
 ): string | null {
-  const linkedId = inferResponseIdPrefixQuestionId(question, allQuestions);
-  if (!linkedId) return '';
+  const candidates = collectPrefixCandidateIds(question, allQuestions);
+  if (candidates.length === 0) return '';
 
-  const linked = allQuestions.find((q) => q.id === linkedId);
-  const label = resolveLinkedAnswerLabel(linked, answers[linkedId]);
-  if (!label) return null;
+  let sawLinkedButEmpty = false;
+  for (const linkedId of candidates) {
+    const linked = allQuestions.find((q) => q.id === linkedId);
+    const label = resolveLinkedAnswerLabel(linked, answers[linkedId]);
+    if (!label) {
+      // Candidate exists but unanswered — keep looking; if none answered, wait.
+      if (answers[linkedId] === undefined || answers[linkedId] === null || answers[linkedId] === '') {
+        sawLinkedButEmpty = true;
+      }
+      continue;
+    }
+    const shortened = shortenOptionLabelForPrefix(label);
+    const prefix = sanitizeResponseIdPrefix(shortened);
+    if (prefix) return prefix;
+  }
 
-  const shortened = shortenOptionLabelForPrefix(label);
-  const prefix = sanitizeResponseIdPrefix(shortened);
-  return prefix || null;
+  // Have at least one linked type question, but none answered yet.
+  if (sawLinkedButEmpty || candidates.length > 0) {
+    // If every candidate is unanswered, wait (null). If candidates exist but
+    // labels couldn't be resolved, fall through to plain only when none are
+    // choice questions with empty answers.
+    const anyAnswered = candidates.some((id) => {
+      const v = answers[id];
+      return v !== undefined && v !== null && v !== '';
+    });
+    if (!anyAnswered) return null;
+  }
+
+  return '';
 }
 
 /** True when the string contains Bengali script letters (not only digits). */

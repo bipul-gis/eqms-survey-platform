@@ -691,13 +691,17 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     return visibleRid || ridQuestions[0];
   }, [surveyQuestions, visibleQuestions]);
 
-  /** Changes when the linked prefix answer changes (or plain-serial mode). */
+  /** Changes when the resolved type-prefix changes (e.g. একক → বৃক্ষগুচ্ছ). */
   const responseIdPrefixKey = useMemo(() => {
     if (!primaryResponseIdQuestion) return '';
-    const linkedId =
-      inferResponseIdPrefixQuestionId(primaryResponseIdQuestion, surveyQuestions) || '';
-    if (!linkedId) return '__plain__';
-    return `${linkedId}:${JSON.stringify(responses[linkedId] ?? null)}`;
+    const prefix = resolveResponseIdPrefix(
+      primaryResponseIdQuestion,
+      responses,
+      surveyQuestions
+    );
+    if (prefix === null) return '__waiting__';
+    if (prefix === '') return '__plain__';
+    return prefix;
   }, [primaryResponseIdQuestion, responses, surveyQuestions]);
 
   // Allocate Response ID: plain serial, or `{prefix}-{serial}` when linked

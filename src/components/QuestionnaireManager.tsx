@@ -2437,15 +2437,16 @@ const ResponseIdQuestionEditor: React.FC<{
         Auto Serial ID
       </div>
       <p className="text-[11px] text-slate-600 leading-relaxed">
-        <span className="font-semibold">Universal rule:</span> if this field has display
-        logic (or an explicit prefix question below), the ID uses the selected option
-        label:{' '}
+        <span className="font-semibold">Universal rule:</span> ID uses the selected
+        survey-type option label as a prefix:{' '}
         <span className="font-mono font-semibold">একক_১</span>,{' '}
-        <span className="font-mono font-semibold">বৃক্ষগুচ্ছ_২</span>. First word of the
-        label is the prefix; Bangla digits for Bangla labels. Without logic/prefix → plain{' '}
+        <span className="font-mono font-semibold">বৃক্ষগুচ্ছ_২</span>. Detected from
+        (1) the override below, (2) this field&apos;s display logic, (3) parent question
+        logic, or (4) the questionnaire&apos;s branching choice (e.g. জরিপের ধরন).
+        Bangla digits for Bangla labels. Only if no type question exists → plain{' '}
         <span className="font-mono font-semibold">1</span>,{' '}
         <span className="font-mono font-semibold">2</span>…. Locked for enumerators.
-        Separate from system <span className="font-semibold">Submission ID</span>.
+        Field type must be <span className="font-semibold">Auto Serial</span>.
       </p>
       <Field
         label="Prefix from question (optional override)"
