@@ -39,7 +39,12 @@ export function shortenOptionLabelForPrefix(label: string): string {
   return parts[0];
 }
 
-/** Sanitize a prefix token — keep letters from any script, digits, underscore. */
+/**
+ * Sanitize a prefix token for Auto Serial IDs.
+ * Must keep Unicode marks (`\p{M}`) — Bangla vowel signs (ৃ, ু, …) and
+ * virama (্) are marks, not letters. Stripping them turns বৃক্ষগুচ্ছ into
+ * বকষগচছ. Also keep ZWJ/ZWNJ used in some conjuncts.
+ */
 export function sanitizeResponseIdPrefix(raw: unknown): string {
   if (raw == null) return '';
   let text = '';
@@ -53,7 +58,8 @@ export function sanitizeResponseIdPrefix(raw: unknown): string {
   const cleaned = text
     .trim()
     .replace(/\s+/g, '_')
-    .replace(/[^\p{L}\p{N}_-]/gu, '')
+    // Letters + Marks (vowel signs / virama) + Numbers + underscore/hyphen + ZWJ/ZWNJ
+    .replace(/[^\p{L}\p{M}\p{N}_\-\u200C\u200D]/gu, '')
     .replace(/_+/g, '_')
     .replace(/^[-_]+|[-_]+$/g, '')
     .slice(0, 48);

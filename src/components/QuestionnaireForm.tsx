@@ -83,7 +83,7 @@ import {
   computeAppliedDefaultRules,
   ensureOptionShape,
   evaluateLogic,
-  isChoiceOptionDisabled,
+  isChoiceOptionUnavailable,
   isPhotoAnswerFilled,
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
@@ -197,7 +197,7 @@ const validateQuestion = (
     if (typeof value === 'string' && value) {
       const opts = ensureOptionShape(q.options);
       const opt = opts.find((o) => o.value === value);
-      if (opt && isChoiceOptionDisabled(opt, answers)) {
+      if (opt && isChoiceOptionUnavailable(opt, answers)) {
         return 'This option is not available given your other answers. Please choose again.';
       }
     }
@@ -207,7 +207,7 @@ const validateQuestion = (
     const opts = ensureOptionShape(q.options);
     for (const s of arr) {
       const opt = opts.find((o) => o.value === s);
-      if (opt && isChoiceOptionDisabled(opt, answers)) {
+      if (opt && isChoiceOptionUnavailable(opt, answers)) {
         return 'One or more selected options are not available given your other answers.';
       }
     }

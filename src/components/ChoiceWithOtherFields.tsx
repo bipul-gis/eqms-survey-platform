@@ -19,6 +19,11 @@ export interface ChoiceWithOtherFieldsProps {
    * and cannot be selected.
    */
   getOptionDisabled?: (optionValue: string) => boolean;
+  /**
+   * When it returns true for an option `value`, that choice is omitted from
+   * the list (and any current selection of it is cleared).
+   */
+  getOptionHidden?: (optionValue: string) => boolean;
 }
 
 /**
@@ -34,28 +39,40 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
   value,
   onChange,
   className,
-  getOptionDisabled
+  getOptionDisabled,
+  getOptionHidden
 }) => {
   const isOther = isOtherSpecifyAnswer(value);
   const selectedValue = isOther ? OTHER_OPTION_VALUE : ((value as string) || '');
   const otherText = isOther ? value.text : '';
+  const visibleOptions = options.filter((o) => !getOptionHidden?.(o.value));
 
   React.useEffect(() => {
-    if (!getOptionDisabled) return;
+    const unavailable = (optValue: string) =>
+      !!getOptionHidden?.(optValue) || !!getOptionDisabled?.(optValue);
+
     if (mode === 'select') {
       if (
         selectedValue &&
         selectedValue !== OTHER_OPTION_VALUE &&
-        getOptionDisabled(selectedValue)
+        unavailable(selectedValue)
       ) {
         onChange('');
       }
       return;
     }
-    if (!isOther && typeof value === 'string' && value && getOptionDisabled(value)) {
+    if (!isOther && typeof value === 'string' && value && unavailable(value)) {
       onChange('');
     }
-  }, [mode, selectedValue, value, isOther, getOptionDisabled, onChange]);
+  }, [
+    mode,
+    selectedValue,
+    value,
+    isOther,
+    getOptionDisabled,
+    getOptionHidden,
+    onChange
+  ]);
 
   if (mode === 'select') {
     return (
@@ -73,12 +90,16 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
           className={className}
         >
           <option value="">— select —</option>
-          {options.map((o) => (
+          {visibleOptions.map((o) => (
             <option
               key={o.id}
               value={o.value}
               disabled={getOptionDisabled?.(o.value)}
-              title={getOptionDisabled?.(o.value) ? 'Not available based on your previous answers' : undefined}
+              title={
+                getOptionDisabled?.(o.value)
+                  ? 'Not available based on your previous answers'
+                  : undefined
+              }
             >
               {o.label}
             </option>
@@ -103,7 +124,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
   return (
     <div className="space-y-2">
       <div className="space-y-1.5">
-        {options.map((o) => {
+        {visibleOptions.map((o) => {
           const dis = getOptionDisabled?.(o.value);
           return (
             <label

@@ -232,6 +232,11 @@ export interface QuestionOption {
    * not zero — one condition: ref 8a, operator `notEquals`, value `0`.
    */
   disabledWhen?: LogicRule;
+  /**
+   * Same evaluation as `disabledWhen`, but the option is fully hidden from
+   * the enumerator (not merely greyed out) while the rule matches.
+   */
+  hiddenWhen?: LogicRule;
 }
 
 export interface QuestionValidation {

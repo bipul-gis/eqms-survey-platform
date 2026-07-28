@@ -168,6 +168,23 @@ export const isChoiceOptionDisabled = (
   return evaluateLogic(w, answers);
 };
 
+/** True when this choice option should be omitted from the choice list entirely. */
+export const isChoiceOptionHidden = (
+  option: QuestionOption,
+  answers: Record<string, unknown>
+): boolean => {
+  const w = option.hiddenWhen;
+  if (!w?.enabled || !w.conditions?.length) return false;
+  return evaluateLogic(w, answers);
+};
+
+/** True when an option must not remain selected (disabled or hidden by rules). */
+export const isChoiceOptionUnavailable = (
+  option: QuestionOption,
+  answers: Record<string, unknown>
+): boolean =>
+  isChoiceOptionHidden(option, answers) || isChoiceOptionDisabled(option, answers);
+
 // ---------------------------------------------------------------------------
 // Default-value rules — auto-fill or lock answers based on other answers.
 // Pure helpers, used by both the admin preview and the live form.
@@ -372,6 +389,10 @@ export const EnumeratorInfoTable: React.FC<{
       const o = opts.find((x) => x.value === optValue);
       return o ? isChoiceOptionDisabled(o, logicCtx) : false;
     };
+    const getOptionHidden = (optValue: string) => {
+      const o = opts.find((x) => x.value === optValue);
+      return o ? isChoiceOptionHidden(o, logicCtx) : false;
+    };
     switch (f.type) {
       case 'text':
       case 'email':
@@ -513,6 +534,7 @@ export const EnumeratorInfoTable: React.FC<{
             onChange={(next) => onChange(f.id, next)}
             className={cls}
             getOptionDisabled={getOptionDisabled}
+            getOptionHidden={getOptionHidden}
           />
         );
       case 'radio':
@@ -526,33 +548,36 @@ export const EnumeratorInfoTable: React.FC<{
             onChange={(next) => onChange(f.id, next)}
             className={cls}
             getOptionDisabled={getOptionDisabled}
+            getOptionHidden={getOptionHidden}
           />
         );
       case 'checkbox': {
         const arr = Array.isArray(v) ? (v as string[]) : [];
         return (
           <div className="flex flex-wrap gap-3">
-            {opts.map((o) => (
-              <label
-                key={o.id}
-                className={`flex items-center gap-1.5 text-xs ${
-                  isChoiceOptionDisabled(o, logicCtx) ? 'text-slate-400' : 'text-slate-700'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  disabled={isChoiceOptionDisabled(o, logicCtx)}
-                  checked={arr.includes(o.value)}
-                  onChange={(e) =>
-                    onChange(
-                      f.id,
-                      e.target.checked ? [...arr, o.value] : arr.filter((x) => x !== o.value)
-                    )
-                  }
-                />
-                {o.label}
-              </label>
-            ))}
+            {opts
+              .filter((o) => !isChoiceOptionHidden(o, logicCtx))
+              .map((o) => (
+                <label
+                  key={o.id}
+                  className={`flex items-center gap-1.5 text-xs ${
+                    isChoiceOptionDisabled(o, logicCtx) ? 'text-slate-400' : 'text-slate-700'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={isChoiceOptionDisabled(o, logicCtx)}
+                    checked={arr.includes(o.value)}
+                    onChange={(e) =>
+                      onChange(
+                        f.id,
+                        e.target.checked ? [...arr, o.value] : arr.filter((x) => x !== o.value)
+                      )
+                    }
+                  />
+                  {o.label}
+                </label>
+              ))}
           </div>
         );
       }
@@ -570,17 +595,23 @@ export const EnumeratorInfoTable: React.FC<{
                   .map((o) => o.value)
                   .filter((pv) => {
                     const o = opts.find((x) => x.value === pv);
-                    return !o || !isChoiceOptionDisabled(o, logicCtx);
+                    return !o || !isChoiceOptionUnavailable(o, logicCtx);
                   })
               )
             }
             className={`${cls} h-24`}
           >
-            {opts.map((o) => (
-              <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, logicCtx)}>
-                {o.label}
-              </option>
-            ))}
+            {opts
+              .filter((o) => !isChoiceOptionHidden(o, logicCtx))
+              .map((o) => (
+                <option
+                  key={o.id}
+                  value={o.value}
+                  disabled={isChoiceOptionDisabled(o, logicCtx)}
+                >
+                  {o.label}
+                </option>
+              ))}
           </select>
         );
       default:
@@ -1438,13 +1469,21 @@ export const RuntimeQuestion: React.FC<{
     [opts, answersMap]
   );
 
+  const getOptionHidden = useCallback(
+    (optValue: string) => {
+      const o = opts.find((x) => x.value === optValue);
+      return o ? isChoiceOptionHidden(o, answersMap) : false;
+    },
+    [opts, answersMap]
+  );
+
   useEffect(() => {
     if (question.type !== 'multiselect' && question.type !== 'checkbox') return;
     const optionList = ensureOptionShape(question.options);
     const arr = Array.isArray(value) ? (value as string[]) : [];
     const filtered = arr.filter((pv) => {
       const o = optionList.find((x) => x.value === pv);
-      return !o || !isChoiceOptionDisabled(o, answersMap);
+      return !o || !isChoiceOptionUnavailable(o, answersMap);
     });
     if (filtered.length !== arr.length) onChange(filtered);
   }, [question.type, question.id, question.options, value, answersMap, onChange]);
@@ -1633,6 +1672,7 @@ export const RuntimeQuestion: React.FC<{
           onChange={onChange}
           className={cls}
           getOptionDisabled={getOptionDisabled}
+          getOptionHidden={getOptionHidden}
         />
       );
       break;
@@ -1647,17 +1687,23 @@ export const RuntimeQuestion: React.FC<{
             ).map((o) => o.value);
             const filtered = picked.filter((pv) => {
               const o = opts.find((x) => x.value === pv);
-              return !o || !isChoiceOptionDisabled(o, answersMap);
+              return !o || !isChoiceOptionUnavailable(o, answersMap);
             });
             onChange(filtered);
           }}
           className={`${cls} h-32`}
         >
-          {opts.map((o) => (
-            <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, answersMap)}>
-              {o.label}
-            </option>
-          ))}
+          {opts
+            .filter((o) => !isChoiceOptionHidden(o, answersMap))
+            .map((o) => (
+              <option
+                key={o.id}
+                value={o.value}
+                disabled={isChoiceOptionDisabled(o, answersMap)}
+              >
+                {o.label}
+              </option>
+            ))}
         </select>
       );
       break;
@@ -1672,33 +1718,40 @@ export const RuntimeQuestion: React.FC<{
           onChange={onChange}
           className={cls}
           getOptionDisabled={getOptionDisabled}
+          getOptionHidden={getOptionHidden}
         />
       );
       break;
     case 'checkbox':
       body = (
         <div className="space-y-1.5">
-          {opts.map((o) => {
-            const arr = Array.isArray(value) ? (value as string[]) : [];
-            return (
-              <label
-                key={o.id}
-                className={`flex items-center gap-2 text-sm ${
-                  isChoiceOptionDisabled(o, answersMap) ? 'text-slate-400' : 'text-slate-700'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  disabled={isChoiceOptionDisabled(o, answersMap)}
-                  checked={arr.includes(o.value)}
-                  onChange={(e) =>
-                    onChange(e.target.checked ? [...arr, o.value] : arr.filter((x) => x !== o.value))
-                  }
-                />
-                {o.label}
-              </label>
-            );
-          })}
+          {opts
+            .filter((o) => !isChoiceOptionHidden(o, answersMap))
+            .map((o) => {
+              const arr = Array.isArray(value) ? (value as string[]) : [];
+              return (
+                <label
+                  key={o.id}
+                  className={`flex items-center gap-2 text-sm ${
+                    isChoiceOptionDisabled(o, answersMap) ? 'text-slate-400' : 'text-slate-700'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={isChoiceOptionDisabled(o, answersMap)}
+                    checked={arr.includes(o.value)}
+                    onChange={(e) =>
+                      onChange(
+                        e.target.checked
+                          ? [...arr, o.value]
+                          : arr.filter((x) => x !== o.value)
+                      )
+                    }
+                  />
+                  {o.label}
+                </label>
+              );
+            })}
         </div>
       );
       break;
