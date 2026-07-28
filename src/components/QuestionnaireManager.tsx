@@ -26,7 +26,13 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
-import { collapseAccidentalResponseIdQuestions } from '../lib/responseIdSequence';
+import {
+  collapseAccidentalResponseIdQuestions,
+  formatResponseId,
+  mergeResponseIdIntoAnswers,
+  resolveResponseIdPrefix,
+  responseIdMatchesPrefix
+} from '../lib/responseIdSequence';
 import { gpsAccuracyGateEnabled, gpsCaptureSummary, gpsMeetsAccuracy } from '../lib/gpsCapture';
 import {
   isChoiceOptionDisabled,
@@ -4525,13 +4531,83 @@ const PreviewDialog: React.FC<{
     () => computeAppliedDefaultRules(visibleQuestions, answers),
     [visibleQuestions, answers]
   );
+  const responseIdFieldIds = useMemo(
+    () => questions.filter((q) => q.type === 'responseId').map((q) => q.id),
+    [questions]
+  );
+  const primaryResponseIdQuestion = useMemo(() => {
+    if (responseIdFieldIds.length === 0) return null;
+    const visibleRid = visibleQuestions.find((q) => q.type === 'responseId');
+    return (
+      visibleRid ||
+      questions.find((q) => q.type === 'responseId') ||
+      null
+    );
+  }, [questions, visibleQuestions, responseIdFieldIds]);
+
+  const responseIdPrefixKey = useMemo(() => {
+    if (!primaryResponseIdQuestion) return '';
+    const prefix = resolveResponseIdPrefix(
+      primaryResponseIdQuestion,
+      answers,
+      questions
+    );
+    if (prefix === null) return '__waiting__';
+    if (prefix === '') return '__plain__';
+    return prefix;
+  }, [primaryResponseIdQuestion, answers, questions]);
+
+  // Preview Auto Serial: same prefix rules as the live form (একক_১ / বৃক্ষগুচ্ছ_১).
+  // Uses sample serial 1 — no server allocate in preview.
+  const answersRef = useRef(answers);
+  answersRef.current = answers;
+  useEffect(() => {
+    if (!primaryResponseIdQuestion || responseIdFieldIds.length === 0) return;
+    const liveAnswers = answersRef.current;
+    const prefix = resolveResponseIdPrefix(
+      primaryResponseIdQuestion,
+      liveAnswers,
+      questions
+    );
+    if (prefix === null) {
+      setAnswers((prev) => {
+        let dirty = false;
+        const next = { ...prev };
+        for (const id of responseIdFieldIds) {
+          if (next[id] !== undefined && next[id] !== '') {
+            delete next[id];
+            dirty = true;
+          }
+        }
+        return dirty ? next : prev;
+      });
+      return;
+    }
+    const current = responseIdFieldIds
+      .map((id) => liveAnswers[id])
+      .find((v) => v != null && v !== '');
+    if (current && responseIdMatchesPrefix(current, prefix)) {
+      const shared = String(current).trim();
+      setAnswers((prev) => mergeResponseIdIntoAnswers(shared, responseIdFieldIds, prev));
+      return;
+    }
+    const previewId = formatResponseId(prefix, 1);
+    setAnswers((prev) => mergeResponseIdIntoAnswers(previewId, responseIdFieldIds, prev));
+  }, [
+    primaryResponseIdQuestion,
+    responseIdFieldIds,
+    responseIdPrefixKey,
+    questions
+  ]);
+
   const lockedQuestionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const r of appliedDefaultRules) {
       if (r.mode === 'lock') ids.add(r.questionId);
     }
+    for (const id of responseIdFieldIds) ids.add(id);
     return ids;
-  }, [appliedDefaultRules]);
+  }, [appliedDefaultRules, responseIdFieldIds]);
 
   const previewLogicAnswers = useMemo(
     () => ({ ...enumeratorAnswers, ...answers }),
@@ -4673,7 +4749,7 @@ const PreviewDialog: React.FC<{
                           value={answers[q.id]}
                           onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
                           allAnswers={previewLogicAnswers}
-                          allQuestions={visibleQuestions}
+                          allQuestions={questions}
                         />
                         {locked && (
                           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
@@ -4964,7 +5040,7 @@ const PreviewQuestion: React.FC<{
       body = (
         <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
           <span className="font-mono text-base font-bold tabular-nums text-slate-900">
-            {(value as string) || '1'}
+            {(value as string) || '…'}
           </span>
         </div>
       );
