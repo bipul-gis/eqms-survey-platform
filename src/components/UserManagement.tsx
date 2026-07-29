@@ -172,12 +172,13 @@ const EnumeratorProjectTaskRow: React.FC<{
 
   const toggleZone = (v: string) => {
     const key = normalizeWardKey(v);
-    const held = zoneHeldByOther.get(key);
-    // Cannot claim a zone already assigned to someone else.
-    if (held) return;
     setZoneValues((prev) => {
       const has = prev.some((x) => normalizeWardKey(x) === key);
+      // Removing is always allowed — including legacy duplicates that another
+      // enumerator also holds, otherwise the overlap could never be cleared.
       if (has) return prev.filter((x) => normalizeWardKey(x) !== key);
+      // Claiming is blocked only when someone else already owns the zone.
+      if (zoneHeldByOther.has(key)) return prev;
       return [...prev, v].sort((a, b) => a.localeCompare(b));
     });
   };
@@ -309,6 +310,11 @@ const EnumeratorProjectTaskRow: React.FC<{
                     {locked && (
                       <span className="block text-[9px] text-rose-600 mt-0.5 truncate">
                         Taken by {held!.displayName}
+                      </span>
+                    )}
+                    {held && mine && (
+                      <span className="block text-[9px] text-amber-600 mt-0.5 truncate">
+                        Also held by {held.displayName} — untick here or there
                       </span>
                     )}
                   </span>
