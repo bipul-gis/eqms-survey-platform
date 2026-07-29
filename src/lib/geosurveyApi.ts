@@ -148,6 +148,18 @@ export const geosurveyApi = {
       method: 'POST',
     }),
 
+  updateGeosurveyProjectSegments: (
+    projectId: string,
+    segments: { geospatial?: boolean; questionnaire?: boolean }
+  ) =>
+    apiFetch<{ item: import('../types').Project }>(
+      `/api/geosurvey-projects/${projectId}/segments`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(segments),
+      }
+    ),
+
   listUsers: () =>
     apiFetch<{ items: import('../types').UserProfile[] }>('/api/users'),
 

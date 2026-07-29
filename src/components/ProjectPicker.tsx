@@ -28,7 +28,8 @@ import {
   countAllQuestionnairesByProject,
   deactivateProjectForGeosurvey,
   listProjects,
-  searchMisProjects
+  searchMisProjects,
+  updateProjectSegments
 } from '../lib/projects';
 
 interface ProjectPickerProps {
@@ -282,7 +283,22 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
                 key={p.id}
                 project={p}
                 questionnaireCount={counts[p.id] ?? 0}
+                busy={activatingId === p.id}
                 onOpen={() => onOpen(p)}
+                onSegmentsChange={async (segments) => {
+                  try {
+                    setActivatingId(p.id);
+                    setError(null);
+                    const saved = await updateProjectSegments(p.id, segments);
+                    setProjects((prev) =>
+                      prev.map((item) => (item.id === saved.id ? saved : item))
+                    );
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  } finally {
+                    setActivatingId(null);
+                  }
+                }}
               />
             ))}
           </div>
@@ -301,10 +317,15 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
 const ProjectCard: React.FC<{
   project: Project;
   questionnaireCount: number;
+  busy?: boolean;
   onOpen: () => void;
-}> = ({ project, questionnaireCount, onOpen }) => {
+  onSegmentsChange: (segments: {
+    geospatial?: boolean;
+    questionnaire?: boolean;
+  }) => void | Promise<void>;
+}> = ({ project, questionnaireCount, busy, onOpen, onSegmentsChange }) => {
   const isArchived = project.isActive === false;
-  const segGeo = project.segments?.geospatial !== false;
+  const segGeo = project.segments?.geospatial === true;
   const segQ = project.segments?.questionnaire !== false;
 
   return (
@@ -334,23 +355,51 @@ const ProjectCard: React.FC<{
         )}
       </div>
 
-      <div className="px-4 py-3 flex items-center gap-2 text-xs text-slate-600 flex-wrap">
-        {segGeo && (
-          <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-md px-1.5 py-0.5">
-            <MapPin size={11} /> Geospatial
+      <div className="px-4 py-3 space-y-2 text-xs text-slate-600">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+          Survey segments
+        </p>
+        <label className="flex items-center justify-between gap-2 cursor-pointer select-none">
+          <span className="inline-flex items-center gap-1.5">
+            <MapPin size={12} className={segGeo ? 'text-blue-600' : 'text-slate-400'} />
+            <span className={segGeo ? 'text-blue-800 font-semibold' : 'text-slate-500'}>
+              Geospatial
+            </span>
           </span>
-        )}
-        {segQ && (
-          <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-1.5 py-0.5">
-            <ClipboardList size={11} /> Questionnaire · {questionnaireCount}
+          <input
+            type="checkbox"
+            checked={segGeo}
+            disabled={busy || isArchived}
+            onChange={(e) => void onSegmentsChange({ geospatial: e.target.checked })}
+            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+          />
+        </label>
+        <label className="flex items-center justify-between gap-2 cursor-pointer select-none">
+          <span className="inline-flex items-center gap-1.5">
+            <ClipboardList size={12} className={segQ ? 'text-emerald-600' : 'text-slate-400'} />
+            <span className={segQ ? 'text-emerald-800 font-semibold' : 'text-slate-500'}>
+              Questionnaire{segQ ? ` · ${questionnaireCount}` : ''}
+            </span>
           </span>
+          <input
+            type="checkbox"
+            checked={segQ}
+            disabled={busy || isArchived}
+            onChange={(e) => void onSegmentsChange({ questionnaire: e.target.checked })}
+            className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+          />
+        </label>
+        {!segGeo && (
+          <p className="text-[10px] text-slate-400 leading-relaxed">
+            Turn on Geospatial to import zone SHP files and assign map areas.
+          </p>
         )}
       </div>
 
       <div className="mt-auto px-4 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-2">
         <button
           onClick={onOpen}
-          disabled={isArchived}
+          disabled={isArchived || (!segGeo && !segQ)}
           className="text-xs font-bold text-blue-700 hover:text-blue-900 inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Open <ChevronRight size={14} />

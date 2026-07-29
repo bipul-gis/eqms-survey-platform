@@ -478,7 +478,7 @@ export const UserManagement: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [pendingUsers, setPendingUsers] = useState<UserProfile[]>([]);
   const [activeTab, setActiveTab] = useState<'create' | 'pending' | 'tasks'>('pending');
-  const segmentGeo = project ? project.segments?.geospatial !== false : true;
+  const segmentGeo = project ? project.segments?.geospatial === true : false;
   const segmentQ = project ? project.segments?.questionnaire !== false : true;
 
   // Project's questionnaires — drives questionnaire assignment on the Tasks tab.

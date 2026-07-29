@@ -471,7 +471,7 @@ const AppContent: React.FC = () => {
 
   const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isApprovedEnumerator = userProfile?.role === 'enumerator' && userProfile?.status === 'approved';
-  const currentProjectHasGeo = currentProject?.segments?.geospatial !== false;
+  const currentProjectHasGeo = currentProject?.segments?.geospatial === true;
   const currentProjectHasQuestionnaire = currentProject?.segments?.questionnaire !== false;
 
   // Never allow admin-only overlays to persist across role changes or logout/login.

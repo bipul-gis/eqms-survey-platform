@@ -30,6 +30,7 @@ import {
   activateGeosurveyProject,
   deactivateGeosurveyProject,
   listActiveGeosurveyProjects,
+  updateGeosurveyProjectSegments,
 } from './geosurveyProjectsStore';
 import {
   countQuestionnairesByProject,
@@ -206,6 +207,32 @@ app.post('/api/geosurvey-projects/:id/deactivate', requireAdmin, async (req, res
   try {
     await deactivateGeosurveyProject(req.params.id);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.patch('/api/geosurvey-projects/:id/segments', requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const saved = await updateGeosurveyProjectSegments(req.params.id, {
+      geospatial: typeof body.geospatial === 'boolean' ? body.geospatial : undefined,
+      questionnaire: typeof body.questionnaire === 'boolean' ? body.questionnaire : undefined,
+    });
+    if (!saved) {
+      res.status(404).json({ error: 'Project not found or not active in GeoSurvey.' });
+      return;
+    }
+    res.json({
+      item: {
+        ...(saved.projectPayload || {}),
+        id: saved.projectId,
+        code: saved.projectCode,
+        name: saved.projectName,
+        description: saved.managerName ? `PM: ${saved.managerName}` : '',
+        activeForGeosurvey: saved.isActive,
+      },
+    });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

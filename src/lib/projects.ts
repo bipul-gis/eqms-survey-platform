@@ -28,6 +28,14 @@ export const deactivateProjectForGeosurvey = async (projectId: string): Promise<
   await geosurveyApi.deactivateGeosurveyProject(projectId);
 };
 
+export const updateProjectSegments = async (
+  projectId: string,
+  segments: { geospatial?: boolean; questionnaire?: boolean }
+): Promise<Project> => {
+  const { item } = await geosurveyApi.updateGeosurveyProjectSegments(projectId, segments);
+  return item;
+};
+
 export const countAllQuestionnairesByProject = async (): Promise<Record<string, number>> => {
   return geosurveyApi.questionnaireCounts();
 };
