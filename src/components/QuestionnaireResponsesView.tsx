@@ -1018,13 +1018,14 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
 };
 
 // ---------------------------------------------------------------------------
-// ResponsesMapPanel — OSM map of the project's imported boundary SHP (same
-// layer as Geospatial Assignment) plus captured GPS points. No CCC wards /
-// landmarks. Fits bounds to the boundaries and points together.
+// ResponsesMapPanel — satellite map of the project's imported boundary SHP
+// (same layer and imagery as Geospatial Assignment) plus captured GPS points.
+// No CCC wards / landmarks. Fits bounds to the boundaries and points together.
 // ---------------------------------------------------------------------------
 const MAP_VISIBLE_STORAGE_KEY = 'eqms_responses_map_visible_v1';
-const SURVEY_LOCATION_FILL = '#374151';
-const SURVEY_LOCATION_OUTLINE_BY_STATUS: Record<string, string> = {
+/** White ring keeps the pins readable against satellite imagery. */
+const SURVEY_LOCATION_RING = '#ffffff';
+const SURVEY_LOCATION_COLOR_BY_STATUS: Record<string, string> = {
   draft: '#9ca3af',
   submitted: '#111827',
   reviewed: '#16a34a'
@@ -1183,8 +1184,10 @@ const ResponsesMapPanel: React.FC<{
           scrollWheelZoom
         >
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution="Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics"
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            maxNativeZoom={19}
+            maxZoom={22}
           />
           <FitGpsBounds points={surveyLocations} zoneBoundaries={zoneBoundaries} />
           {/* Imported boundary SHP — drawn under the GPS pins. */}
@@ -1201,9 +1204,9 @@ const ResponsesMapPanel: React.FC<{
           ) : null}
           {surveyLocations.map((point) => {
             const status = point.status ?? 'submitted';
-            const outline =
-              SURVEY_LOCATION_OUTLINE_BY_STATUS[status] ||
-              SURVEY_LOCATION_OUTLINE_BY_STATUS.submitted;
+            const fill =
+              SURVEY_LOCATION_COLOR_BY_STATUS[status] ||
+              SURVEY_LOCATION_COLOR_BY_STATUS.submitted;
             const tsLabel = formatSurveyTimestamp(point.submittedAt || point.capturedAt);
             return (
               <CircleMarker
@@ -1211,9 +1214,9 @@ const ResponsesMapPanel: React.FC<{
                 center={[point.lat, point.lng]}
                 radius={7}
                 pathOptions={{
-                  color: outline,
-                  fillColor: SURVEY_LOCATION_FILL,
-                  fillOpacity: 0.85,
+                  color: SURVEY_LOCATION_RING,
+                  fillColor: fill,
+                  fillOpacity: 0.95,
                   weight: 2
                 }}
               >
