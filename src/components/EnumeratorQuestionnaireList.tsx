@@ -23,7 +23,8 @@ import {
   Eye,
   Edit3,
   Trash2,
-  Plus
+  Plus,
+  MapPinned
 } from 'lucide-react';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import { Project, Questionnaire, QuestionnaireResponse, UserProfile, ZonePolygon } from '../types';
@@ -34,6 +35,7 @@ import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { fmtDate, tsToDate } from '../lib/responseExport';
 import { ResponseIdCell } from './ResponseIdCell';
 import { readResponseIdSerial } from '../lib/responseIdSequence';
+import { EnumeratorAssignedZoneMap } from './EnumeratorAssignedZoneMap';
 
 interface EnumeratorQuestionnaireListProps {
   userProfile: UserProfile;
@@ -101,6 +103,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   const [responsesPanel, setResponsesPanel] = useState<Questionnaire | null>(null);
   /** Bumps to reload questionnaire docs + response stats (Refresh, form close/submit, draft delete). */
   const [refreshTick, setRefreshTick] = useState(0);
+  const [showAssignedZoneMap, setShowAssignedZoneMap] = useState(true);
 
   const assignedIds = useMemo(() => {
     const list = userProfile.assignedQuestionnaireIds || [];
@@ -376,6 +379,30 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       </header>
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-5 sm:py-7">
+        {strictGeofence &&
+          (showAssignedZoneMap ? (
+            <EnumeratorAssignedZoneMap
+              zones={geofenceZones || []}
+              onHide={() => setShowAssignedZoneMap(false)}
+            />
+          ) : (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-sky-200 bg-sky-50/80 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2 text-xs text-sky-900">
+                <MapPinned size={16} className="shrink-0" />
+                <span>
+                  Strict geofence is on. Surveys must be submitted inside your assigned zone.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAssignedZoneMap(true)}
+                className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-bold text-sky-700 shadow-sm ring-1 ring-sky-200 hover:bg-sky-100"
+              >
+                Show map
+              </button>
+            </div>
+          ))}
+
         <div className="flex items-center gap-3 flex-wrap mb-4">
           <div className="relative flex-1 min-w-[220px]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />

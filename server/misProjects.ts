@@ -34,6 +34,10 @@ const misPool = new pg.Pool({
   connectionTimeoutMillis: 10_000,
 });
 
+misPool.on('error', (err) => {
+  console.error('MIS pool error (idle client dropped):', err.message);
+});
+
 export async function fetchMisProjects(): Promise<MisProject[]> {
   const { rows } = await misPool.query(
     `SELECT value

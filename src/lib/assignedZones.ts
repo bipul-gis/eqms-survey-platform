@@ -30,18 +30,31 @@ export function filterZonesForEnumerator(
   });
 }
 
-export function zonesToGeoJson(polygons: ZonePolygon[]): GeoJSON.FeatureCollection {
+export function zonesToGeoJson(
+  polygons: ZonePolygon[],
+  opts?: { labelField?: string | null }
+): GeoJSON.FeatureCollection {
+  const labelField = opts?.labelField?.trim() || '';
   return {
     type: 'FeatureCollection',
-    features: polygons.map((p) => ({
-      type: 'Feature' as const,
-      id: p.id,
-      properties: {
-        ...p.properties,
-        __assignValue: p.assignValue,
-        __zoneId: p.id,
-      },
-      geometry: p.geometry as GeoJSON.Geometry,
-    })),
+    features: polygons.map((p) => {
+      const fromLabelField =
+        labelField && p.properties && p.properties[labelField] != null
+          ? String(p.properties[labelField]).trim()
+          : '';
+      const label = fromLabelField || (p.assignValue ? String(p.assignValue).trim() : '') || '';
+      return {
+        type: 'Feature' as const,
+        id: p.id,
+        properties: {
+          ...p.properties,
+          __assignValue: p.assignValue,
+          __label: label || null,
+          __labelField: labelField || null,
+          __zoneId: p.id,
+        },
+        geometry: p.geometry as GeoJSON.Geometry,
+      };
+    }),
   };
 }

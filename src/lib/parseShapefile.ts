@@ -91,6 +91,34 @@ export function suggestAssignmentField(fields: string[]): string | null {
   return fields[0];
 }
 
+/** Suggest a map label field: prefer human-readable name attributes. */
+export function suggestLabelField(fields: string[]): string | null {
+  if (fields.length === 0) return null;
+  const preferred = [
+    'NAME',
+    'Name',
+    'name',
+    'LABEL',
+    'Label',
+    'ZONE_NAME',
+    'Zone_Name',
+    'ZoneName',
+    'SUB_ZONE',
+    'Sub_Zone',
+    'Ward_Name',
+    'WARDNAME',
+    'WardName',
+    'WARD_NAME',
+    'TITLE',
+    'Title',
+  ];
+  for (const p of preferred) {
+    const hit = fields.find((f) => f === p || f.toLowerCase() === p.toLowerCase());
+    if (hit) return hit;
+  }
+  return suggestAssignmentField(fields);
+}
+
 export async function parseZoneShapefileZip(file: File | ArrayBuffer): Promise<{
   features: ParsedZoneFeature[];
   attributeFields: string[];

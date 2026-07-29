@@ -6,6 +6,7 @@ export interface ZoneLayerRecord {
   projectId: string;
   name: string;
   assignmentField: string | null;
+  labelField: string | null;
   attributeFields: string[];
   featureCount: number;
   strictGeofence: boolean;
@@ -34,6 +35,7 @@ function rowToLayer(row: Record<string, unknown>): ZoneLayerRecord {
     projectId: row.project_id as string,
     name: (row.name as string) || 'Zones',
     assignmentField: (row.assignment_field as string) || null,
+    labelField: (row.label_field as string) || null,
     attributeFields: asStringArray(row.attribute_fields),
     featureCount: Number(row.feature_count) || 0,
     strictGeofence: row.strict_geofence !== false,
@@ -113,6 +115,7 @@ export async function createOrReplaceZoneLayer(input: {
   projectId: string;
   name: string;
   assignmentField?: string | null;
+  labelField?: string | null;
   attributeFields: string[];
   strictGeofence?: boolean;
   polygons: Array<{
@@ -137,11 +140,12 @@ export async function createOrReplaceZoneLayer(input: {
 
     await client.query(
       `INSERT INTO zone_layers (
-         id, project_id, name, assignment_field, attribute_fields, feature_count, strict_geofence, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         id, project_id, name, assignment_field, label_field, attribute_fields, feature_count, strict_geofence, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          assignment_field = EXCLUDED.assignment_field,
+         label_field = EXCLUDED.label_field,
          attribute_fields = EXCLUDED.attribute_fields,
          feature_count = EXCLUDED.feature_count,
          strict_geofence = EXCLUDED.strict_geofence,
@@ -151,6 +155,7 @@ export async function createOrReplaceZoneLayer(input: {
         input.projectId,
         input.name || 'Zones',
         input.assignmentField ?? null,
+        input.labelField ?? null,
         JSON.stringify(input.attributeFields || []),
         input.polygons.length,
         input.strictGeofence !== false,
@@ -193,6 +198,7 @@ export async function updateZoneLayerMeta(
   patch: {
     name?: string;
     assignmentField?: string | null;
+    labelField?: string | null;
     strictGeofence?: boolean;
   }
 ): Promise<ZoneLayerRecord | null> {
@@ -201,6 +207,7 @@ export async function updateZoneLayerMeta(
   const name = patch.name !== undefined ? patch.name : existing.name;
   const assignmentField =
     patch.assignmentField !== undefined ? patch.assignmentField : existing.assignmentField;
+  const labelField = patch.labelField !== undefined ? patch.labelField : existing.labelField;
   const strictGeofence =
     patch.strictGeofence !== undefined ? patch.strictGeofence : existing.strictGeofence;
 
@@ -222,9 +229,9 @@ export async function updateZoneLayerMeta(
 
   const { rows } = await pool.query(
     `UPDATE zone_layers SET
-       name = $2, assignment_field = $3, strict_geofence = $4, updated_at = NOW()
+       name = $2, assignment_field = $3, label_field = $4, strict_geofence = $5, updated_at = NOW()
      WHERE id = $1 RETURNING *`,
-    [id, name, assignmentField, strictGeofence]
+    [id, name, assignmentField, labelField, strictGeofence]
   );
   return rows[0] ? rowToLayer(rows[0]) : null;
 }

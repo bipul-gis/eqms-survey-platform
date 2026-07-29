@@ -38,7 +38,7 @@ import {
   listQuestionnaires,
   upsertQuestionnaire,
 } from './questionnairesStore';
-import { deleteResponse, listResponses, upsertResponse } from './responsesStore';
+import { deleteResponse, getResponseById, listResponseLocations, listResponses, upsertResponse } from './responsesStore';
 import {
   blockDeletedUser,
   findUserById,
@@ -218,6 +218,13 @@ app.patch('/api/geosurvey-projects/:id/segments', requireAdmin, async (req, res)
     const saved = await updateGeosurveyProjectSegments(req.params.id, {
       geospatial: typeof body.geospatial === 'boolean' ? body.geospatial : undefined,
       questionnaire: typeof body.questionnaire === 'boolean' ? body.questionnaire : undefined,
+      questionnaireGeofence:
+        typeof body.questionnaireGeofence === 'boolean' ? body.questionnaireGeofence : undefined,
+      boundaryAppliesTo:
+        typeof body.boundaryAppliesTo === 'string' &&
+        ['geospatial', 'questionnaire', 'both'].includes(body.boundaryAppliesTo)
+          ? body.boundaryAppliesTo
+          : undefined,
     });
     if (!saved) {
       res.status(404).json({ error: 'Project not found or not active in GeoSurvey.' });
@@ -278,6 +285,7 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     delete patch.assignedZoneValues;
     delete patch.projectZoneAssignments;
     delete patch.assignedZoneLayerId;
+    delete patch.assignedGeospatialProjectIds;
   }
   const allowedKeys = [
     'displayName',
@@ -294,6 +302,7 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     'assignedZoneValues',
     'projectZoneAssignments',
     'assignedZoneLayerId',
+    'assignedGeospatialProjectIds',
   ] as const;
   const cleanPatch: Record<string, unknown> = {};
   for (const key of allowedKeys) {
@@ -359,6 +368,10 @@ app.delete('/api/questionnaires/:id', requireAdmin, async (req, res) => {
 
 app.get('/api/responses', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
   const isAdmin = req.geosurveySession!.user.role === 'admin';
+  const slim =
+    req.query.slim === '1' ||
+    req.query.slim === 'true' ||
+    String(req.query.slim || '').toLowerCase() === 'yes';
   const filters = {
     questionnaireId: req.query.questionnaireId ? String(req.query.questionnaireId) : undefined,
     respondentId: isAdmin
@@ -367,8 +380,40 @@ app.get('/api/responses', requireApproved, async (req: GeosurveyAuthenticatedReq
         : undefined
       : req.geosurveySession!.user.id,
     status: req.query.status ? String(req.query.status) : undefined,
+    projectId: req.query.projectId ? String(req.query.projectId) : undefined,
+    slim,
   };
   res.json({ items: await listResponses(filters) });
+});
+
+/** Slim GPS pins for the map — avoids shipping full answer payloads. */
+app.get('/api/responses/locations', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
+  const isAdmin = req.geosurveySession!.user.role === 'admin';
+  const projectId = req.query.projectId ? String(req.query.projectId) : undefined;
+  const respondentId = isAdmin
+    ? req.query.respondentId
+      ? String(req.query.respondentId)
+      : undefined
+    : req.geosurveySession!.user.id;
+  res.json({ items: await listResponseLocations({ projectId, respondentId }) });
+});
+
+app.get('/api/responses/:id', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
+  const isAdmin = req.geosurveySession!.user.role === 'admin';
+  const slim =
+    req.query.slim === '1' ||
+    req.query.slim === 'true' ||
+    String(req.query.slim || '').toLowerCase() === 'yes';
+  const item = await getResponseById(req.params.id, { slim });
+  if (!item) {
+    res.status(404).json({ error: 'Response not found.' });
+    return;
+  }
+  if (!isAdmin && String(item.respondentId || '') !== req.geosurveySession!.user.id) {
+    res.status(403).json({ error: 'Forbidden.' });
+    return;
+  }
+  res.json({ item });
 });
 
 app.post('/api/responses', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
@@ -431,7 +476,22 @@ app.get('/api/features', requireApproved, async (req: GeosurveyAuthenticatedRequ
 // ── Zone layers (generic SHP boundaries) ─────────────────────────────────
 app.get('/api/zone-layers', requireApproved, async (req, res) => {
   const projectId = req.query.projectId ? String(req.query.projectId) : undefined;
-  res.json({ items: await listZoneLayers(projectId) });
+  const withPolygons =
+    req.query.withPolygons === '1' || String(req.query.withPolygons).toLowerCase() === 'true';
+  const items = await listZoneLayers(projectId);
+  if (!withPolygons) {
+    res.json({ items });
+    return;
+  }
+  // One round-trip for project open: primary layer + its polygons.
+  const layer = items[0] || null;
+  const polygons = layer
+    ? await listZonePolygons({
+        layerId: layer.id,
+        projectId: projectId || layer.projectId,
+      })
+    : [];
+  res.json({ items, polygons });
 });
 
 app.get('/api/zone-layers/:id', requireApproved, async (req, res) => {
@@ -486,6 +546,7 @@ app.post('/api/zone-layers/import', requireAdmin, async (req, res) => {
       projectId,
       name: String(body.name || 'Zones'),
       assignmentField: body.assignmentField != null ? String(body.assignmentField) : null,
+      labelField: body.labelField != null ? String(body.labelField) : null,
       attributeFields: Array.isArray(body.attributeFields)
         ? body.attributeFields.map((f: unknown) => String(f))
         : [],
@@ -511,6 +572,12 @@ app.patch('/api/zone-layers/:id', requireAdmin, async (req, res) => {
         ? req.body.assignmentField == null
           ? null
           : String(req.body.assignmentField)
+        : undefined,
+    labelField:
+      req.body?.labelField !== undefined
+        ? req.body.labelField == null
+          ? null
+          : String(req.body.labelField)
         : undefined,
     strictGeofence:
       req.body?.strictGeofence !== undefined ? Boolean(req.body.strictGeofence) : undefined,

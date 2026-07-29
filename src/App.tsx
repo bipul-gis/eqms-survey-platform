@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './components/AuthProvider';
 import { GeoLocationProvider, useGeoLocation } from './components/GeoLocationProvider';
 import { NetworkStatusBadge } from './components/NetworkStatusBadge';
 import { AppFooter } from './components/AppFooter';
+import { PanelSuspense } from './components/PanelSuspense';
 import { useOptimizedFeatures, type FeaturesLoadMode } from './hooks/useOptimizedFeatures';
 import {
   useQuestionnaireSurveyLocations,
@@ -15,6 +16,11 @@ import {
   assignedZoneValuesFromProfile,
   zonesToGeoJson,
 } from './lib/assignedZones';
+import {
+  clearCachedZoneBundle,
+  readCachedZoneBundle,
+  writeCachedZoneBundle,
+} from './lib/zoneCache';
 
 initOfflineSupport();
 
@@ -50,6 +56,7 @@ const EnumeratorQuestionnaireList = lazy(() =>
 const ZoneLayerPanel = lazy(() =>
   import('./components/ZoneLayerPanel').then((m) => ({ default: m.ZoneLayerPanel }))
 );
+
 
 // Tiny full-screen fallback shown while a code-split chunk is being fetched.
 const ScreenFallback: React.FC<{ label?: string }> = ({ label = 'Loading…' }) => (
@@ -397,9 +404,46 @@ const AppContent: React.FC = () => {
   const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [userManagementTab, setUserManagementTab] = useState<
+    'pending' | 'boundary' | 'geospatial' | 'questionnaire' | 'create'
+  >('pending');
   const [showZoneLayerPanel, setShowZoneLayerPanel] = useState(false);
-  const [zoneLayer, setZoneLayer] = useState<ZoneLayer | null>(null);
-  const [zonePolygons, setZonePolygons] = useState<ZonePolygon[]>([]);
+  const [zoneLayer, setZoneLayer] = useState<ZoneLayer | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem('eqms.currentProject');
+      const project = raw ? (JSON.parse(raw) as Project) : null;
+      if (!project?.id) return null;
+      return readCachedZoneBundle(project.id)?.layer ?? null;
+    } catch {
+      return null;
+    }
+  });
+  const [zonePolygons, setZonePolygons] = useState<ZonePolygon[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('eqms.currentProject');
+      const project = raw ? (JSON.parse(raw) as Project) : null;
+      if (!project?.id) return [];
+      return readCachedZoneBundle(project.id)?.polygons ?? [];
+    } catch {
+      return [];
+    }
+  });
+  /** True until the project's zone layer lookup settles — avoids a false "import SHP" prompt. */
+  const [zonesLoading, setZonesLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const raw = window.localStorage.getItem('eqms.currentProject');
+      const project = raw ? (JSON.parse(raw) as Project) : null;
+      if (!project?.id) return false;
+      const cached = readCachedZoneBundle(project.id);
+      // Have cached polygons → no blocking spinner on refresh.
+      return !(cached && cached.polygons.length > 0);
+    } catch {
+      return true;
+    }
+  });
   const [zoneRefreshKey, setZoneRefreshKey] = useState(0);
   /**
    * Admin top-level navigation. Admins land on `'home'` after sign-in and pick a
@@ -494,6 +538,7 @@ const AppContent: React.FC = () => {
       setAdminMode(currentProjectHasGeo ? 'geospatial' : 'home');
     }
   }, [isAdmin, currentProject, adminMode, currentProjectHasGeo, currentProjectHasQuestionnaire]);
+
 
   useEffect(() => {
     if (
@@ -670,8 +715,15 @@ const AppContent: React.FC = () => {
   // underlying assignment counts cross zero.
   // ──────────────────────────────────────────────────────────────────────
   const enumeratorHasGeoTasks = useMemo(
-    () => assignedWardsForFilter.length > 0 || assignedZoneValuesForFilter.length > 0,
-    [assignedWardsForFilter, assignedZoneValuesForFilter]
+    () => {
+      // Zone/boundary assignments only scope the work area — they never grant
+      // a Geospatial Survey task, so turning the task off actually takes effect.
+      const geoIds = userProfile?.assignedGeospatialProjectIds || [];
+      if (geoIds.length > 0) return true;
+      // Legacy CCC ward tasking predates the per-project entitlement.
+      return assignedWardsForFilter.length > 0;
+    },
+    [assignedWardsForFilter, userProfile?.assignedGeospatialProjectIds]
   );
   const enumeratorHasQTasks = useMemo(
     () => (userProfile?.assignedQuestionnaireIds || []).length > 0,
@@ -682,20 +734,37 @@ const AppContent: React.FC = () => {
     'home' | 'geospatial' | 'questionnaire'
   >('home');
 
-  // Auto-route enumerators to the only segment they're assigned to. When
-  // both segments have tasks, we stay on 'home' so the enumerator can pick.
-  // Guarded so we don't enqueue noop setState calls every render.
+  // The routing effect below preserves the enumerator's pick, so the chooser
+  // has to be reset explicitly when the signed-in account changes.
+  useEffect(() => {
+    setEnumeratorMode('home');
+  }, [user?.uid]);
+
+  // Auto-route enumerators to the only segment they're assigned to. Assignment
+  // booleans settle asynchronously (zone values resolve with the project), so
+  // this only corrects a mode that is no longer valid — when both segments have
+  // tasks the enumerator's own choice is kept instead of being reset to 'home'.
   useEffect(() => {
     if (!isApprovedEnumerator) return;
-    let next: 'home' | 'geospatial' | 'questionnaire';
-    if (enumeratorHasGeoTasks && !enumeratorHasQTasks) next = 'geospatial';
-    else if (!enumeratorHasGeoTasks && enumeratorHasQTasks) next = 'questionnaire';
-    else next = 'home';
-    setEnumeratorMode((cur) => (cur === next ? cur : next));
+    setEnumeratorMode((cur) => {
+      if (enumeratorHasGeoTasks && !enumeratorHasQTasks) return 'geospatial';
+      if (!enumeratorHasGeoTasks && enumeratorHasQTasks) return 'questionnaire';
+      if (!enumeratorHasGeoTasks && !enumeratorHasQTasks) return 'home';
+      return cur;
+    });
   }, [isApprovedEnumerator, enumeratorHasGeoTasks, enumeratorHasQTasks]);
 
   const featuresMode = useMemo<FeaturesLoadMode>(() => {
     if (authLoading || !user) return 'idle';
+    // Geospatial zone-SHP projects don't use the global CCC landmark feature store —
+    // skip the download so the map can paint zone polygons sooner.
+    if (
+      userProfile?.role === 'admin' &&
+      userProfile?.status === 'approved' &&
+      currentProject?.segments?.geospatial === true
+    ) {
+      return 'idle';
+    }
     if (userProfile?.role === 'admin' && userProfile?.status === 'approved') return 'admin';
     if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') {
       // Questionnaire-only enumerators never see the map, so skip the
@@ -710,6 +779,8 @@ const AppContent: React.FC = () => {
       const hasQuestionnaires =
         (userProfile.assignedQuestionnaireIds?.length || 0) > 0;
       if (!hasWards && !hasZones && hasQuestionnaires) return 'idle';
+      // Zone-assigned enumerators: map is zone polygons + questionnaire GPS, not CCC landmarks.
+      if (hasZones && !hasWards) return 'idle';
       return 'enumerator';
     }
     return 'idle';
@@ -722,7 +793,8 @@ const AppContent: React.FC = () => {
     userProfile?.assignedWardNames,
     userProfile?.assignedZoneValues,
     userProfile?.projectZoneAssignments,
-    userProfile?.assignedQuestionnaireIds
+    userProfile?.assignedQuestionnaireIds,
+    currentProject?.segments?.geospatial,
   ]);
 
   const { features, loading: featuresLoading, syncState } = useOptimizedFeatures({
@@ -745,6 +817,7 @@ const AppContent: React.FC = () => {
         if (!cancelled) {
           setZoneLayer(null);
           setZonePolygons([]);
+          setZonesLoading(false);
         }
         return;
       }
@@ -755,13 +828,26 @@ const AppContent: React.FC = () => {
             if (!cancelled) {
               setZoneLayer(null);
               setZonePolygons([]);
+              setZonesLoading(false);
             }
             return;
           }
           // Enumerators may not have currentProject; API scopes polygons to their assignments.
           const layerId = userProfile.assignedZoneLayerId || undefined;
-          let layer: ZoneLayer | null = null;
-          if (layerId) {
+          const cacheKey = layerId || `enum:${assignedZoneValuesForFilter.join('|')}`;
+          const cached = readCachedZoneBundle(cacheKey);
+          if (cached?.polygons?.length) {
+            if (!cancelled) {
+              setZoneLayer(cached.layer);
+              setZonePolygons(cached.polygons);
+              setZonesLoading(false);
+            }
+          } else if (!cancelled) {
+            setZonesLoading(true);
+          }
+
+          let layer: ZoneLayer | null = cached?.layer || null;
+          if (layerId && !layer) {
             try {
               layer = await zoneLayersApi.getLayer(layerId);
             } catch {
@@ -775,6 +861,7 @@ const AppContent: React.FC = () => {
           if (cancelled) return;
           setZoneLayer(layer);
           setZonePolygons(items);
+          writeCachedZoneBundle(cacheKey, layer, items);
           return;
         }
 
@@ -784,28 +871,39 @@ const AppContent: React.FC = () => {
           if (!cancelled) {
             setZoneLayer(null);
             setZonePolygons([]);
+            setZonesLoading(false);
           }
           return;
         }
-        const { items: layers } = await zoneLayersApi.listLayers(projectId);
-        const layer = layers[0] || null;
-        if (cancelled) return;
-        setZoneLayer(layer);
-        if (!layer) {
-          setZonePolygons([]);
-          return;
+
+        // Instant paint from cache, then refresh in background.
+        const cached = readCachedZoneBundle(projectId);
+        if (cached) {
+          if (!cancelled) {
+            setZoneLayer(cached.layer);
+            setZonePolygons(cached.polygons);
+            setZonesLoading(false);
+          }
+        } else if (!cancelled) {
+          setZonesLoading(true);
         }
-        const { items } = await zoneLayersApi.listPolygons({
-          layerId: layer.id,
-          projectId,
-        });
-        if (!cancelled) setZonePolygons(items);
+
+        const { items: layers, polygons } = await zoneLayersApi.listLayersWithPolygons(projectId);
+        if (cancelled) return;
+        const layer = layers[0] || null;
+        const polys = polygons || [];
+        setZoneLayer(layer);
+        setZonePolygons(polys);
+        writeCachedZoneBundle(projectId, layer, polys);
       } catch (e) {
         console.warn('Failed to load zone polygons', e);
         if (!cancelled) {
-          setZoneLayer(null);
-          setZonePolygons([]);
+          // Keep any cached paint; only clear when we had nothing.
+          setZoneLayer((prev) => prev);
+          setZonePolygons((prev) => prev);
         }
+      } finally {
+        if (!cancelled) setZonesLoading(false);
       }
     };
     void loadZones();
@@ -818,14 +916,67 @@ const AppContent: React.FC = () => {
     userProfile?.status,
     userProfile?.assignedZoneLayerId,
     assignedZoneValuesForFilter,
-    showZoneLayerPanel,
     zoneRefreshKey,
   ]);
 
+  // Invalidate zone cache when admin imports / deletes a layer.
+  const handleZoneLayerChanged = useCallback(() => {
+    if (currentProject?.id) clearCachedZoneBundle(currentProject.id);
+    setZoneRefreshKey((k) => k + 1);
+  }, [currentProject?.id]);
+
   const zoneBoundaries = useMemo(() => {
     if (!zonePolygons.length) return null;
-    return zonesToGeoJson(zonePolygons);
-  }, [zonePolygons]);
+    return zonesToGeoJson(zonePolygons, {
+      labelField: zoneLayer?.labelField || zoneLayer?.assignmentField || null,
+    });
+  }, [zonePolygons, zoneLayer?.labelField, zoneLayer?.assignmentField]);
+
+  /** Zone-SHP mode: project has an imported boundary layer (generic geospatial). */
+  const useZoneMode = !!zoneLayer;
+
+  /**
+   * Geospatial project map mode — true as soon as the opened project has geospatial
+   * enabled (even before the SHP finishes loading). Hides legacy CCC wards/landmarks
+   * so opening a project never flashes Chattogram CCC data.
+   */
+  const geospatialMapMode = Boolean(
+    (isAdmin && currentProjectHasGeo) || useZoneMode || (!isAdmin && assignedZoneValuesForFilter.length > 0)
+  );
+
+  // Geospatial Assignment has no Map View / Table List — stay on the map canvas.
+  useEffect(() => {
+    if (geospatialMapMode && activeTab !== 'map') setActiveTab('map');
+  }, [geospatialMapMode, activeTab]);
+
+  /**
+   * Questionnaire submissions must fall inside assigned zone polygons when:
+   * - zones exist, zone-layer strict geofence is on, and
+   * - for an opened project: geospatial is on and merge (questionnaireGeofence) is on
+   * - for enumerators: their assigned zone layer already carries strictGeofence
+   */
+  const questionnaireStrictGeofence = useMemo(() => {
+    if (!zonePolygons.length) return false;
+    if (zoneLayer && zoneLayer.strictGeofence === false) return false;
+    if (currentProject) {
+      if (currentProject.segments?.geospatial !== true) return false;
+      const ba = currentProject.segments?.boundaryAppliesTo;
+      if (ba) {
+        return ba === 'questionnaire' || ba === 'both';
+      }
+      // Legacy fallback
+      if (currentProject.segments?.questionnaireGeofence === false) return false;
+    }
+    return true;
+  }, [
+    zonePolygons.length,
+    zoneLayer,
+    currentProject?.segments?.geospatial,
+    currentProject?.segments?.boundaryAppliesTo,
+    currentProject?.segments?.questionnaireGeofence,
+  ]);
+
+  const zoneFitKey = `${currentProject?.id || userProfile?.assignedZoneLayerId || 'zones'}:${zoneLayer?.id || ''}:${zonePolygons.length}`;
 
   // HH Survey Locations layer — reuse the same role gating as features so
   // approved admins see every response's GPS pin and approved enumerators
@@ -844,11 +995,19 @@ const AppContent: React.FC = () => {
   const { locations: surveyLocations } = useQuestionnaireSurveyLocations({
     mode: surveyLocationsMode,
     userUid: user?.uid,
-    enabled: surveyLocationsMode !== 'admin' || hhSurveyLayerEnabled
+    enabled: surveyLocationsMode !== 'admin' || hhSurveyLayerEnabled,
+    // Geospatial Assignment shows the questionnaire GPS captures of the open
+    // project only — responses from other projects stay off this map.
+    projectId: currentProject?.id
   });
 
   const visibleFeatures = useMemo(() => {
-    if (isAdmin) return features;
+    // Geospatial / zone SHP projects: survey area = uploaded polygons. Hide CCC landmarks.
+    const scoped = geospatialMapMode
+      ? features.filter((f) => !isEnumeratorScopeLandmarkPoint(f) && !isImportedLandmarkPoint(f))
+      : features;
+
+    if (isAdmin) return scoped;
 
     const myEmail = (user?.email || '').trim().toLowerCase();
     const myUid = user?.uid || '';
@@ -858,15 +1017,19 @@ const AppContent: React.FC = () => {
       return (myEmail && byEmail === myEmail) || (myUid && byUid === myUid);
     };
 
+    if (geospatialMapMode) {
+      return scoped.filter(isCreatedByMe);
+    }
+
     if (assignedWardsForFilter.length === 0) {
-      return features.filter(isCreatedByMe);
+      return scoped.filter(isCreatedByMe);
     }
 
     // Strict task scope: only landmarks that resolve to an assigned ward (not "everything I created").
-    return features.filter((f) =>
+    return scoped.filter((f) =>
       featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
-  }, [isAdmin, features, assignedWardsForFilter, wardsData, user?.email, user?.uid]);
+  }, [isAdmin, features, assignedWardsForFilter, wardsData, user?.email, user?.uid, geospatialMapMode]);
 
   const enumeratorSyncUi = useMemo(() => {
     if (isAdmin) {
@@ -984,10 +1147,16 @@ const AppContent: React.FC = () => {
     !isAdmin &&
     userProfile?.role === 'enumerator' &&
     userProfile?.status === 'approved' &&
-    assignedWardsForFilter.length > 0;
+    (assignedWardsForFilter.length > 0 || assignedZoneValuesForFilter.length > 0) &&
+    !geospatialMapMode;
 
   const [approvedEnumeratorsAdmin, setApprovedEnumeratorsAdmin] = useState<
-    Array<{ email: string; displayName: string; assignedWardNames: string[] }>
+    Array<{
+      email: string;
+      displayName: string;
+      assignedWardNames: string[];
+      assignedZoneValues: string[];
+    }>
   >([]);
 
   useEffect(() => {
@@ -1000,13 +1169,22 @@ const AppContent: React.FC = () => {
       try {
         const users = await listApprovedUsers();
         if (cancelled) return;
-        const byEmail = new Map<string, { email: string; displayName: string; assignedWardNames: string[] }>();
+        const byEmail = new Map<
+          string,
+          {
+            email: string;
+            displayName: string;
+            assignedWardNames: string[];
+            assignedZoneValues: string[];
+          }
+        >();
         for (const d of users) {
-          if (d.role !== 'enumerator') return;
+          if (d.role !== 'enumerator') continue;
           const email = (d.email || '').trim();
-          if (!email) return;
+          if (!email) continue;
           const key = email.toLowerCase();
           const wards = assignedWardsFromUserProfile(d);
+          const zones = assignedZoneValuesFromProfile(d, currentProject?.id);
           const candidateName = normalizedFullName(d.displayName, email);
 
           const existing = byEmail.get(key);
@@ -1014,9 +1192,10 @@ const AppContent: React.FC = () => {
             byEmail.set(key, {
               email,
               displayName: candidateName,
-              assignedWardNames: wards
+              assignedWardNames: wards,
+              assignedZoneValues: zones
             });
-            return;
+            continue;
           }
 
           const existingScore =
@@ -1029,6 +1208,9 @@ const AppContent: React.FC = () => {
             existing.displayName = candidateName;
           }
           existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wards])];
+          existing.assignedZoneValues = [
+            ...new Set([...existing.assignedZoneValues, ...zones])
+          ].sort((a, b) => a.localeCompare(b));
         }
         const rows = Array.from(byEmail.values()).sort((a, b) =>
           a.displayName.localeCompare(b.displayName)
@@ -1049,7 +1231,39 @@ const AppContent: React.FC = () => {
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [isAdmin]);
+  }, [isAdmin, currentProject?.id]);
+
+  /** Generic zone-SHP workspace summary (any project). */
+  const zoneWorkspaceByValue = useMemo(() => {
+    const map = new Map<
+      string,
+      { value: string; polygonCount: number; assignees: string[] }
+    >();
+    for (const p of zonePolygons) {
+      const value = String(p.assignValue || '').trim() || 'Unlabeled';
+      const cur = map.get(value.toLowerCase()) || {
+        value,
+        polygonCount: 0,
+        assignees: [] as string[]
+      };
+      cur.polygonCount += 1;
+      map.set(value.toLowerCase(), cur);
+    }
+    for (const e of approvedEnumeratorsAdmin) {
+      for (const z of e.assignedZoneValues || []) {
+        const key = z.trim().toLowerCase();
+        if (!key) continue;
+        const cur = map.get(key) || {
+          value: z.trim(),
+          polygonCount: 0,
+          assignees: [] as string[]
+        };
+        if (!cur.assignees.includes(e.displayName)) cur.assignees.push(e.displayName);
+        map.set(key, cur);
+      }
+    }
+    return [...map.values()].sort((a, b) => a.value.localeCompare(b.value));
+  }, [zonePolygons, approvedEnumeratorsAdmin]);
 
   /** Admin map popups: enumerator display name from task ward assignment, else from `updatedBy` email. */
   const getAdminLandmarkEnumeratorDisplayName = useCallback(
@@ -2196,7 +2410,7 @@ const AppContent: React.FC = () => {
       <EnumeratorQuestionnaireList
         userProfile={userProfile}
         geofenceZones={zonePolygons}
-        strictGeofence={zoneLayer?.strictGeofence !== false && zonePolygons.length > 0}
+        strictGeofence={questionnaireStrictGeofence}
         onLogout={async () => {
           await logout();
         }}
@@ -2217,7 +2431,7 @@ const AppContent: React.FC = () => {
       <EnumeratorQuestionnaireList
         userProfile={userProfile}
         geofenceZones={zonePolygons}
-        strictGeofence={zoneLayer?.strictGeofence !== false && zonePolygons.length > 0}
+        strictGeofence={questionnaireStrictGeofence}
         onBack={() => setEnumeratorMode('home')}
       />
     );
@@ -2294,8 +2508,11 @@ const AppContent: React.FC = () => {
                     wards.
                   </p>
                   <div className="mt-3 text-[11px] text-blue-700 font-semibold">
-                    {assignedWardsForFilter.length} ward
-                    {assignedWardsForFilter.length === 1 ? '' : 's'} assigned
+                    {assignedWardsForFilter.length > 0
+                      ? `${assignedWardsForFilter.length} ward${assignedWardsForFilter.length === 1 ? '' : 's'} assigned`
+                      : assignedZoneValuesForFilter.length > 0
+                        ? `${assignedZoneValuesForFilter.length} boundary zone${assignedZoneValuesForFilter.length === 1 ? '' : 's'} assigned`
+                        : 'No boundary assigned'}
                   </div>
                 </div>
               </button>
@@ -2378,6 +2595,16 @@ const AppContent: React.FC = () => {
         currentUserUid={user.uid}
         currentUserName={userProfile?.displayName || user.email || undefined}
         onOpen={(p) => {
+          const cached = readCachedZoneBundle(p.id);
+          if (cached) {
+            setZoneLayer(cached.layer);
+            setZonePolygons(cached.polygons);
+            setZonesLoading(false);
+          } else {
+            setZoneLayer(null);
+            setZonePolygons([]);
+            setZonesLoading(p.segments?.geospatial === true);
+          }
           setCurrentProject(p);
           setAdminMode('home');
         }}
@@ -2461,31 +2688,62 @@ const AppContent: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {currentProjectHasGeo && (
-                <button
-                  onClick={() => setAdminMode('geospatial')}
-                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
-                >
-                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-blue-100/60 rounded-full blur-2xl group-hover:bg-blue-200/70 transition-colors" />
+                <div className="relative text-left bg-white rounded-2xl border border-dashed border-slate-300 p-6 shadow-sm overflow-hidden opacity-90">
+                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-slate-100/70 rounded-full blur-2xl" />
                   <div className="relative">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-slate-400 to-slate-600 flex items-center justify-center shadow-lg shadow-slate-200 mb-4">
                       <MapIcon size={26} className="text-white" />
                     </div>
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <h3 className="text-lg font-bold text-slate-900">Geospatial Survey</h3>
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                        Update later
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      Field geospatial data capture and map feature updates will be designed here
+                      later. Use Geospatial Assignment for SHP import and zone tasking for now.
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-1.5">
+                      {['Coming soon', 'Data capture', 'Feature update'].map((tag) => (
+                        <span
+                          key={tag}
+                          className="text-[10px] font-semibold text-slate-600 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {currentProjectHasGeo && (
+                <button
+                  onClick={() => setAdminMode('geospatial')}
+                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-sky-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+                >
+                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-sky-100/60 rounded-full blur-2xl group-hover:bg-sky-200/70 transition-colors" />
+                  <div className="relative">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-sky-500 to-cyan-700 flex items-center justify-center shadow-lg shadow-sky-200 mb-4">
+                      <MapPin size={26} className="text-white" />
+                    </div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-lg font-bold text-slate-900">Geospatial Assignment</h3>
                       <ChevronRight
                         size={18}
-                        className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all"
+                        className="text-slate-300 group-hover:text-sky-600 group-hover:translate-x-0.5 transition-all"
                       />
                     </div>
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      Map view, attribute data table, quality control and feature management for
-                      field-collected landmarks, points, lines and polygons.
+                      Import and manage project SHP boundaries, choose assignment and label fields,
+                      and view survey GPS pins within boundaries.
                     </p>
                     <div className="mt-4 flex flex-wrap gap-1.5">
-                      {['Map', 'Zone SHP', 'QC', 'Landmarks', 'Wards', 'Shapefile export'].map((tag) => (
+                      {['Import / manage SHP', 'Boundary scope', 'Zone boundaries', 'Survey GPS pins'].map((tag) => (
                         <span
                           key={tag}
-                          className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
+                          className="text-[10px] font-semibold text-sky-700 bg-sky-50 border border-sky-100 px-2 py-0.5 rounded-full"
                         >
                           {tag}
                         </span>
@@ -2530,6 +2788,44 @@ const AppContent: React.FC = () => {
                   </div>
                 </div>
               </button>
+
+              {currentProjectHasQuestionnaire && (
+                <button
+                  onClick={() => {
+                    setUserManagementTab('questionnaire');
+                    setShowUserManagement(true);
+                  }}
+                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-emerald-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+                >
+                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-emerald-100/60 rounded-full blur-2xl group-hover:bg-emerald-200/70 transition-colors" />
+                  <div className="relative">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-lg shadow-emerald-200 mb-4">
+                      <Users size={26} className="text-white" />
+                    </div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-lg font-bold text-slate-900">Questionnaire Assignment</h3>
+                      <ChevronRight
+                        size={18}
+                        className="text-slate-300 group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all"
+                      />
+                    </div>
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      Assign published questionnaire forms to enumerators independently from
+                      geospatial SHP tasks.
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-1.5">
+                      {['Published forms', 'Enumerator tasks', 'Project scoped'].map((tag) => (
+                        <span
+                          key={tag}
+                          className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </button>
+              )}
             </div>
 
             {/* Quick actions row */}
@@ -2542,12 +2838,15 @@ const AppContent: React.FC = () => {
                   <div>
                     <p className="text-sm font-semibold text-slate-900">User Management</p>
                     <p className="text-xs text-slate-500">
-                      Approve enumerators, assign wards and manage roles.
+                      Approve enumerators, create accounts and manage access.
                     </p>
                   </div>
                 </div>
                 <button
-                  onClick={() => setShowUserManagement(true)}
+                  onClick={() => {
+                    setUserManagementTab('pending');
+                    setShowUserManagement(true);
+                  }}
                   className="text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
                 >
                   Open <ChevronRight size={14} />
@@ -2561,10 +2860,16 @@ const AppContent: React.FC = () => {
         {/* User Management side-panel works on top of the home screen too. */}
         {showUserManagement && (
           <div className="fixed top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <UserManagement
-              project={currentProject}
+            <PanelSuspense
+              label="Loading users…"
               onClose={() => setShowUserManagement(false)}
-            />
+            >
+              <UserManagement
+                project={currentProject}
+                initialTab={userManagementTab}
+                onClose={() => setShowUserManagement(false)}
+              />
+            </PanelSuspense>
           </div>
         )}
       </div>
@@ -2584,10 +2889,16 @@ const AppContent: React.FC = () => {
         />
         {showUserManagement && (
           <div className="fixed top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <UserManagement
-              project={currentProject}
+            <PanelSuspense
+              label="Loading users…"
               onClose={() => setShowUserManagement(false)}
-            />
+            >
+              <UserManagement
+                project={currentProject}
+                initialTab={userManagementTab}
+                onClose={() => setShowUserManagement(false)}
+              />
+            </PanelSuspense>
           </div>
         )}
       </>
@@ -2607,10 +2918,16 @@ const AppContent: React.FC = () => {
         />
         {showUserManagement && (
           <div className="fixed top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <UserManagement
-              project={currentProject}
+            <PanelSuspense
+              label="Loading users…"
               onClose={() => setShowUserManagement(false)}
-            />
+            >
+              <UserManagement
+                project={currentProject}
+                initialTab={userManagementTab}
+                onClose={() => setShowUserManagement(false)}
+              />
+            </PanelSuspense>
           </div>
         )}
       </>
@@ -2706,14 +3023,31 @@ const AppContent: React.FC = () => {
                 {currentProject && currentProjectHasGeo && (
                   <button
                     onClick={() => setShowZoneLayerPanel(true)}
-                    className="p-2 text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
-                    title="Zone boundaries (SHP import)"
+                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-100 rounded-lg"
+                    title="Import / manage zone boundary SHP"
                   >
-                    <Layers size={20} />
+                    <Layers size={13} className="shrink-0" />
+                    Manage SHP
+                  </button>
+                )}
+                {currentProject && currentProjectHasGeo && (
+                  <button
+                    onClick={() => {
+                      setUserManagementTab('boundary');
+                      setShowUserManagement(true);
+                    }}
+                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-700 bg-cyan-50 hover:bg-cyan-100 border border-cyan-100 rounded-lg"
+                    title="Assign boundaries to enumerators"
+                  >
+                    <MapPin size={13} className="shrink-0" />
+                    Assign boundaries
                   </button>
                 )}
                 <button 
-                  onClick={() => setShowUserManagement(true)}
+                  onClick={() => {
+                    setUserManagementTab('pending');
+                    setShowUserManagement(true);
+                  }}
                   className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
                   title="Manage Users"
                 >
@@ -2746,14 +3080,16 @@ const AppContent: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         <main className="flex-1 flex flex-col">
           {activeTab === 'map' ? (
+            <div className="relative flex-1 min-h-0">
             <MapComponent 
+              key={currentProject?.id || zoneLayer?.id || 'map'}
               features={visibleFeatures}
-              wards={wardsData}
+              wards={geospatialMapMode ? null : wardsData}
               getAdminLandmarkEnumeratorDisplayName={
-                isAdmin ? getAdminLandmarkEnumeratorDisplayName : undefined
+                isAdmin && !geospatialMapMode ? getAdminLandmarkEnumeratorDisplayName : undefined
               }
               enumeratorLandmarkWardFilter={
-                !isAdmin ? assignedWardsForFilter : undefined
+                !isAdmin && !geospatialMapMode ? assignedWardsForFilter : undefined
               }
               onFeatureSelect={handleMapFeatureSelect}
               onRequestMoveFeature={startMoveFeature}
@@ -2765,21 +3101,64 @@ const AppContent: React.FC = () => {
               onMapClick={handleMapClick}
               addFeatureType={isAddingFeature}
               showPointAddBuffer={!isAdmin && isAddingFeature === 'point'}
-              landmarkGeoJsonRefreshKey={isAdmin ? adminFeaturesRefreshKey : 0}
+              landmarkGeoJsonRefreshKey={isAdmin && !geospatialMapMode ? adminFeaturesRefreshKey : 0}
+              defaultShowLandmarks={!geospatialMapMode}
+              defaultShowWards={!geospatialMapMode}
               surveyLocations={surveyLocations}
+              defaultShowSurveyLocations
               onSurveyLocationsVisibilityChange={setHhSurveyLayerEnabled}
               zoneBoundaries={zoneBoundaries}
-              defaultBaseMap={
-                !isAdmin && zoneBoundaries?.features?.length ? 'satellite' : 'osm'
-              }
+              zoneFitKey={zoneFitKey}
+              defaultBaseMap={geospatialMapMode || zoneBoundaries?.features?.length ? 'satellite' : 'osm'}
               defaultShowZones={!!zoneBoundaries?.features?.length}
             />
+            {/* Cover the map until the project's zone SHP is resolved, so the
+                default basemap view never flashes before fitting to zones. */}
+            {geospatialMapMode && zonesLoading && (
+              <div className="absolute inset-0 z-[600] flex items-center justify-center bg-slate-900/45">
+                <div className="flex items-center gap-3 rounded-2xl bg-white/95 px-5 py-3 shadow-xl border border-slate-200">
+                  <div className="w-5 h-5 border-2 border-slate-300 border-t-sky-600 rounded-full animate-spin" />
+                  <span className="text-sm font-medium text-slate-700">
+                    Loading project survey area…
+                  </span>
+                </div>
+              </div>
+            )}
+            {isAdmin && currentProjectHasGeo && !zonesLoading && !zoneLayer && (
+              <div className="absolute inset-0 z-[500] flex items-center justify-center bg-slate-900/40 p-4 pointer-events-none">
+                <div className="pointer-events-auto max-w-md w-full bg-white rounded-2xl shadow-2xl border border-slate-200 p-5 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center">
+                      <Layers size={18} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900">Import zone boundaries</h3>
+                      <p className="text-xs text-slate-500">Required for geospatial on this project</p>
+                    </div>
+                  </div>
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    Upload a polygon shapefile ZIP, review the attribute table, pick the field used
+                    to assign enumerators (e.g. ZONE_ID), then manage tasks in User Management —
+                    the same generic pattern as questionnaire assignment.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowZoneLayerPanel(true)}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700"
+                  >
+                    <Layers size={16} />
+                    Open zone SHP import
+                  </button>
+                </div>
+              </div>
+            )}
+            </div>
           ) : (
             <div className="p-6 overflow-y-auto w-full">
               <div className="max-w-4xl mx-auto space-y-4">
                 <h2 className="text-xl font-bold flex items-center gap-2 mb-6">
                   <List size={24} className="text-blue-600" />
-                  Attribute Data Table (Ward-wise)
+                  {useZoneMode ? 'Attribute Data Table' : 'Attribute Data Table (Ward-wise)'}
                 </h2>
                 <div className="bg-white rounded-xl border border-slate-200 p-3">
                   <input
@@ -2964,22 +3343,31 @@ const AppContent: React.FC = () => {
         {/* User Management Overlay */}
         {isAdmin && showUserManagement && (
           <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <UserManagement
-              project={currentProject}
+            <PanelSuspense
+              label="Loading users…"
               onClose={() => setShowUserManagement(false)}
-            />
+            >
+              <UserManagement
+                project={currentProject}
+                initialTab={userManagementTab}
+                onClose={() => setShowUserManagement(false)}
+              />
+            </PanelSuspense>
           </div>
         )}
 
         {isAdmin && showZoneLayerPanel && currentProject && (
           <div className="absolute inset-0 z-[1004] bg-slate-900/50 flex items-center justify-center p-4">
-            <Suspense fallback={<ScreenFallback label="Loading zones…" />}>
+            <PanelSuspense
+              label="Loading zones…"
+              onClose={() => setShowZoneLayerPanel(false)}
+            >
               <ZoneLayerPanel
                 project={currentProject}
                 onClose={() => setShowZoneLayerPanel(false)}
-                onChanged={() => setZoneRefreshKey((k) => k + 1)}
+                onChanged={handleZoneLayerChanged}
               />
-            </Suspense>
+            </PanelSuspense>
           </div>
         )}
 
@@ -2989,42 +3377,57 @@ const AppContent: React.FC = () => {
         {/* Questionnaire Form Overlay */}
         {selectedQuestionnaire && (
           <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
-            <QuestionnaireForm
-              questionnaire={selectedQuestionnaire}
-              projectId={selectedQuestionnaire.projectId}
+            <PanelSuspense
+              label="Loading form…"
               onClose={() => setSelectedQuestionnaire(null)}
-              initialLocation={questionnaireLocation || undefined}
-              geofenceZones={zonePolygons}
-              strictGeofence={zoneLayer?.strictGeofence !== false && zonePolygons.length > 0}
-            />
+            >
+              <QuestionnaireForm
+                questionnaire={selectedQuestionnaire}
+                projectId={selectedQuestionnaire.projectId}
+                onClose={() => setSelectedQuestionnaire(null)}
+                initialLocation={questionnaireLocation || undefined}
+                geofenceZones={zonePolygons}
+                strictGeofence={questionnaireStrictGeofence}
+              />
+            </PanelSuspense>
           </div>
         )}
 
         {/* Feature Editor — only when a feature is explicitly selected for edit, not during move mode */}
         {selectedFeature && !movingFeature && (
           <div className="absolute top-0 right-0 h-full z-[1002] flex animate-in slide-in-from-right duration-300">
-            <FeatureEditor
-              feature={selectedFeature}
-              allFeatures={features}
-              wardOptions={wardOptionsForEditor}
-              categoryOptions={categoryOptionsForEditor}
-              taskWardFreeze={editorTaskWardFreeze}
+            <PanelSuspense
+              label="Loading editor…"
               onClose={() => {
                 setSelectedFeature(null);
                 setMovingFeature(null);
-              }} 
-              isAdmin={isAdmin}
-              isNewFeature={selectedFeature.id.startsWith('draft_')}
-              onCreateFeature={handleCreateFeatureFromEditor}
-              onPersistSuccess={() => {
-                if (isAdmin) setAdminFeaturesRefreshKey((k) => k + 1);
-                else setEnumeratorFeaturesRefreshKey((k) => k + 1);
               }}
-            />
+            >
+              <FeatureEditor
+                feature={selectedFeature}
+                allFeatures={features}
+                wardOptions={wardOptionsForEditor}
+                categoryOptions={categoryOptionsForEditor}
+                taskWardFreeze={editorTaskWardFreeze}
+                onClose={() => {
+                  setSelectedFeature(null);
+                  setMovingFeature(null);
+                }}
+                isAdmin={isAdmin}
+                isNewFeature={selectedFeature.id.startsWith('draft_')}
+                onCreateFeature={handleCreateFeatureFromEditor}
+                onPersistSuccess={() => {
+                  if (isAdmin) setAdminFeaturesRefreshKey((k) => k + 1);
+                  else setEnumeratorFeaturesRefreshKey((k) => k + 1);
+                }}
+              />
+            </PanelSuspense>
           </div>
         )}
 
-        {/* Toolbar Floating — bottom offset includes safe area so bar stays above mobile browser / home indicator */}
+        {/* Map View / Table List are for Geospatial Survey (coming later).
+            Geospatial Assignment only needs the zone map + survey GPS pins. */}
+        {!geospatialMapMode && (
         <div
           className="absolute left-1/2 z-[1001] flex max-w-[calc(100vw-1rem)] items-center bg-white/80 backdrop-blur-md rounded-2xl shadow-2xl border border-white/50 p-1.5 ring-1 ring-slate-200 -translate-x-1/2 bottom-[calc(1.25rem+env(safe-area-inset-bottom,0px))]"
         >
@@ -3066,9 +3469,139 @@ const AppContent: React.FC = () => {
           )}
           <div className="w-px h-6 bg-slate-200 mx-2" />
         </div>
+        )}
 
-        {/* Quick Stats Floating (Admin) */}
-        {isAdmin && (
+        {/* Geospatial Assignment — SHP management + layer-wise tasking */}
+        {isAdmin && useZoneMode && (
+          <div className="absolute left-4 z-[1000] flex flex-col gap-2 top-[calc(1rem+env(safe-area-inset-top,0px))]">
+            <div className="qc-panel-scroll bg-white/90 backdrop-blur-md p-3 pr-2 rounded-2xl shadow-lg border border-white/50 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] overflow-y-scroll overscroll-contain">
+              <div className="flex items-center gap-2 mb-3">
+                <Layers size={16} className="text-sky-600" />
+                <span className="text-xs font-bold uppercase tracking-wider">
+                  Geospatial Assignment
+                </span>
+              </div>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Layer</p>
+                  <p className="font-semibold text-slate-800 truncate" title={zoneLayer?.name}>
+                    {zoneLayer?.name || 'Zones'}
+                  </p>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">Assignment field</span>
+                  <span className="font-bold text-sky-800 truncate max-w-[9rem]">
+                    {zoneLayer?.assignmentField || '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">Label field</span>
+                  <span className="font-bold text-emerald-800 truncate max-w-[9rem]">
+                    {zoneLayer?.labelField || zoneLayer?.assignmentField || '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">Zone polygons</span>
+                  <span className="font-bold">{zonePolygons.length}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500">Strict geofence</span>
+                  <span className="font-bold text-slate-800">
+                    {zoneLayer?.strictGeofence !== false ? 'On' : 'Off'}
+                  </span>
+                </div>
+                {currentProjectHasQuestionnaire && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-500">Boundary applies to</span>
+                    <span className="font-bold text-slate-800">
+                      {currentProject?.segments?.boundaryAppliesTo === 'both'
+                        ? 'Geo + Qsn'
+                        : currentProject?.segments?.boundaryAppliesTo === 'questionnaire'
+                          ? 'Questionnaire'
+                          : currentProject?.segments?.boundaryAppliesTo === 'geospatial'
+                            ? 'Geospatial'
+                            : questionnaireStrictGeofence
+                              ? 'Qsn (legacy)'
+                              : '—'}
+                    </span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowZoneLayerPanel(true)}
+                  className="w-full py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-[10px] font-bold uppercase transition-colors flex items-center justify-center gap-1"
+                >
+                  <Layers size={12} />
+                  Manage zone SHP
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminFeaturesRefreshKey((k) => k + 1)}
+                  disabled={featuresLoading}
+                  className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition-colors disabled:opacity-60 flex items-center justify-center gap-1"
+                >
+                  <RefreshCw size={12} className={featuresLoading ? 'animate-spin' : ''} />
+                  {featuresLoading ? 'Loading…' : 'Refresh map data'}
+                </button>
+
+                <div className="border-t border-slate-200 pt-3 mt-1">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <MapPin size={14} className="text-slate-600 shrink-0" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                      By zone value
+                      {zoneLayer?.assignmentField ? ` · ${zoneLayer.assignmentField}` : ''}
+                    </span>
+                  </div>
+                  <p className="text-[9px] text-slate-400 mb-2 leading-snug">
+                    Survey area = imported SHP. Assign enumerators in User Management by these values.
+                  </p>
+                  {zoneWorkspaceByValue.length === 0 ? (
+                    <p className="text-[10px] text-slate-400 italic">No zone values yet.</p>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-100">
+                      <table className="w-full text-[10px]">
+                        <thead>
+                          <tr className="bg-slate-50 text-slate-500">
+                            <th className="text-left px-1.5 py-1 font-semibold">Value</th>
+                            <th className="text-center px-0.5 py-1 w-8 font-semibold" title="Polygons">
+                              #
+                            </th>
+                            <th className="text-left px-1.5 py-1 font-semibold">Assigned</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {zoneWorkspaceByValue.map((r) => (
+                            <tr key={r.value} className="border-t border-slate-100">
+                              <td className="px-1.5 py-1 text-slate-800 truncate max-w-[6rem]" title={r.value}>
+                                {r.value}
+                              </td>
+                              <td className="text-center py-1 font-semibold text-slate-700">
+                                {r.polygonCount}
+                              </td>
+                              <td
+                                className="px-1.5 py-1 text-slate-600 truncate max-w-[7rem]"
+                                title={r.assignees.join(', ') || 'Unassigned'}
+                              >
+                                {r.assignees.length === 0
+                                  ? '—'
+                                  : r.assignees.length <= 2
+                                    ? r.assignees.join(', ')
+                                    : `${r.assignees.length} people`}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Legacy CCC landmark Quality Control — only when project is not geospatial */}
+        {isAdmin && !geospatialMapMode && (
           <div className="absolute left-4 z-[1000] flex flex-col gap-2 top-[calc(1rem+env(safe-area-inset-top,0px))]">
             <div
               className="qc-panel-scroll bg-white/90 backdrop-blur-md p-3 pr-2 rounded-2xl shadow-lg border border-white/50 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] overflow-y-scroll overscroll-contain"
@@ -3077,6 +3610,9 @@ const AppContent: React.FC = () => {
                 <Shield size={16} className="text-blue-600" />
                 <span className="text-xs font-bold uppercase tracking-wider">Quality Control</span>
               </div>
+              <p className="text-[9px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mb-3 leading-snug">
+                Legacy landmark QC. For any project, import a zone SHP (Zones) to use the generic geospatial workspace.
+              </p>
               <div className="space-y-3">
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-500">Verified</span>

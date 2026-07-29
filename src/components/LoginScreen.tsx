@@ -19,10 +19,64 @@ import { ApiError, geosurveyApi } from '../lib/geosurveyApi';
 
 type ScreenMode = 'login' | 'signup' | 'forgot';
 
+const REMEMBER_LOGIN_KEY = 'eqms.geosurvey.rememberLogin';
+const REMEMBERED_EMAIL_KEY = 'eqms.geosurvey.rememberedEmail';
+const REMEMBERED_PASSWORD_KEY = 'eqms.geosurvey.rememberedPassword';
+
+// Base64 keeps the stored password out of plain sight in devtools. It is
+// obfuscation, not encryption — anyone with the unlocked device can recover it.
+function encodeSecret(value: string): string {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(value)));
+}
+
+function decodeSecret(value: string): string {
+  return new TextDecoder().decode(Uint8Array.from(atob(value), (ch) => ch.charCodeAt(0)));
+}
+
+function readRememberedLogin(): { remember: boolean; email: string; password: string } {
+  try {
+    const remember = localStorage.getItem(REMEMBER_LOGIN_KEY) === '1';
+    if (!remember) return { remember: false, email: '', password: '' };
+    const email = String(localStorage.getItem(REMEMBERED_EMAIL_KEY) || '').trim();
+    const stored = localStorage.getItem(REMEMBERED_PASSWORD_KEY) || '';
+    let password = '';
+    try {
+      password = stored ? decodeSecret(stored) : '';
+    } catch {
+      password = '';
+    }
+    return { remember, email, password };
+  } catch {
+    return { remember: false, email: '', password: '' };
+  }
+}
+
+function persistRememberedLogin(remember: boolean, email: string, password: string) {
+  try {
+    if (remember && email.trim()) {
+      localStorage.setItem(REMEMBER_LOGIN_KEY, '1');
+      localStorage.setItem(REMEMBERED_EMAIL_KEY, email.trim());
+      if (password) {
+        localStorage.setItem(REMEMBERED_PASSWORD_KEY, encodeSecret(password));
+      } else {
+        localStorage.removeItem(REMEMBERED_PASSWORD_KEY);
+      }
+    } else {
+      localStorage.removeItem(REMEMBER_LOGIN_KEY);
+      localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+      localStorage.removeItem(REMEMBERED_PASSWORD_KEY);
+    }
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
 export const LoginScreen: React.FC = () => {
   const { login } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const remembered = readRememberedLogin();
+  const [email, setEmail] = useState(remembered.email);
+  const [password, setPassword] = useState(remembered.password);
+  const [rememberLogin, setRememberLogin] = useState(remembered.remember);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<ScreenMode>('login');
@@ -88,10 +142,14 @@ export const LoginScreen: React.FC = () => {
         await handleSignUp();
       } else {
         await login(email, password);
+        persistRememberedLogin(rememberLogin, email, password);
       }
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 401) {
         setError('Incorrect username or password.');
+        // Drop a stale saved password (e.g. changed on the server) so it does
+        // not keep re-filling a value that can no longer sign in.
+        persistRememberedLogin(rememberLogin, email, '');
       } else if (err instanceof ApiError && err.status === 403) {
         setError('Your account has been disabled. Please contact an administrator.');
       } else {
@@ -225,6 +283,7 @@ export const LoginScreen: React.FC = () => {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="username"
                 placeholder="admin@ccc.gov.bd"
                 className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
                 required
@@ -241,17 +300,31 @@ export const LoginScreen: React.FC = () => {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                   placeholder="••••••••"
                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
                   required
                 />
               </div>
               {mode === 'login' && (
-                <div className="flex justify-end mt-1.5">
+                <div className="flex items-center justify-between gap-2 mt-2">
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberLogin}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setRememberLogin(on);
+                        if (!on) persistRememberedLogin(false, '', '');
+                      }}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Remember username &amp; password
+                  </label>
                   <button
                     type="button"
                     onClick={goForgot}
-                    className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline inline-flex items-center gap-1"
+                    className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline inline-flex items-center gap-1 shrink-0"
                   >
                     <KeyRound size={12} />
                     Forgot password?

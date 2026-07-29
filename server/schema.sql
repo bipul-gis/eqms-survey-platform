@@ -118,12 +118,15 @@ CREATE TABLE IF NOT EXISTS zone_layers (
   project_id TEXT NOT NULL,
   name TEXT NOT NULL DEFAULT 'Zones',
   assignment_field TEXT,
+  label_field TEXT,
   attribute_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
   feature_count INTEGER NOT NULL DEFAULT 0,
   strict_geofence BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE zone_layers ADD COLUMN IF NOT EXISTS label_field TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_zone_layers_project ON zone_layers(project_id);
 
@@ -145,3 +148,4 @@ CREATE INDEX IF NOT EXISTS idx_zone_polygons_assign ON zone_polygons(layer_id, a
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_zone_values JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS project_zone_assignments JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_zone_layer_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_geospatial_project_ids JSONB NOT NULL DEFAULT '[]'::jsonb;

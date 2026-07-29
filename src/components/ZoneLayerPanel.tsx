@@ -1,15 +1,17 @@
 /**
  * Admin panel: import zone SHP, review attribute table, set assignment field.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Layers, Upload, Trash2, RefreshCw, Check, X } from 'lucide-react';
 import type { Project, ZoneLayer, ZonePolygon } from '../types';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import {
   parseZoneShapefileZip,
   suggestAssignmentField,
+  suggestLabelField,
   type ParsedZoneFeature,
 } from '../lib/parseShapefile';
+import { updateProjectSegments } from '../lib/projects';
 
 interface ZoneLayerPanelProps {
   project: Project;
@@ -31,8 +33,16 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
   const [pendingFeatures, setPendingFeatures] = useState<ParsedZoneFeature[] | null>(null);
   const [pendingFields, setPendingFields] = useState<string[]>([]);
   const [assignmentField, setAssignmentField] = useState<string>('');
+  const [labelField, setLabelField] = useState<string>('');
   const [layerName, setLayerName] = useState('Zones');
   const [strictGeofence, setStrictGeofence] = useState(true);
+
+  // Keep parent callback stable so load()/effects never loop on identity churn.
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const notifyChanged = useCallback((next: ZoneLayer | null) => {
+    onChangedRef.current?.(next);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,6 +53,7 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
       setLayer(current);
       if (current) {
         setAssignmentField(current.assignmentField || '');
+        setLabelField(current.labelField || current.assignmentField || '');
         setLayerName(current.name || 'Zones');
         setStrictGeofence(current.strictGeofence !== false);
         const { items: polys } = await zoneLayersApi.listPolygons({ layerId: current.id });
@@ -50,13 +61,14 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
       } else {
         setPolygons([]);
       }
-      onChanged?.(current);
+      // Do not call onChanged here — initial/refresh load must not bump parent state
+      // (that caused an infinite Loading… flash loop).
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [project.id, onChanged]);
+  }, [project.id]);
 
   useEffect(() => {
     void load();
@@ -91,10 +103,12 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
       const { features, attributeFields } = await parseZoneShapefileZip(file);
       setPendingFeatures(features);
       setPendingFields(attributeFields);
-      const suggested = suggestAssignmentField(attributeFields);
-      setAssignmentField(suggested || '');
+      const suggestedAssign = suggestAssignmentField(attributeFields);
+      const suggestedLabel = suggestLabelField(attributeFields);
+      setAssignmentField(suggestedAssign || '');
+      setLabelField(suggestedLabel || suggestedAssign || '');
       setLayerName(file.name.replace(/\.zip$/i, '') || 'Zones');
-      setNotice(`Parsed ${features.length} polygon(s). Choose assignment field and Import.`);
+      setNotice(`Parsed ${features.length} polygon(s). Choose assignment & label fields, then Import.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPendingFeatures(null);
@@ -116,6 +130,7 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
         projectId: project.id,
         name: layerName || 'Zones',
         assignmentField,
+        labelField: labelField || assignmentField || null,
         attributeFields: pendingFields,
         strictGeofence,
         polygons: pendingFeatures.map((f) => {
@@ -135,8 +150,13 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
       setPendingFields([]);
       setLayer(result.layer);
       setPolygons(result.polygons);
+      try {
+        await updateProjectSegments(project.id, { questionnaireGeofence: strictGeofence });
+      } catch (syncErr) {
+        console.warn('Could not sync project questionnaireGeofence after import', syncErr);
+      }
       setNotice(`Imported ${result.polygons.length} zone(s). Assign enumerators in User Management.`);
-      onChanged?.(result.layer);
+      notifyChanged(result.layer);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -152,13 +172,20 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
       const updated = await zoneLayersApi.updateLayer(layer.id, {
         name: layerName,
         assignmentField: assignmentField || null,
+        labelField: labelField || null,
         strictGeofence,
       });
       setLayer(updated);
       const { items: polys } = await zoneLayersApi.listPolygons({ layerId: updated.id });
       setPolygons(polys);
+      // Keep project "merge · strict geofence" segment aligned with zone setting.
+      try {
+        await updateProjectSegments(project.id, { questionnaireGeofence: strictGeofence });
+      } catch (syncErr) {
+        console.warn('Could not sync project questionnaireGeofence', syncErr);
+      }
       setNotice('Zone layer settings saved.');
-      onChanged?.(updated);
+      notifyChanged(updated);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -176,7 +203,7 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
       setPolygons([]);
       setPendingFeatures(null);
       setNotice('Zone layer deleted. Questionnaire-only mode until a new SHP is imported.');
-      onChanged?.(null);
+      notifyChanged(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -227,7 +254,7 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="block">
+          <label className="block sm:col-span-2">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Layer name</span>
             <input
               value={layerName}
@@ -251,6 +278,29 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
                 </option>
               ))}
             </select>
+            <span className="mt-1 block text-[10px] text-slate-400">
+              Used to assign enumerators in User Management.
+            </span>
+          </label>
+          <label className="block">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Label field
+            </span>
+            <select
+              value={labelField}
+              onChange={(e) => setLabelField(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            >
+              <option value="">— select —</option>
+              {columns.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[10px] text-slate-400">
+              Shown as the zone name on the map.
+            </span>
           </label>
         </div>
 
@@ -261,7 +311,8 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
             onChange={(e) => setStrictGeofence(e.target.checked)}
             className="rounded border-slate-300 text-sky-600"
           />
-          Strict geofence — enumerators may only survey inside assigned zones
+          Strict geofence — enumerators may only survey (map &amp; questionnaire) inside assigned
+          zones
         </label>
 
         <div className="flex flex-wrap gap-2">
@@ -317,7 +368,7 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
             </h4>
             <span className="text-[11px] text-slate-400">{tableRows.length} row(s)</span>
           </div>
-          {loading ? (
+          {loading && tableRows.length === 0 ? (
             <p className="text-sm text-slate-400 italic">Loading…</p>
           ) : tableRows.length === 0 ? (
             <p className="text-sm text-slate-400 italic">
@@ -332,11 +383,16 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
                       <th
                         key={c}
                         className={`px-2 py-1.5 text-left font-bold text-slate-600 whitespace-nowrap ${
-                          c === assignmentField ? 'bg-sky-100 text-sky-800' : ''
+                          c === assignmentField
+                            ? 'bg-sky-100 text-sky-800'
+                            : c === labelField
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : ''
                         }`}
                       >
                         {c}
                         {c === assignmentField ? ' ★' : ''}
+                        {c === labelField ? ' ◆' : ''}
                       </th>
                     ))}
                   </tr>

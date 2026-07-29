@@ -8,7 +8,7 @@
  * never lands on an empty screen.
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Folder,
   ChevronRight,
@@ -24,13 +24,14 @@ import {
 import { Project } from '../types';
 import { AppFooter } from './AppFooter';
 import {
-  activateProjectForGeosurvey,
   countAllQuestionnairesByProject,
   deactivateProjectForGeosurvey,
   listProjects,
   searchMisProjects,
-  updateProjectSegments
+  updateProjectSegments,
+  activateProjectForGeosurvey
 } from '../lib/projects';
+import { zoneLayersApi } from '../lib/zoneLayersApi';
 
 interface ProjectPickerProps {
   currentUserUid: string;
@@ -49,21 +50,23 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [allMisProjects, setAllMisProjects] = useState<Project[]>([]);
+  const [allMisProjects, setAllMisProjects] = useState<Project[] | null>(null);
+  const [misLoading, setMisLoading] = useState(false);
+  const [misError, setMisError] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const misLoadInflight = useRef<Promise<Project[]> | null>(null);
 
+  /** Fast path: only GeoSurvey-activated projects (+ questionnaire counts). */
   const refresh = async () => {
     try {
       setLoading(true);
       setError(null);
-      const [list, countMap, misList] = await Promise.all([
+      const [list, countMap] = await Promise.all([
         listProjects(),
-        countAllQuestionnairesByProject().catch(() => ({} as Record<string, number>)),
-        searchMisProjects()
+        countAllQuestionnairesByProject().catch(() => ({} as Record<string, number>))
       ]);
       setProjects(list);
       setCounts(countMap);
-      setAllMisProjects(misList);
     } catch (e) {
       console.error('Failed to load projects:', e);
       setError(e instanceof Error ? e.message : String(e));
@@ -72,10 +75,48 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
     }
   };
 
+  /** Lazy MIS catalog — fetched once, on first search (or Refresh while searching). */
+  const ensureMisProjects = async (): Promise<Project[]> => {
+    if (allMisProjects) return allMisProjects;
+    if (misLoadInflight.current) return misLoadInflight.current;
+    setMisLoading(true);
+    setMisError(null);
+    const task = searchMisProjects()
+      .then((list) => {
+        setAllMisProjects(list);
+        return list;
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        setMisError(msg);
+        throw e;
+      })
+      .finally(() => {
+        misLoadInflight.current = null;
+        setMisLoading(false);
+      });
+    misLoadInflight.current = task;
+    return task;
+  };
+
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Load the full MIS list only after the admin starts typing a search.
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) return;
+    if (allMisProjects || misLoading || misLoadInflight.current) return;
+    const timer = window.setTimeout(() => {
+      void ensureMisProjects().catch(() => {
+        /* misError already set */
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, allMisProjects, misLoading]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -86,28 +127,11 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
 
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return [] as Project[];
+    if (!q || !allMisProjects) return [] as Project[];
     return allMisProjects
       .filter((p) => `${p.name} ${p.code} ${p.description || ''}`.toLowerCase().includes(q))
       .slice(0, 12);
   }, [allMisProjects, search]);
-
-  const handleActivate = async (project: Project) => {
-    try {
-      setActivatingId(project.id);
-      setError(null);
-      const saved = await activateProjectForGeosurvey(project);
-      setProjects((prev) => {
-        const rest = prev.filter((item) => item.id !== saved.id);
-        return [...rest, saved].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      });
-      setSearch('');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActivatingId(null);
-    }
-  };
 
   const handleToggleActive = async (project: Project, active: boolean) => {
     try {
@@ -131,6 +155,8 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
     }
   };
 
+  const showSearchDropdown = search.trim().length > 0;
+
   return (
     <div className="min-h-[100dvh] bg-gradient-to-br from-slate-50 to-blue-50/40 flex flex-col">
       <header className="bg-white/80 backdrop-blur border-b border-slate-200 px-6 pt-[calc(env(safe-area-inset-top,0px)+1rem)] pb-4">
@@ -153,7 +179,12 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={() => void refresh()}
+              onClick={() => {
+                void refresh();
+                // Drop cached MIS catalog so next search re-fetches.
+                setAllMisProjects(null);
+                setMisError(null);
+              }}
               className="text-xs font-semibold px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1"
               title="Reload projects"
             >
@@ -177,8 +208,8 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
           <div>
             <h2 className="text-xl sm:text-2xl font-bold text-slate-800">Projects</h2>
             <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Search MIS projects, then activate the ones GeoSurvey should use.
-              Only activated projects are shown in the GeoSurvey project list.
+              Active GeoSurvey projects open immediately. Search to find other MIS projects and
+              activate them.
             </p>
           </div>
           <div className="inline-flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 max-w-md">
@@ -195,11 +226,37 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Type project name or code…"
+              placeholder="Search MIS projects by name or code…"
               className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             />
-            {searchResults.length > 0 && (
+            {showSearchDropdown && (
               <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
+                {misLoading && (
+                  <div className="px-4 py-3 text-xs text-slate-500 inline-flex items-center gap-2">
+                    <Loader2 size={14} className="animate-spin" />
+                    Loading MIS projects…
+                  </div>
+                )}
+                {!misLoading && misError && (
+                  <div className="px-4 py-3 text-xs text-red-600 flex items-start justify-between gap-2">
+                    <span>Could not load MIS projects: {misError}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 font-semibold text-red-700 hover:underline"
+                      onClick={() => {
+                        setAllMisProjects(null);
+                        void ensureMisProjects().catch(() => undefined);
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {!misLoading && !misError && searchResults.length === 0 && (
+                  <div className="px-4 py-3 text-xs text-slate-500">
+                    No MIS projects match “{search.trim()}”.
+                  </div>
+                )}
                 {searchResults.map((p) => {
                   const active = projects.some((item) => item.id === p.id);
                   return (
@@ -264,7 +321,7 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
 
         {loading ? (
           <div className="flex items-center justify-center text-slate-500 py-16">
-            <Loader2 size={20} className="animate-spin mr-2" /> Loading projects…
+            <Loader2 size={20} className="animate-spin mr-2" /> Loading GeoSurvey projects…
           </div>
         ) : filtered.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-xl p-10 text-center">
@@ -293,6 +350,20 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
                     setProjects((prev) =>
                       prev.map((item) => (item.id === saved.id ? saved : item))
                     );
+                    // Keep zone-layer geofence in sync with boundary settings.
+                    if (segments.boundaryAppliesTo || typeof segments.questionnaireGeofence === 'boolean') {
+                      try {
+                        const { items: layers } = await zoneLayersApi.listLayers(p.id);
+                        const layer = layers[0];
+                        if (layer) {
+                          const ba = segments.boundaryAppliesTo || saved.segments?.boundaryAppliesTo;
+                          const strict = ba === 'both' || ba === 'questionnaire';
+                          await zoneLayersApi.updateLayer(layer.id, { strictGeofence: strict });
+                        }
+                      } catch (syncErr) {
+                        console.warn('Could not sync zone-layer geofence', syncErr);
+                      }
+                    }
                   } catch (e) {
                     setError(e instanceof Error ? e.message : String(e));
                   } finally {
@@ -322,11 +393,16 @@ const ProjectCard: React.FC<{
   onSegmentsChange: (segments: {
     geospatial?: boolean;
     questionnaire?: boolean;
+    questionnaireGeofence?: boolean;
+    boundaryAppliesTo?: 'geospatial' | 'questionnaire' | 'both';
   }) => void | Promise<void>;
 }> = ({ project, questionnaireCount, busy, onOpen, onSegmentsChange }) => {
   const isArchived = project.isActive === false;
   const segGeo = project.segments?.geospatial === true;
   const segQ = project.segments?.questionnaire !== false;
+  const boundaryAppliesTo = project.segments?.boundaryAppliesTo;
+  const boundaryGeo = boundaryAppliesTo === 'geospatial' || boundaryAppliesTo === 'both';
+  const boundaryQsn = boundaryAppliesTo === 'questionnaire' || boundaryAppliesTo === 'both';
 
   return (
     <div
@@ -370,7 +446,13 @@ const ProjectCard: React.FC<{
             type="checkbox"
             checked={segGeo}
             disabled={busy || isArchived}
-            onChange={(e) => void onSegmentsChange({ geospatial: e.target.checked })}
+            onChange={(e) => {
+              const geospatial = e.target.checked;
+              void onSegmentsChange({
+                geospatial,
+                ...(geospatial ? { boundaryAppliesTo: 'both' as const } : {}),
+              });
+            }}
             className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
           />
         </label>
@@ -385,10 +467,58 @@ const ProjectCard: React.FC<{
             type="checkbox"
             checked={segQ}
             disabled={busy || isArchived}
-            onChange={(e) => void onSegmentsChange({ questionnaire: e.target.checked })}
+            onChange={(e) => {
+              const questionnaire = e.target.checked;
+              void onSegmentsChange({ questionnaire });
+            }}
             className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
           />
         </label>
+        {segGeo && (
+          <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 px-2.5 py-2 space-y-1.5">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-cyan-700">
+              Apply boundary to
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs">
+              <input
+                type="checkbox"
+                checked={boundaryGeo}
+                disabled={busy || isArchived}
+                onChange={(e) => {
+                  const geo = e.target.checked;
+                  const next = geo && boundaryQsn ? 'both' : geo ? 'geospatial' : boundaryQsn ? 'questionnaire' : undefined;
+                  void onSegmentsChange({ boundaryAppliesTo: next || ('geospatial' as any) });
+                }}
+                className="rounded border-slate-300 text-cyan-600 focus:ring-cyan-500"
+              />
+              <span className={boundaryGeo ? 'text-cyan-900 font-semibold' : 'text-slate-500'}>
+                Geospatial Survey
+              </span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs">
+              <input
+                type="checkbox"
+                checked={boundaryQsn}
+                disabled={busy || isArchived}
+                onChange={(e) => {
+                  const qsn = e.target.checked;
+                  const next = boundaryGeo && qsn ? 'both' : boundaryGeo ? 'geospatial' : qsn ? 'questionnaire' : undefined;
+                  void onSegmentsChange({
+                    boundaryAppliesTo: next || ('geospatial' as any),
+                    questionnaireGeofence: qsn,
+                  });
+                }}
+                className="rounded border-slate-300 text-cyan-600 focus:ring-cyan-500"
+              />
+              <span className={boundaryQsn ? 'text-cyan-900 font-semibold' : 'text-slate-500'}>
+                Questionnaire Survey
+              </span>
+            </label>
+            <p className="text-[10px] text-slate-500 leading-snug">
+              Enumerators can only survey inside their assigned SHP zone boundaries for checked survey types.
+            </p>
+          </div>
+        )}
         {!segGeo && (
           <p className="text-[10px] text-slate-400 leading-relaxed">
             Turn on Geospatial to import zone SHP files and assign map areas.

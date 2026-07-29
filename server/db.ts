@@ -29,6 +29,13 @@ function buildPoolConfig(): pg.PoolConfig {
 
 export const pool = new pg.Pool(buildPoolConfig());
 
+// Idle clients can drop (SSH tunnel restart, DB restart). Without a listener
+// pg re-throws as an unhandled 'error' event and kills the process; the pool
+// reconnects on the next query.
+pool.on('error', (err) => {
+  console.error('Postgres pool error (idle client dropped):', err.message);
+});
+
 export async function initDb(): Promise<void> {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf8');

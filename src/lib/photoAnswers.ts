@@ -54,8 +54,10 @@ export const isPhotoAnswerFilled = (value: unknown): boolean => {
     );
   }
   if (!value || typeof value !== 'object') return false;
-  const dataUrl = (value as PhotoAnswer).dataUrl;
-  const fileName = (value as PhotoAnswer).fileName;
+  const o = value as PhotoAnswer & { hasPhoto?: boolean; _photo?: boolean };
+  if (o.hasPhoto === true || o._photo === true) return true;
+  const dataUrl = o.dataUrl;
+  const fileName = o.fileName;
   return (
     (typeof dataUrl === 'string' && dataUrl.length > 0) ||
     (typeof fileName === 'string' && fileName.trim().length > 0)

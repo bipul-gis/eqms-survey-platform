@@ -89,6 +89,12 @@ export interface UserProfile {
   projectZoneAssignments?: { [projectId: string]: string[] };
   /** Active zone layer id used for assignment (project's imported SHP layer). */
   assignedZoneLayerId?: string | null;
+  /**
+   * Project IDs where this enumerator has an explicit Geospatial Survey task.
+   * Independent from boundary/zone assignment — boundaries scope the work area,
+   * this field determines whether the enumerator sees the Geospatial Survey UI.
+   */
+  assignedGeospatialProjectIds?: string[];
 }
 
 /** Imported zone boundary layer (SHP polygons + attribute table). */
@@ -96,7 +102,10 @@ export interface ZoneLayer {
   id: string;
   projectId: string;
   name: string;
+  /** Attribute used to assign enumerators (task scope). */
   assignmentField: string | null;
+  /** Attribute shown as the map / UI label for each zone polygon. */
+  labelField: string | null;
   attributeFields: string[];
   featureCount: number;
   strictGeofence: boolean;
@@ -135,6 +144,20 @@ export interface Project {
   segments?: {
     geospatial?: boolean;
     questionnaire?: boolean;
+    /**
+     * When geospatial + questionnaire are both on: require questionnaire
+     * submissions inside the enumerator’s assigned zone polygons (strict geofence).
+     * Defaults to true when unset.
+     */
+    questionnaireGeofence?: boolean;
+    /**
+     * Which survey types the imported SHP boundary constrains.
+     * - `'geospatial'` — only geospatial survey enumerators are zone-scoped
+     * - `'questionnaire'` — only questionnaire submissions are geofenced
+     * - `'both'` — boundary constrains both survey types
+     * Defaults to `'both'` when geospatial is on, `undefined` otherwise.
+     */
+    boundaryAppliesTo?: 'geospatial' | 'questionnaire' | 'both';
   };
   /** Soft-archive flag. Archived projects are hidden by default. */
   isActive?: boolean;

@@ -94,7 +94,8 @@ L.Icon.Default.mergeOptions({
 
 interface MapComponentProps {
   features: GeoFeature[];
-  wards: any; // Using any for GeoJSON FeatureCollection
+  /** Optional reference ward polygons (legacy CCC). Omit/null when using project zone SHP. */
+  wards?: any | null;
   /** Approved admin only: show enumerator display name on landmark point popups (ward-based; falls back to `updatedBy`). */
   getAdminLandmarkEnumeratorDisplayName?: (feature: GeoFeature) => string;
   /** When set (e.g. ward-tasked enumerators), GeoJSON-only landmark dots must match one of these wards; ward polygons stay full layer via `wards`. */
@@ -119,6 +120,8 @@ interface MapComponentProps {
    * map. Users can still toggle it on via the layer panel.
    */
   defaultShowLandmarks?: boolean;
+  /** Initial visibility for optional ward polygons. Defaults to true when wards provided. */
+  defaultShowWards?: boolean;
   /**
    * Optional "HH Survey Location" layer — one point per questionnaire
    * response with a captured GPS. Toggleable from the layer panel. When
@@ -134,6 +137,8 @@ interface MapComponentProps {
   onSurveyLocationsVisibilityChange?: (visible: boolean) => void;
   /** Optional zone boundary FeatureCollection (imported SHP polygons). */
   zoneBoundaries?: GeoJSON.FeatureCollection | null;
+  /** Force fit-to-zones when this changes (project / layer id). */
+  zoneFitKey?: string;
   /** Initial basemap. Enumerators with zones default to satellite. */
   defaultBaseMap?: 'osm' | 'satellite' | 'hybrid';
   /** Show assigned zone outlines (default true when zoneBoundaries provided). */
@@ -215,26 +220,30 @@ const FocusOnEnumeratorLocation = ({
 
 const FitToZoneBoundaries = ({
   data,
+  fitKey = '',
 }: {
   data: GeoJSON.FeatureCollection | null | undefined;
+  /** Change this (e.g. projectId:layerId) to force a fresh fit when opening a project. */
+  fitKey?: string;
 }) => {
   const map = useMap();
   const fittedKeyRef = useRef<string>('');
   useEffect(() => {
     if (!data?.features?.length) return;
-    const key = `${data.features.length}:${String(data.features[0]?.id ?? '')}`;
+    const key = `${fitKey}|${data.features.length}|${String(data.features[0]?.id ?? '')}`;
     if (fittedKeyRef.current === key) return;
     try {
       const layer = L.geoJSON(data as GeoJSON.GeoJsonObject);
       const b = layer.getBounds();
       if (b.isValid()) {
-        map.fitBounds(b, { padding: [40, 40], maxZoom: 16 });
+        map.invalidateSize();
+        map.fitBounds(b, { padding: [48, 48], maxZoom: 17, animate: false });
         fittedKeyRef.current = key;
       }
     } catch {
       /* ignore bad geometry */
     }
-  }, [data, map]);
+  }, [data, fitKey, map]);
   return null;
 };
 
@@ -611,7 +620,7 @@ SurveyLocationCircle.displayName = 'SurveyLocationCircle';
 
 export const MapComponent: React.FC<MapComponentProps> = ({ 
   features, 
-  wards,
+  wards = null,
   getAdminLandmarkEnumeratorDisplayName,
   enumeratorLandmarkWardFilter,
   onFeatureSelect, 
@@ -626,10 +635,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   showPointAddBuffer = false,
   landmarkGeoJsonRefreshKey = 0,
   defaultShowLandmarks = true,
+  defaultShowWards,
   surveyLocations,
   defaultShowSurveyLocations = true,
   onSurveyLocationsVisibilityChange,
   zoneBoundaries = null,
+  zoneFitKey = '',
   defaultBaseMap = 'osm',
   defaultShowZones = true,
 }) => {
@@ -639,7 +650,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const isApprovedAdmin =
     userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isEnumeratorUser = userProfile?.role === 'enumerator';
-  const [showWards, setShowWards] = useState(true);
+  const hasWardLayer = !!(wards && Array.isArray(wards.features) && wards.features.length > 0);
+  const [showWards, setShowWards] = useState(
+    defaultShowWards ?? hasWardLayer
+  );
   const [showZones, setShowZones] = useState(defaultShowZones);
   const [showLandmarks, setShowLandmarks] = useState(defaultShowLandmarks);
   const [showSurveyLocations, setShowSurveyLocations] = useState(defaultShowSurveyLocations);
@@ -654,12 +668,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     setBaseMap(defaultBaseMap);
   }, [defaultBaseMap]);
   useEffect(() => {
-    if (zoneBoundaries?.features?.length && isEnumeratorUser) {
-      setShowEnumeratorLocation(true);
-    }
-  }, [zoneBoundaries, isEnumeratorUser]);
+    setShowLandmarks(defaultShowLandmarks);
+  }, [defaultShowLandmarks]);
+  useEffect(() => {
+    setShowWards(defaultShowWards ?? hasWardLayer);
+  }, [defaultShowWards, hasWardLayer]);
+  useEffect(() => {
+    setShowZones(defaultShowZones);
+  }, [defaultShowZones]);
+  const landmarksLayerEnabled = defaultShowLandmarks;
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
-  const landmarkPoints = useLandmarkGeoJsonPoints(landmarkGeoJsonRefreshKey);
+  const landmarkPoints = useLandmarkGeoJsonPoints(
+    landmarksLayerEnabled ? landmarkGeoJsonRefreshKey : -1
+  );
   const [pulseFeatureId, setPulseFeatureId] = useState<string | null>(null);
   const isAddingFeature = !!addFeatureType;
   const landmarkScaleHydratedRef = useRef(false);
@@ -858,9 +879,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {/* Assigned / project zone boundaries from SHP import */}
         {showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
           <>
-            <FitToZoneBoundaries data={zoneBoundaries} />
+            <FitToZoneBoundaries data={zoneBoundaries} fitKey={zoneFitKey} />
             <GeoJSON
-              key={`zones-${zoneBoundaries.features.length}`}
+              key={`zones-${zoneFitKey}-${zoneBoundaries.features.length}-${String(
+                zoneBoundaries.features[0]?.properties?.__labelField || ''
+              )}`}
               data={zoneBoundaries}
               style={() => ({
                 color: '#38bdf8',
@@ -870,6 +893,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               })}
               onEachFeature={(feature, layer) => {
                 const label =
+                  feature.properties?.__label ||
                   feature.properties?.__assignValue ||
                   feature.properties?.ZONE_ID ||
                   feature.properties?.Ward_Name ||
@@ -1081,7 +1105,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             <div className="border-t pt-2">
               <div className="flex items-center justify-between gap-2 font-medium text-slate-700 mb-2">
                 <label className="flex items-center gap-2 cursor-pointer min-w-0 flex-1">
-                  <input type="checkbox" checked={showLandmarks} onChange={(e) => setShowLandmarks(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={showLandmarks}
+                    disabled={!defaultShowLandmarks}
+                    onChange={(e) => setShowLandmarks(e.target.checked)}
+                  />
                   <span className="truncate">Landmarks</span>
                 </label>
                 <div className="flex items-center gap-1 shrink-0">
@@ -1090,7 +1119,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     onClick={() => bumpLandmarkScale(-0.1)}
                     className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
                     title="Smaller landmark dots"
-                    disabled={landmarkIconScale <= 0.6}
+                    disabled={!defaultShowLandmarks || landmarkIconScale <= 0.6}
                   >
                     <Minus size={14} />
                   </button>
@@ -1099,16 +1128,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     onClick={() => bumpLandmarkScale(0.1)}
                     className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
                     title="Larger landmark dots"
-                    disabled={landmarkIconScale >= 2.4}
+                    disabled={!defaultShowLandmarks || landmarkIconScale >= 2.4}
                   >
                     <Plus size={14} />
                   </button>
                 </div>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                <input type="checkbox" checked={showWards} onChange={(e) => setShowWards(e.target.checked)} />
-                <span>Ward Boundaries</span>
-              </label>
+              {hasWardLayer && (
+                <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                  <input type="checkbox" checked={showWards} onChange={(e) => setShowWards(e.target.checked)} />
+                  <span>Ward Boundaries</span>
+                </label>
+              )}
               {zoneBoundaries && zoneBoundaries.features?.length > 0 && (
                 <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
                   <input

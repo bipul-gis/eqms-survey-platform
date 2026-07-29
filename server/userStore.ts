@@ -17,6 +17,7 @@ export interface DbUser {
   assignedZoneValues: string[];
   projectZoneAssignments: Record<string, string[]>;
   assignedZoneLayerId?: string | null;
+  assignedGeospatialProjectIds: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +76,7 @@ function rowToUser(row: Record<string, unknown>): DbUser {
     assignedZoneValues: asStringArray(row.assigned_zone_values),
     projectZoneAssignments: asStringMap(row.project_zone_assignments),
     assignedZoneLayerId: (row.assigned_zone_layer_id as string) || null,
+    assignedGeospatialProjectIds: asStringArray(row.assigned_geospatial_project_ids),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -98,6 +100,7 @@ export function userToProfile(user: DbUser) {
     assignedZoneValues: user.assignedZoneValues,
     projectZoneAssignments: user.projectZoneAssignments,
     assignedZoneLayerId: user.assignedZoneLayerId,
+    assignedGeospatialProjectIds: user.assignedGeospatialProjectIds,
   };
 }
 
@@ -155,7 +158,7 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
   const merged: DbUser = { ...existing, id };
   for (const [key, value] of Object.entries(patch) as [keyof DbUser, DbUser[keyof DbUser]][]) {
     if (value !== undefined) {
-      (merged as Record<string, unknown>)[key as string] = value;
+      (merged as unknown as Record<string, unknown>)[key as string] = value;
     }
   }
   if (isWhitelistedAdmin(merged.email)) {
@@ -169,7 +172,8 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       project_ward_assignments = $9, assigned_questionnaire_ids = $10,
       assigned_slum_ids = $11, project_slum_assignments = $12,
       assigned_zone_values = $13, project_zone_assignments = $14,
-      assigned_zone_layer_id = $15, updated_at = NOW()
+      assigned_zone_layer_id = $15,
+      assigned_geospatial_project_ids = $16, updated_at = NOW()
      WHERE id = $1 RETURNING *`,
     [
       id,
@@ -187,6 +191,7 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       JSON.stringify(merged.assignedZoneValues || []),
       JSON.stringify(merged.projectZoneAssignments || {}),
       merged.assignedZoneLayerId ?? null,
+      JSON.stringify(merged.assignedGeospatialProjectIds || []),
     ]
   );
   return rows[0] ? rowToUser(rows[0]) : null;

@@ -1,31 +1,22 @@
 /**
- * useQuestionnaireSurveyLocations — loads HH-survey GPS points from the
- * `questionnaireResponses` Firestore collection and exposes them in a
- * normalized shape the map layer can render directly.
+ * useQuestionnaireSurveyLocations — loads HH-survey GPS points for the map.
  *
- * Role-based scoping matches firestore.rules:
- *   - `admin`: subscribes to the whole collection (admins can read all
- *     responses).
- *   - `enumerator`: subscribes only to that enumerator's own responses
- *     (`respondentId == uid`), so the layer still works on the
- *     enumerator side without tripping security rules.
- *   - `idle`: no listener attached. Used while auth state is loading or
- *     for unauthenticated viewers.
- *
- * Each response can contribute one point. We prefer `submissionLocation`
- * (the deliberate end-of-survey capture with accuracy + timestamp). If
- * that's missing — e.g. older responses, or drafts saved before the GPS
- * step — we fall back to the looser `location` field. Responses with no
- * usable coordinates are filtered out.
+ * Uses the slim `/api/responses/locations` endpoint (GPS fields only) and
+ * paints instantly from session cache when available, then refreshes.
  */
 
 import { useEffect, useState } from 'react';
 import { geosurveyApi } from '../lib/geosurveyApi';
+import {
+  readCachedSurveyLocations,
+  surveyLocationsCacheKey,
+  writeCachedSurveyLocations,
+} from '../lib/surveyLocationsCache';
 
 export type SurveyLocationLoadMode = 'idle' | 'admin' | 'enumerator';
 
 export interface SurveyLocationPoint {
-  /** Firestore response document id. Used as a stable React key + popup ref. */
+  /** Response document id. Used as a stable React key + popup ref. */
   id: string;
   lat: number;
   lng: number;
@@ -36,47 +27,10 @@ export interface SurveyLocationPoint {
   respondentEmail?: string;
   questionnaireId: string;
   status: 'draft' | 'submitted' | 'reviewed';
-  /** Firestore Timestamp (or string in some legacy docs). */
+  /** Timestamp (ISO string or legacy object). */
   submittedAt?: unknown;
   capturedAt?: unknown;
   ward?: string;
-}
-
-function pickLatLng(data: Record<string, unknown>):
-  | { lat: number; lng: number; accuracy?: number; capturedAt?: unknown }
-  | null {
-  // `submissionLocation` is the canonical end-of-survey capture — prefer
-  // it because it includes accuracy and the deliberate "I'm done" timestamp.
-  const sub = data.submissionLocation as
-    | { lat?: unknown; lng?: unknown; accuracy?: unknown; capturedAt?: unknown }
-    | undefined;
-  if (
-    sub &&
-    typeof sub.lat === 'number' &&
-    typeof sub.lng === 'number' &&
-    Number.isFinite(sub.lat) &&
-    Number.isFinite(sub.lng)
-  ) {
-    return {
-      lat: sub.lat,
-      lng: sub.lng,
-      accuracy: typeof sub.accuracy === 'number' ? sub.accuracy : undefined,
-      capturedAt: sub.capturedAt
-    };
-  }
-  // Fallback: `location` is the older / lighter field, used by some auto-
-  // fill paths and pre-submission-GPS responses.
-  const loc = data.location as { lat?: unknown; lng?: unknown } | undefined;
-  if (
-    loc &&
-    typeof loc.lat === 'number' &&
-    typeof loc.lng === 'number' &&
-    Number.isFinite(loc.lat) &&
-    Number.isFinite(loc.lng)
-  ) {
-    return { lat: loc.lat, lng: loc.lng };
-  }
-  return null;
 }
 
 function normalizeStatus(raw: unknown): 'draft' | 'submitted' | 'reviewed' {
@@ -84,14 +38,55 @@ function normalizeStatus(raw: unknown): 'draft' | 'submitted' | 'reviewed' {
   return 'draft';
 }
 
+function toPoint(item: {
+  id: string;
+  questionnaireId: string;
+  status: string;
+  respondentName?: string;
+  respondentEmail?: string;
+  submittedAt?: unknown;
+  lat: number;
+  lng: number;
+  accuracy?: number;
+  capturedAt?: unknown;
+  ward?: string;
+}): SurveyLocationPoint | null {
+  const lat = typeof item.lat === 'number' ? item.lat : Number(item.lat);
+  const lng = typeof item.lng === 'number' ? item.lng : Number(item.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    id: String(item.id ?? ''),
+    lat,
+    lng,
+    accuracy: typeof item.accuracy === 'number' ? item.accuracy : undefined,
+    capturedAt: item.capturedAt,
+    respondentName: typeof item.respondentName === 'string' ? item.respondentName : undefined,
+    respondentEmail: typeof item.respondentEmail === 'string' ? item.respondentEmail : undefined,
+    questionnaireId: typeof item.questionnaireId === 'string' ? item.questionnaireId : '',
+    status: normalizeStatus(item.status),
+    submittedAt: item.submittedAt,
+    ward: typeof item.ward === 'string' ? item.ward : undefined,
+  };
+}
+
 export function useQuestionnaireSurveyLocations(options: {
   mode: SurveyLocationLoadMode;
   userUid: string | undefined;
   /** When false, no API request is issued (admin HH layer off). Default true. */
   enabled?: boolean;
+  /** Restrict pins to this project's questionnaires. */
+  projectId?: string;
 }): { locations: SurveyLocationPoint[]; loading: boolean; error: Error | null } {
   const enabled = options.enabled !== false;
-  const [locations, setLocations] = useState<SurveyLocationPoint[]>([]);
+  const cacheKey = surveyLocationsCacheKey(
+    options.projectId,
+    options.mode,
+    options.mode === 'enumerator' ? options.userUid : undefined
+  );
+  const [locations, setLocations] = useState<SurveyLocationPoint[]>(() => {
+    if (!enabled || options.mode === 'idle') return [];
+    return readCachedSurveyLocations(cacheKey) || [];
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
@@ -108,46 +103,37 @@ export function useQuestionnaireSurveyLocations(options: {
       return;
     }
 
-    setLoading(true);
+    const cached = readCachedSurveyLocations(cacheKey);
+    if (cached && cached.length > 0) {
+      setLocations(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError(null);
 
     let cancelled = false;
     void (async () => {
       try {
-        const result = await geosurveyApi.listResponses(
-          options.mode === 'admin' ? undefined : { respondentId: options.userUid }
-        );
+        const result = await geosurveyApi.listResponseLocations({
+          projectId: options.projectId,
+          respondentId: options.mode === 'enumerator' ? options.userUid : undefined,
+        });
         if (cancelled) return;
         const next: SurveyLocationPoint[] = [];
-        for (const item of result.items) {
-          const data = item as Record<string, unknown>;
-          const coords = pickLatLng(data);
-          if (!coords) continue;
-          next.push({
-            id: String(data.id ?? ''),
-            lat: coords.lat,
-            lng: coords.lng,
-            accuracy: coords.accuracy,
-            capturedAt: coords.capturedAt,
-            respondentName:
-              typeof data.respondentName === 'string' ? data.respondentName : undefined,
-            respondentEmail:
-              typeof data.respondentEmail === 'string' ? data.respondentEmail : undefined,
-            questionnaireId:
-              typeof data.questionnaireId === 'string' ? data.questionnaireId : '',
-            status: normalizeStatus(data.status),
-            submittedAt: data.submittedAt,
-            ward:
-              data.location && typeof (data.location as any)?.ward === 'string'
-                ? (data.location as any).ward
-                : undefined
-          });
+        for (const item of result.items || []) {
+          const point = toPoint(item);
+          if (point) next.push(point);
         }
         setLocations(next);
+        writeCachedSurveyLocations(cacheKey, next);
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err : new Error(String(err)));
+        // Keep cached paint on refresh failure.
+        if (!cached || cached.length === 0) {
+          setError(err instanceof Error ? err : new Error(String(err)));
+        }
         setLoading(false);
       }
     })();
@@ -155,7 +141,7 @@ export function useQuestionnaireSurveyLocations(options: {
     return () => {
       cancelled = true;
     };
-  }, [enabled, options.mode, options.userUid]);
+  }, [enabled, options.mode, options.userUid, options.projectId, cacheKey]);
 
   return { locations, loading, error };
 }

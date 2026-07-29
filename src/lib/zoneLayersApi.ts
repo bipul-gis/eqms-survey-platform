@@ -28,6 +28,12 @@ export const zoneLayersApi = {
       `/api/zone-layers${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`
     ),
 
+  /** Single round-trip used when opening a geospatial project. */
+  listLayersWithPolygons: (projectId: string) =>
+    zoneFetch<{ items: ZoneLayer[]; polygons: ZonePolygon[] }>(
+      `/api/zone-layers?projectId=${encodeURIComponent(projectId)}&withPolygons=1`
+    ),
+
   getLayer: (id: string) => zoneFetch<ZoneLayer>(`/api/zone-layers/${id}`),
 
   listAssignValues: (layerId: string) =>
@@ -46,6 +52,7 @@ export const zoneLayersApi = {
     projectId: string;
     name?: string;
     assignmentField?: string | null;
+    labelField?: string | null;
     attributeFields: string[];
     strictGeofence?: boolean;
     polygons: Array<{
@@ -61,7 +68,12 @@ export const zoneLayersApi = {
 
   updateLayer: (
     id: string,
-    patch: { name?: string; assignmentField?: string | null; strictGeofence?: boolean }
+    patch: {
+      name?: string;
+      assignmentField?: string | null;
+      labelField?: string | null;
+      strictGeofence?: boolean;
+    }
   ) =>
     zoneFetch<ZoneLayer>(`/api/zone-layers/${id}`, {
       method: 'PATCH',

@@ -35,6 +35,8 @@ type EnumeratorEntry = {
   assignedZoneValues: string[];
   /** Union of `assignedQuestionnaireIds` across all UIDs sharing this email. */
   assignedQuestionnaireIds: string[];
+  /** Project IDs with explicit Geospatial Survey entitlement. */
+  assignedGeospatialProjectIds: string[];
 };
 
 const normalizeUserSearch = (q: string) => q.trim().toLowerCase();
@@ -189,7 +191,7 @@ const EnumeratorProjectTaskRow: React.FC<{
       ...(enableGeospatial
         ? useZones
           ? { zoneValues, wards: [] }
-          : { wards, zoneValues: [] }
+          : { zoneValues: [], wards: [] }
         : {}),
       ...(enableQuestionnaire ? { questionnaireIds } : {})
     });
@@ -236,7 +238,7 @@ const EnumeratorProjectTaskRow: React.FC<{
             <div className="flex items-center gap-1.5 min-w-0">
               <MapPin size={13} className="text-sky-600 shrink-0" />
               <label className="text-[10px] font-bold text-sky-700 uppercase tracking-wider">
-                Zone assignment{zoneFieldLabel ? ` · ${zoneFieldLabel}` : ''}
+                Boundary assignment{zoneFieldLabel ? ` · ${zoneFieldLabel}` : ''}
               </label>
             </div>
             <button
@@ -245,12 +247,12 @@ const EnumeratorProjectTaskRow: React.FC<{
               onClick={() => setZoneValues([])}
               className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
             >
-              Clear zones
+              Clear boundaries
             </button>
           </div>
           <p className="text-[10px] text-gray-500 leading-relaxed">
-            Assign zone values from the imported SHP attribute table. Enumerator map and survey are
-            limited to these boundaries.
+            Assign zone values from the imported SHP. These define the enumerator's work-area
+            boundary — survey access is controlled separately.
           </p>
           <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
             {zoneOptions.map((v) => {
@@ -271,81 +273,24 @@ const EnumeratorProjectTaskRow: React.FC<{
           </div>
           <p className="text-[10px] text-gray-500">
             {zoneValues.length === 0
-              ? 'No zones assigned.'
-              : `${zoneValues.length} zone value(s) assigned.`}
+              ? 'No boundaries assigned.'
+              : `${zoneValues.length} boundary zone(s) assigned.`}
           </p>
         </div>
       )}
 
       {enableGeospatial && !useZones && (
         <div className="space-y-2 pt-2 border-t border-gray-200">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <MapPin size={13} className="text-blue-600 shrink-0" />
-              <label className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">
-                Geospatial survey
-              </label>
-            </div>
-            <button
-              type="button"
-              disabled={saving || wards.length === 0}
-              onClick={() => setWards([])}
-              className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
-            >
-              Clear wards
-            </button>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <MapPin size={13} className="text-amber-600 shrink-0" />
+            <label className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">
+              Geospatial survey
+            </label>
           </div>
-          <p className="text-[10px] text-gray-500 leading-relaxed">
-            Assign wards to give this enumerator the full geospatial survey for this project.
-            Each ward can only belong to one enumerator. Import a zone SHP for attribute-based
-            assignment instead.
-          </p>
-          <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
-            {wardOptions.length === 0 ? (
-              <p className="text-[11px] text-gray-400 italic">No ward names available.</p>
-            ) : (
-              wardOptions.map((w) => {
-                const key = normalizeWardKey(w);
-                const holder = wardHeldByOther.get(key);
-                const mine = wards.some((x) => normalizeWardKey(x) === key);
-                const blocked = !!holder && !mine;
-                return (
-                  <label
-                    key={w}
-                    title={
-                      blocked && holder
-                        ? `Assigned to ${holder.displayName} (${holder.email})`
-                        : undefined
-                    }
-                    className={`flex items-start gap-2 text-xs select-none ${
-                      blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={mine}
-                      onChange={() => toggleWard(w)}
-                      disabled={saving || blocked}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mt-0.5 shrink-0"
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate text-gray-800">{w}</span>
-                      {blocked && holder && (
-                        <span className="block text-[10px] text-amber-700 leading-tight">
-                          Taken · {holder.displayName}
-                        </span>
-                      )}
-                    </span>
-                  </label>
-                );
-              })
-            )}
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
+            Import a zone boundary SHP (ZIP) from <strong>Geospatial Assignment → Manage SHP</strong> first.
+            Then assign enumerators by any attribute field from that shapefile.
           </div>
-          <p className="text-[10px] text-gray-500">
-            {wards.length === 0
-              ? 'Geospatial survey off — no wards assigned.'
-              : `Geospatial survey on · ${wards.length} ward(s).`}
-          </p>
         </div>
       )}
 
@@ -458,17 +403,20 @@ const EnumeratorProjectTaskRow: React.FC<{
   );
 };
 
+export type UserManagementTab = 'pending' | 'boundary' | 'geospatial' | 'questionnaire' | 'create';
+
 export const UserManagement: React.FC<{
   /**
    * Active project context. When provided:
-   *  - the Tasks tab assigns geospatial and/or questionnaire surveys based on
-   *    this project's enabled segments,
+   *  - Geospatial Assignment assigns imported SHP values,
+   *  - Questionnaire Assignment assigns published project forms,
    *  - questionnaire saves apply only to this project (other projects are
    *    preserved).
    */
   project?: Project | null;
+  initialTab?: UserManagementTab;
   onClose: () => void;
-}> = ({ project, onClose }) => {
+}> = ({ project, initialTab = 'pending', onClose }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -477,11 +425,15 @@ export const UserManagement: React.FC<{
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUsers, setPendingUsers] = useState<UserProfile[]>([]);
-  const [activeTab, setActiveTab] = useState<'create' | 'pending' | 'tasks'>('pending');
+  const [activeTab, setActiveTab] = useState<UserManagementTab>(initialTab);
   const segmentGeo = project ? project.segments?.geospatial === true : false;
   const segmentQ = project ? project.segments?.questionnaire !== false : true;
 
-  // Project's questionnaires — drives questionnaire assignment on the Tasks tab.
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  // Project's questionnaires — drives the Questionnaire Assignment tab.
   const [projectQuestionnaires, setProjectQuestionnaires] = useState<Questionnaire[]>([]);
 
   const [activeEnumeratorsCount, setActiveEnumeratorsCount] = useState(0);
@@ -631,6 +583,7 @@ export const UserManagement: React.FC<{
           const wn = wardsFromUserProfile(data);
           const zv = assignedZoneValuesFromProfile(data, targetProjectId);
           const qids = questionnaireIdsFromUserProfile(data);
+          const geoIds = data.assignedGeospatialProjectIds || [];
           if (!existing) {
             byEmail.set(emailKey, {
               email: data.email,
@@ -639,7 +592,8 @@ export const UserManagement: React.FC<{
               uids: uid ? [uid] : [],
               assignedWardNames: status === 'approved' ? wn : [],
               assignedZoneValues: status === 'approved' ? zv : [],
-              assignedQuestionnaireIds: status === 'approved' ? qids : []
+              assignedQuestionnaireIds: status === 'approved' ? qids : [],
+              assignedGeospatialProjectIds: status === 'approved' ? geoIds : []
             });
             continue;
           }
@@ -649,6 +603,7 @@ export const UserManagement: React.FC<{
             existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wn])].sort((a, b) => a.localeCompare(b));
             existing.assignedZoneValues = [...new Set([...existing.assignedZoneValues, ...zv])].sort((a, b) => a.localeCompare(b));
             existing.assignedQuestionnaireIds = [...new Set([...existing.assignedQuestionnaireIds, ...qids])].sort();
+            existing.assignedGeospatialProjectIds = [...new Set([...existing.assignedGeospatialProjectIds, ...geoIds])];
           }
         }
         return Array.from(byEmail.values()).sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
@@ -997,11 +952,11 @@ export const UserManagement: React.FC<{
       </div>
 
       {/* Tabs */}
-      <div className="grid grid-cols-3 border-b border-gray-100">
+      <div className="flex border-b border-gray-100 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab('pending')}
-          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+          className={`shrink-0 py-2.5 px-3 text-[11px] font-medium transition-colors flex items-center justify-center gap-1.5 ${
             activeTab === 'pending' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
           }`}
         >
@@ -1014,18 +969,49 @@ export const UserManagement: React.FC<{
         </button>
         <button
           type="button"
-          onClick={() => setActiveTab('tasks')}
-          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors flex items-center justify-center gap-1 ${
-            activeTab === 'tasks' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
+          onClick={() => setActiveTab('boundary')}
+          disabled={!segmentGeo}
+          className={`shrink-0 py-2.5 px-3 text-[11px] font-medium transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'boundary'
+              ? 'bg-cyan-50 text-cyan-700 border-b-2 border-cyan-600'
+              : 'text-gray-500 hover:text-gray-700 disabled:opacity-40'
           }`}
+          title="Assign SHP zone boundaries to enumerators"
         >
-          <ClipboardList size={14} className="shrink-0 hidden sm:block" />
-          Tasks
+          <MapPin size={13} className="shrink-0 hidden sm:block" />
+          Boundary
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('geospatial')}
+          disabled={!segmentGeo}
+          className={`shrink-0 py-2.5 px-3 text-[11px] font-medium transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'geospatial'
+              ? 'bg-sky-50 text-sky-700 border-b-2 border-sky-600'
+              : 'text-gray-500 hover:text-gray-700 disabled:opacity-40'
+          }`}
+          title="Enable/disable Geospatial Survey per enumerator"
+        >
+          Geo survey
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('questionnaire')}
+          disabled={!segmentQ}
+          className={`shrink-0 py-2.5 px-3 text-[11px] font-medium transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'questionnaire'
+              ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-600'
+              : 'text-gray-500 hover:text-gray-700 disabled:opacity-40'
+          }`}
+          title="Assign project questionnaires"
+        >
+          <ClipboardList size={13} className="shrink-0 hidden sm:block" />
+          Qsn assign
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('create')}
-          className={`py-2.5 px-2 text-[11px] sm:text-xs font-medium transition-colors ${
+          className={`shrink-0 py-2.5 px-3 text-[11px] font-medium transition-colors ${
             activeTab === 'create' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
           }`}
         >
@@ -1234,7 +1220,7 @@ export const UserManagement: React.FC<{
           </>
         )}
 
-        {activeTab === 'tasks' && (
+        {(activeTab === 'boundary' || activeTab === 'geospatial' || activeTab === 'questionnaire') && (
           <div className="space-y-4">
             {error && (
               <div className="bg-red-50 text-red-600 p-3 rounded-xl text-xs border border-red-100">{error}</div>
@@ -1250,19 +1236,19 @@ export const UserManagement: React.FC<{
                     <p className="text-[10px] text-blue-700">Project code · {project.code}</p>
                   )}
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
-                    {segmentGeo && (
+                    {activeTab === 'boundary' && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-800 border border-cyan-200">
+                        Boundary assignment
+                      </span>
+                    )}
+                    {activeTab === 'geospatial' && segmentGeo && (
                       <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">
-                        Geospatial
+                        Geospatial survey task
                       </span>
                     )}
-                    {segmentQ && (
+                    {activeTab === 'questionnaire' && segmentQ && (
                       <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
-                        Questionnaire
-                      </span>
-                    )}
-                    {!segmentGeo && !segmentQ && (
-                      <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
-                        No survey segments enabled
+                        Questionnaire assignment
                       </span>
                     )}
                   </div>
@@ -1271,62 +1257,51 @@ export const UserManagement: React.FC<{
             )}
 
             <div>
-              <h3 className="text-sm font-bold text-gray-800">Project task assignment</h3>
+              <h3 className="text-sm font-bold text-gray-800">
+                {activeTab === 'boundary'
+                  ? 'Boundary Assignment'
+                  : activeTab === 'geospatial'
+                    ? 'Geospatial Survey Task'
+                    : 'Questionnaire Assignment'}
+              </h3>
               <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-                For each enumerator, assign the surveys this project enables
-                {segmentGeo && segmentQ
-                  ? zoneAssignOptions.length > 0
-                    ? ' — zone boundaries and/or full questionnaire'
-                    : ' — geospatial and/or full questionnaire'
-                  : segmentGeo
-                    ? zoneAssignOptions.length > 0
-                      ? ' — geospatial survey via imported zone attributes'
-                      : ' — geospatial survey via wards'
-                    : segmentQ
-                      ? ' — full questionnaire survey'
-                      : ''}
-                . Other projects&apos; assignments stay unchanged.
+                {activeTab === 'boundary'
+                  ? 'Assign SHP zone boundaries to enumerators. Boundaries define the work area and can apply to Geospatial Survey, Questionnaire Survey, or both (controlled from Project Picker).'
+                  : activeTab === 'geospatial'
+                    ? 'Enable or disable the Geospatial Survey task per enumerator. The survey module is coming later; this only controls whether the enumerator sees the geospatial workspace.'
+                    : 'Assign published questionnaire forms to enumerators. Boundary and geospatial assignments are preserved separately.'}
               </p>
-              {(segmentGeo || segmentQ) && (
+              {activeTab === 'boundary' && segmentGeo && (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {segmentGeo && (
-                    <button
-                      type="button"
-                      disabled={clearingAllAssignments || activeEnumerators.length === 0}
-                      onClick={() => {
-                        const ok = confirm(
-                          zoneAssignOptions.length > 0
-                            ? 'Clear zone/ward assignments for all active enumerators?\n\nThis turns off geospatial survey for everyone until you assign zones again.'
-                            : 'Clear ward assignments for all active enumerators?\n\nThis turns off geospatial survey for everyone until you assign wards again.'
-                        );
-                        if (!ok) return;
-                        void clearAllEnumeratorWardAssignments();
-                      }}
-                      className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
-                    >
-                      {clearingAllAssignments
-                        ? 'Clearing…'
-                        : zoneAssignOptions.length > 0
-                          ? 'Clear all geospatial (zones)'
-                          : 'Clear all geospatial (wards)'}
-                    </button>
-                  )}
-                  {segmentQ && (
-                    <button
-                      type="button"
-                      disabled={
-                        clearingAllAssignments ||
-                        activeEnumerators.length === 0 ||
-                        projectQuestionnaires.length === 0
-                      }
-                      onClick={() => void clearAllEnumeratorQuestionnaireAssignmentsForProject()}
-                      className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
-                    >
-                      {clearingAllAssignments
-                        ? 'Clearing…'
-                        : 'Clear all questionnaires (this project)'}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    disabled={clearingAllAssignments || activeEnumerators.length === 0}
+                    onClick={() => {
+                      if (!confirm('Clear all boundary (zone) assignments for every active enumerator in this project?')) return;
+                      void clearAllEnumeratorWardAssignments();
+                    }}
+                    className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
+                  >
+                    {clearingAllAssignments ? 'Clearing…' : 'Clear all boundaries'}
+                  </button>
+                </div>
+              )}
+              {activeTab === 'questionnaire' && segmentQ && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={
+                      clearingAllAssignments ||
+                      activeEnumerators.length === 0 ||
+                      projectQuestionnaires.length === 0
+                    }
+                    onClick={() => void clearAllEnumeratorQuestionnaireAssignmentsForProject()}
+                    className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
+                  >
+                    {clearingAllAssignments
+                      ? 'Clearing…'
+                      : 'Clear all questionnaires (this project)'}
+                  </button>
                 </div>
               )}
             </div>
@@ -1345,43 +1320,24 @@ export const UserManagement: React.FC<{
 
             {!project && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                Open a project from the project picker to assign survey tasks.
+                Open a project from the project picker to assign tasks.
               </p>
             )}
-            {project && !segmentGeo && !segmentQ && (
+            {project && activeTab === 'boundary' && segmentGeo && zoneAssignOptions.length === 0 && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                This project has no survey segments enabled, so there is nothing to assign.
+                No zone layer yet. Open <strong>Geospatial Assignment → Manage SHP</strong>, upload a
+                polygon SHP ZIP, pick an assignment field, then return here to assign boundaries.
               </p>
             )}
-            {project && segmentGeo && wardNameOptions.length === 0 && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                Could not read ward names from landmark reference data.
-              </p>
-            )}
-            {project && segmentQ && projectQuestionnaires.length === 0 && (
+            {project && activeTab === 'questionnaire' && segmentQ && projectQuestionnaires.length === 0 && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
                 This project has no questionnaires yet. Build or copy one from the Questionnaire
                 workspace first.
               </p>
             )}
-            {segmentGeo && duplicateWardAssignments.length > 0 && (
-              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1">
-                <p className="font-semibold">Overlapping ward assignments detected</p>
-                <p className="text-amber-900">
-                  The same ward is assigned to more than one enumerator. Adjust so each ward has a
-                  single holder:
-                </p>
-                <ul className="list-disc list-inside text-amber-900">
-                  {duplicateWardAssignments.map((d) => (
-                    <li key={d.wardLabel}>
-                      <span className="font-medium">{d.wardLabel}</span>: {d.owners.join(', ')}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
 
-            {(segmentGeo || segmentQ) &&
+            {/* Boundary tab: zone value checkboxes */}
+            {activeTab === 'boundary' && segmentGeo && project &&
               (activeEnumerators.length === 0 ? (
                 <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
               ) : filteredEnumeratorsForTasks.length === 0 ? (
@@ -1396,13 +1352,104 @@ export const UserManagement: React.FC<{
                     <EnumeratorProjectTaskRow
                       key={entry.email}
                       entry={entry}
-                      enableGeospatial={segmentGeo}
-                      enableQuestionnaire={segmentQ}
+                      enableGeospatial
+                      enableQuestionnaire={false}
                       wardOptions={wardNameOptions}
                       zoneOptions={zoneAssignOptions}
                       zoneFieldLabel={zoneAssignField}
-                      questionnaires={projectQuestionnaires}
+                      questionnaires={[]}
                       wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
+                      saving={taskSavingEmail === entry.email || clearingAllAssignments}
+                      onSave={(next) => void saveEnumeratorProjectAssignment(entry, next)}
+                    />
+                  ))}
+                </div>
+              ))}
+
+            {/* Geospatial Survey tab: simple on/off toggle per enumerator */}
+            {activeTab === 'geospatial' && segmentGeo && project &&
+              (activeEnumerators.length === 0 ? (
+                <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
+              ) : filteredEnumeratorsForTasks.length === 0 ? (
+                <p className="text-sm text-gray-500">No users match your search.</p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-gray-500">
+                    Showing {filteredEnumeratorsForTasks.length}
+                    {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
+                  </p>
+                  {filteredEnumeratorsForTasks.map((entry) => {
+                    const geoProjectIds = entry.assignedGeospatialProjectIds || [];
+                    const isGeoEnabled = project ? geoProjectIds.includes(project.id) : false;
+                    const isSaving = taskSavingEmail === entry.email;
+                    return (
+                      <div key={entry.email} className="bg-gray-50 border border-gray-100 rounded-xl p-3 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-gray-800 truncate">{entry.displayName}</p>
+                          <p className="text-[10px] text-gray-500 truncate">{entry.email}</p>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer select-none shrink-0">
+                          <span className={`text-[10px] font-bold uppercase ${isGeoEnabled ? 'text-sky-700' : 'text-gray-400'}`}>
+                            {isGeoEnabled ? 'Enabled' : 'Off'}
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={isGeoEnabled}
+                            disabled={isSaving}
+                            onChange={async () => {
+                              try {
+                                setTaskSavingEmail(entry.email);
+                                setError(null);
+                                const allUsers = await loadUsers();
+                                await Promise.all(
+                                  entry.uids.map(async (uid) => {
+                                    const profile = allUsers.find((u) => u.uid === uid);
+                                    const existing = [...(profile?.assignedGeospatialProjectIds || [])];
+                                    const nextIds = isGeoEnabled
+                                      ? existing.filter((id) => id !== project!.id)
+                                      : [...new Set([...existing, project!.id])];
+                                    await geosurveyApi.updateUser(uid, {
+                                      assignedGeospatialProjectIds: nextIds,
+                                    } as Partial<UserProfile>);
+                                  })
+                                );
+                                await refreshAll();
+                              } catch (e) {
+                                setError('Failed to update geospatial survey task');
+                              } finally {
+                                setTaskSavingEmail(null);
+                              }
+                            }}
+                            className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                          />
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+
+            {/* Questionnaire tab: form assignment */}
+            {activeTab === 'questionnaire' && segmentQ && project &&
+              (activeEnumerators.length === 0 ? (
+                <p className="text-sm text-gray-500">No approved enumerators to assign.</p>
+              ) : filteredEnumeratorsForTasks.length === 0 ? (
+                <p className="text-sm text-gray-500">No users match your search.</p>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-[11px] text-gray-500">
+                    Showing {filteredEnumeratorsForTasks.length}
+                    {tasksTabSearch.trim() ? ` of ${activeEnumerators.length}` : ''} enumerator(s)
+                  </p>
+                  {filteredEnumeratorsForTasks.map((entry) => (
+                    <EnumeratorProjectTaskRow
+                      key={entry.email}
+                      entry={entry}
+                      enableGeospatial={false}
+                      enableQuestionnaire
+                      wardOptions={[]}
+                      questionnaires={projectQuestionnaires}
+                      wardHeldByOther={new Map()}
                       saving={taskSavingEmail === entry.email || clearingAllAssignments}
                       onSave={(next) => void saveEnumeratorProjectAssignment(entry, next)}
                     />

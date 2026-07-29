@@ -38,12 +38,34 @@ function normalizeProjectPayload(project: { [key: string]: unknown }) {
       ? existingSegments.geospatial
       : isDefaultGeospatialProject(project);
 
+  // Derive boundaryAppliesTo from legacy questionnaireGeofence when not set.
+  let boundaryAppliesTo = existingSegments.boundaryAppliesTo as
+    | 'geospatial'
+    | 'questionnaire'
+    | 'both'
+    | undefined;
+  if (!boundaryAppliesTo && geospatial) {
+    const legacyMerge =
+      typeof existingSegments.questionnaireGeofence === 'boolean'
+        ? existingSegments.questionnaireGeofence
+        : true;
+    boundaryAppliesTo = legacyMerge ? 'both' : 'geospatial';
+  }
+
   return {
     ...project,
     segments: {
       ...existingSegments,
       geospatial,
       questionnaire: existingSegments.questionnaire !== false,
+      // Keep legacy field in sync for any old client reads.
+      questionnaireGeofence:
+        boundaryAppliesTo === 'both' || boundaryAppliesTo === 'questionnaire'
+          ? true
+          : boundaryAppliesTo === 'geospatial'
+            ? false
+            : existingSegments.questionnaireGeofence,
+      boundaryAppliesTo,
     },
   };
 }
@@ -145,7 +167,12 @@ export async function activateGeosurveyProject(project: {
 
 export async function updateGeosurveyProjectSegments(
   projectId: string,
-  segments: { geospatial?: boolean; questionnaire?: boolean }
+  segments: {
+    geospatial?: boolean;
+    questionnaire?: boolean;
+    questionnaireGeofence?: boolean;
+    boundaryAppliesTo?: 'geospatial' | 'questionnaire' | 'both';
+  }
 ): Promise<GeosurveyProjectRecord | null> {
   const existing = await getGeosurveyProject(projectId);
   if (!existing) return null;
@@ -166,6 +193,12 @@ export async function updateGeosurveyProjectSegments(
       ...(typeof segments.geospatial === 'boolean' ? { geospatial: segments.geospatial } : {}),
       ...(typeof segments.questionnaire === 'boolean'
         ? { questionnaire: segments.questionnaire }
+        : {}),
+      ...(typeof segments.questionnaireGeofence === 'boolean'
+        ? { questionnaireGeofence: segments.questionnaireGeofence }
+        : {}),
+      ...(segments.boundaryAppliesTo
+        ? { boundaryAppliesTo: segments.boundaryAppliesTo }
         : {}),
     },
   });

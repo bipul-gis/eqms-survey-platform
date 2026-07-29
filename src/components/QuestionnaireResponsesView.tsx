@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import {
@@ -9,6 +9,8 @@ import {
 import { formatPhotoAnswerLabel } from '../lib/photoAnswers';
 import { Question, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
 import { assignedSlumsForProject, formatAssignedSlumLabels } from '../lib/assignedSlums';
+import { assignedZoneValuesFromProfile, zonesToGeoJson } from '../lib/assignedZones';
+import { zoneLayersApi } from '../lib/zoneLayersApi';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { useAuth } from './AuthProvider';
 import { Map as MapIcon, ChevronDown, ChevronUp } from 'lucide-react';
@@ -73,20 +75,31 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   } | null>(null);
 
   const projectId = questionnaire.projectId ?? DEFAULT_PROJECT_ID;
+  /** Imported boundary SHP for this project — same layer as Geospatial Assignment. */
+  const [zoneBoundaries, setZoneBoundaries] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [zoneAssignField, setZoneAssignField] = useState<string | null>(null);
   const [questionnaireTitleById, setQuestionnaireTitleById] = useState<Record<string, string>>({});
   const [taskedEnumerators, setTaskedEnumerators] = useState<
-    { key: string; name: string; email?: string; slumIds: string[]; questionnaireIds: string[] }[]
+    {
+      key: string;
+      name: string;
+      email?: string;
+      slumIds: string[];
+      zoneValues: string[];
+      questionnaireIds: string[];
+    }[]
   >([]);
 
   const fetchResponses = async () => {
     try {
       setLoading(true);
       setFetchError(null);
-      const [responsesResult, usersResult, titlesResult, questionnaireResult] = await Promise.all([
-        geosurveyApi.listResponses({ questionnaireId: questionnaire.id }),
+      // Slim list strips embedded photo dataUrls (~20MB → ~0.1MB for this project).
+      // Full payloads are fetched only when exporting CSV/SHP.
+      const [responsesResult, usersResult, titlesResult] = await Promise.all([
+        geosurveyApi.listResponses({ questionnaireId: questionnaire.id, slim: true }),
         geosurveyApi.listUsers(),
         geosurveyApi.listQuestionnaires(projectId),
-        geosurveyApi.listQuestionnaires()
       ]);
 
       const list: QuestionnaireResponse[] = [];
@@ -98,7 +111,10 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       });
       setResponses(list);
 
-      const liveQuestionnaire = (questionnaireResult.items as unknown as Questionnaire[]).find((q) => q.id === questionnaire.id);
+      // Prefer the live definition from the project questionnaire list when present.
+      const liveQuestionnaire = (titlesResult.items as unknown as Questionnaire[]).find(
+        (q) => q.id === questionnaire.id
+      );
       if (liveQuestionnaire) {
         setQuestionnaire(liveQuestionnaire);
       }
@@ -111,7 +127,14 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
 
       const byEmail = new Map<
         string,
-        { key: string; name: string; email?: string; slumIds: string[]; questionnaireIds: string[] }
+        {
+          key: string;
+          name: string;
+          email?: string;
+          slumIds: string[];
+          zoneValues: string[];
+          questionnaireIds: string[];
+        }
       >();
       for (const data of usersResult.items as UserProfile[]) {
         if (data.role !== 'enumerator') continue;
@@ -121,6 +144,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         const emailKey = email.toLowerCase();
         if (!emailKey) continue;
         const slumIds = assignedSlumsForProject(data, projectId);
+        const zoneValues = assignedZoneValuesFromProfile(data, projectId);
         const questionnaireIds = [
           ...new Set((qids || []).map((id) => String(id).trim()).filter(Boolean))
         ].sort();
@@ -131,10 +155,14 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
             name: (data.displayName || '').trim() || email,
             email: email || undefined,
             slumIds,
+            zoneValues,
             questionnaireIds
           });
         } else {
           existing.slumIds = [...new Set([...existing.slumIds, ...slumIds])].sort();
+          existing.zoneValues = [...new Set([...existing.zoneValues, ...zoneValues])].sort((a, b) =>
+            a.localeCompare(b)
+          );
           existing.questionnaireIds = [
             ...new Set([...existing.questionnaireIds, ...questionnaireIds])
           ].sort();
@@ -153,6 +181,17 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     }
   };
 
+  /** Full payloads (with photos) for the currently filtered response ids. */
+  const fetchFullResponsesForExport = async (
+    ids: string[]
+  ): Promise<QuestionnaireResponse[]> => {
+    const idSet = new Set(ids);
+    const { items } = await geosurveyApi.listResponses({
+      questionnaireId: questionnaire.id,
+    });
+    return (items as unknown as QuestionnaireResponse[]).filter((r) => idSet.has(r.id));
+  };
+
   useEffect(() => {
     setQuestionnaire(initialQuestionnaire);
   }, [initialQuestionnaire]);
@@ -161,6 +200,44 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     void fetchResponses();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [questionnaire.id]);
+
+  // Imported boundary SHP for the preview map (same source as Geospatial Assignment).
+  useEffect(() => {
+    let cancelled = false;
+    const loadZones = async () => {
+      if (!projectId) {
+        setZoneBoundaries(null);
+        setZoneAssignField(null);
+        return;
+      }
+      try {
+        const { items, polygons } = await zoneLayersApi.listLayersWithPolygons(projectId);
+        if (cancelled) return;
+        const layer = items[0];
+        if (!layer || !polygons?.length) {
+          setZoneBoundaries(null);
+          setZoneAssignField(null);
+          return;
+        }
+        setZoneAssignField(layer.labelField || layer.assignmentField || 'Zone');
+        setZoneBoundaries(
+          zonesToGeoJson(polygons, {
+            labelField: layer.labelField || layer.assignmentField || null,
+          })
+        );
+      } catch (error) {
+        console.warn('Could not load zone boundaries for responses map', error);
+        if (!cancelled) {
+          setZoneBoundaries(null);
+          setZoneAssignField(null);
+        }
+      }
+    };
+    void loadZones();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   // GPS points for the responses map — submission GPS first, then any
   // location-question answers stored on the response.
@@ -359,16 +436,59 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       .join(', ');
   };
 
-  /** Merges task slum assignments with per-response activity counts. */
+  /** Merges task area assignments (zones or slums) with per-response activity counts. */
+  const hasZoneAssignments = useMemo(
+    () =>
+      Boolean(zoneBoundaries?.features?.length) ||
+      taskedEnumerators.some((a) => a.zoneValues.length > 0),
+    [zoneBoundaries, taskedEnumerators]
+  );
+  const hasSlumAssignments = useMemo(
+    () => taskedEnumerators.some((a) => a.slumIds.length > 0),
+    [taskedEnumerators]
+  );
+  /** Prefer zone boundaries when the project has an imported SHP; fall back to slums. */
+  const areaScope: 'zone' | 'slum' | 'none' = hasZoneAssignments
+    ? 'zone'
+    : hasSlumAssignments
+      ? 'slum'
+      : zoneBoundaries
+        ? 'zone'
+        : 'none';
+  const areaColumnLabel =
+    areaScope === 'zone'
+      ? zoneAssignField
+        ? `Zone · ${zoneAssignField}`
+        : 'Zone(s)'
+      : areaScope === 'slum'
+        ? 'Slum(s)'
+        : 'Area';
+
   const enumeratorSummary = useMemo(() => {
     const map = new Map<string, EnumeratorBreakdownEntry>();
+
+    const formatAreaLabels = (a: {
+      slumIds: string[];
+      zoneValues: string[];
+    }): string => {
+      if (areaScope === 'zone') {
+        return a.zoneValues.length ? a.zoneValues.join(', ') : '—';
+      }
+      if (areaScope === 'slum') {
+        return formatAssignedSlumLabels(a.slumIds);
+      }
+      // Neither configured — show whichever the enumerator actually has.
+      if (a.zoneValues.length) return a.zoneValues.join(', ');
+      if (a.slumIds.length) return formatAssignedSlumLabels(a.slumIds);
+      return '—';
+    };
 
     for (const a of taskedEnumerators) {
       map.set(a.key, {
         uid: a.key,
         name: a.name,
         email: a.email,
-        slumLabels: formatAssignedSlumLabels(a.slumIds),
+        areaLabels: formatAreaLabels(a),
         questionnaireLabels: formatQuestionnaireLabels(a.questionnaireIds),
         draft: 0,
         submitted: 0,
@@ -389,7 +509,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
           uid: e.uid,
           name: e.name,
           email: e.email,
-          slumLabels: '—',
+          areaLabels: '—',
           questionnaireLabels: '—',
           draft: 0,
           submitted: 0,
@@ -420,7 +540,14 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       if (b.total !== a.total) return b.total - a.total;
       return (a.name || '').localeCompare(b.name || '');
     });
-  }, [taskedEnumerators, enumeratorBreakdown, questionnaire.id, questionnaire.title, questionnaireTitleById]);
+  }, [
+    taskedEnumerators,
+    enumeratorBreakdown,
+    questionnaire.id,
+    questionnaire.title,
+    questionnaireTitleById,
+    areaScope,
+  ]);
 
   const markReviewed = async (r: QuestionnaireResponse) => {
     if (!user) return;
@@ -494,7 +621,8 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       return;
     }
     try {
-      const { photoCount } = await downloadResponsesCsv(questionnaire, filtered);
+      const full = await fetchFullResponsesForExport(filtered.map((r) => r.id));
+      const { photoCount } = await downloadResponsesCsv(questionnaire, full);
       alert(
         photoCount > 0
           ? `CSV ZIP ready with ${photoCount} photo file(s) under photos/{survey-type}/. Names: enumeratorId_enumeratorName_responseId_serial.`
@@ -514,9 +642,10 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     setExportingShp(true);
     try {
       const downloadShp = await loadDownloadResponsesShpZip();
+      const full = await fetchFullResponsesForExport(filtered.map((r) => r.id));
       const { exported, skippedNoGps, photoCount } = await downloadShp(
         questionnaire,
-        filtered
+        full
       );
       const photoNote =
         photoCount > 0
@@ -635,8 +764,13 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
               <FileText size={48} className="mx-auto mb-4 text-slate-300" />
               <p className="font-medium text-slate-700">No responses yet for this questionnaire</p>
               <p className="text-sm mt-1 max-w-md mx-auto">
-                Responses will appear here as enumerators submit them. Task assignments (slums and
-                questionnaires per enumerator) are shown in the panel on the right.
+                Responses will appear here as enumerators submit them. Task assignments (
+                {areaScope === 'zone'
+                  ? 'zones and questionnaires'
+                  : areaScope === 'slum'
+                    ? 'slums and questionnaires'
+                    : 'area and questionnaires'}{' '}
+                per enumerator) are shown in the panel on the right.
               </p>
             </div>
           ) : (
@@ -749,10 +883,15 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
             <EnumeratorBreakdownPanel
               enumerators={enumeratorSummary}
               assignedCount={taskedEnumerators.length}
+              areaColumnLabel={areaColumnLabel}
+              areaScope={areaScope}
             />
-            {/* OSM map of captured GPS points (no CCC boundary / landmarks). */}
-            {responses.length > 0 && (
-              <ResponsesMapPanel surveyLocations={surveyLocationMarkers} />
+            {/* Imported boundary SHP + captured GPS points (no CCC landmarks). */}
+            {(responses.length > 0 || zoneBoundaries) && (
+              <ResponsesMapPanel
+                surveyLocations={surveyLocationMarkers}
+                zoneBoundaries={zoneBoundaries}
+              />
             )}
           </aside>
         </div>
@@ -879,8 +1018,9 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
 };
 
 // ---------------------------------------------------------------------------
-// ResponsesMapPanel — OSM map of captured GPS points only (no CCC wards /
-// landmarks / geospatial features). Fits bounds to the points when present.
+// ResponsesMapPanel — OSM map of the project's imported boundary SHP (same
+// layer as Geospatial Assignment) plus captured GPS points. No CCC wards /
+// landmarks. Fits bounds to the boundaries and points together.
 // ---------------------------------------------------------------------------
 const MAP_VISIBLE_STORAGE_KEY = 'eqms_responses_map_visible_v1';
 const SURVEY_LOCATION_FILL = '#374151';
@@ -907,27 +1047,51 @@ function formatSurveyTimestamp(value: unknown): string {
   return '—';
 }
 
-/** Fit / re-fit the map whenever the GPS point set changes. */
-const FitGpsBounds: React.FC<{ points: SurveyLocationMarker[] }> = ({ points }) => {
+/**
+ * Fit / re-fit the map to the imported boundary SHP plus captured GPS points,
+ * so the zone polygons are always in view alongside the responses.
+ */
+const FitGpsBounds: React.FC<{
+  points: SurveyLocationMarker[];
+  zoneBoundaries?: GeoJSON.FeatureCollection | null;
+}> = ({ points, zoneBoundaries }) => {
   const map = useMap();
   useEffect(() => {
-    if (!points.length) {
-      map.setView(BANGLADESH_FALLBACK, 7);
+    const bounds = L.latLngBounds([]);
+    if (zoneBoundaries?.features?.length) {
+      try {
+        const zoneBounds = L.geoJSON(zoneBoundaries).getBounds();
+        if (zoneBounds.isValid()) bounds.extend(zoneBounds);
+      } catch {
+        /* ignore malformed geometry */
+      }
+    }
+    for (const p of points) bounds.extend([p.lat, p.lng] as [number, number]);
+
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 17 });
       return;
     }
     if (points.length === 1) {
       map.setView([points[0].lat, points[0].lng], 16);
       return;
     }
-    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number]));
-    map.fitBounds(bounds, { padding: [36, 36], maxZoom: 17 });
-  }, [map, points]);
+    map.setView(BANGLADESH_FALLBACK, 7);
+  }, [map, points, zoneBoundaries]);
   return null;
+};
+
+const ZONE_BOUNDARY_STYLE = {
+  color: '#0284c7',
+  weight: 2,
+  fillColor: '#0ea5e9',
+  fillOpacity: 0.08,
 };
 
 const ResponsesMapPanel: React.FC<{
   surveyLocations: SurveyLocationMarker[];
-}> = ({ surveyLocations }) => {
+  zoneBoundaries?: GeoJSON.FeatureCollection | null;
+}> = ({ surveyLocations, zoneBoundaries }) => {
   const [visible, setVisible] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     try {
@@ -992,6 +1156,16 @@ const ResponsesMapPanel: React.FC<{
         ) : (
           <span className="text-[10px] text-slate-500">No GPS points in these responses</span>
         )}
+        {zoneBoundaries?.features?.length ? (
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-sky-700 bg-sky-50 border border-sky-200 rounded-full px-1.5 py-0.5">
+            <span
+              className="inline-block w-1.5 h-1.5 rounded-full"
+              style={{ backgroundColor: ZONE_BOUNDARY_STYLE.color }}
+              aria-hidden
+            />
+            {zoneBoundaries.features.length} zones
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={() => setVisible(false)}
@@ -1012,7 +1186,19 @@ const ResponsesMapPanel: React.FC<{
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          <FitGpsBounds points={surveyLocations} />
+          <FitGpsBounds points={surveyLocations} zoneBoundaries={zoneBoundaries} />
+          {/* Imported boundary SHP — drawn under the GPS pins. */}
+          {zoneBoundaries?.features?.length ? (
+            <GeoJSON
+              key={`zones:${zoneBoundaries.features.length}`}
+              data={zoneBoundaries}
+              style={() => ZONE_BOUNDARY_STYLE}
+              onEachFeature={(feature, layer) => {
+                const label = (feature?.properties as { __label?: string } | undefined)?.__label;
+                if (label) layer.bindTooltip(String(label), { sticky: true });
+              }}
+            />
+          ) : null}
           {surveyLocations.map((point) => {
             const status = point.status ?? 'submitted';
             const outline =
@@ -1074,7 +1260,8 @@ interface EnumeratorBreakdownEntry {
   uid: string;
   name: string;
   email?: string;
-  slumLabels: string;
+  /** Zone values or slum labels — chosen dynamically from project assignment type. */
+  areaLabels: string;
   questionnaireLabels: string;
   draft: number;
   submitted: number;
@@ -1086,8 +1273,16 @@ interface EnumeratorBreakdownEntry {
 const EnumeratorBreakdownPanel: React.FC<{
   enumerators: EnumeratorBreakdownEntry[];
   assignedCount: number;
-}> = ({ enumerators, assignedCount }) => {
+  areaColumnLabel: string;
+  areaScope: 'zone' | 'slum' | 'none';
+}> = ({ enumerators, assignedCount, areaColumnLabel, areaScope }) => {
   const totalResponses = enumerators.reduce((s, e) => s + e.total, 0);
+  const emptyHint =
+    areaScope === 'zone'
+      ? 'No enumerators assigned to this questionnaire yet. Assign boundaries and questionnaires in User Management.'
+      : areaScope === 'slum'
+        ? 'No enumerators assigned to this questionnaire yet. Assign slums and questionnaires in User Management → Tasks.'
+        : 'No enumerators assigned to this questionnaire yet. Assign tasks in User Management.';
 
   return (
     // Compact card — same visual rhythm as the Geospatial Survey's "By
@@ -1108,17 +1303,19 @@ const EnumeratorBreakdownPanel: React.FC<{
       </div>
 
       {enumerators.length === 0 ? (
-        <p className="text-[10px] text-slate-400 italic px-1 py-2">
-          No enumerators assigned to this questionnaire yet. Assign slums and questionnaires in User
-          Management → Tasks.
-        </p>
+        <p className="text-[10px] text-slate-400 italic px-1 py-2">{emptyHint}</p>
       ) : (
         <div className="qc-panel-scroll flex-1 min-h-0 overflow-y-auto rounded-lg border border-slate-100">
           <table className="w-full text-[10px]">
             <thead>
               <tr className="bg-slate-50 text-slate-500">
                 <th className="text-left px-1.5 py-1 font-semibold">Name</th>
-                <th className="text-left px-1 py-1 font-semibold min-w-[4rem]">Slum(s)</th>
+                <th
+                  className="text-left px-1 py-1 font-semibold min-w-[4rem]"
+                  title={areaColumnLabel}
+                >
+                  {areaScope === 'zone' ? 'Zone(s)' : areaScope === 'slum' ? 'Slum(s)' : 'Area'}
+                </th>
                 <th className="text-left px-1 py-1 font-semibold min-w-[4rem]">Survey(s)</th>
                 <th
                   className="text-center px-0.5 py-1 w-6 font-semibold text-amber-600"
@@ -1164,9 +1361,9 @@ const EnumeratorBreakdownPanel: React.FC<{
                   </td>
                   <td
                     className="px-1 py-1 text-slate-600 truncate max-w-[7rem] text-[9px] leading-snug"
-                    title={e.slumLabels !== '—' ? e.slumLabels : undefined}
+                    title={e.areaLabels !== '—' ? e.areaLabels : undefined}
                   >
-                    {e.slumLabels}
+                    {e.areaLabels}
                   </td>
                   <td
                     className="px-1 py-1 text-slate-600 truncate max-w-[7rem] text-[9px] leading-snug"
@@ -1739,10 +1936,13 @@ const formatAnswerForDisplay = (v: unknown, q?: Question): string => {
     return v.map((x) => String(x)).join(', ');
   }
   if (typeof v === 'object') {
-    // Legacy / untyped photo payloads (dataUrl present) — never dump base64.
+    // Slim / legacy photo payloads — never dump base64 or stub metadata.
+    const photoObj = v as { dataUrl?: unknown; hasPhoto?: boolean; _photo?: boolean };
     if (
-      typeof (v as { dataUrl?: unknown }).dataUrl === 'string' &&
-      String((v as { dataUrl: string }).dataUrl).startsWith('data:image')
+      photoObj.hasPhoto === true ||
+      photoObj._photo === true ||
+      (typeof photoObj.dataUrl === 'string' &&
+        String(photoObj.dataUrl).startsWith('data:image'))
     ) {
       return formatPhotoAnswerLabel(v);
     }

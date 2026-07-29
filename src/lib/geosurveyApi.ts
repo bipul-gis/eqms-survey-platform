@@ -150,7 +150,11 @@ export const geosurveyApi = {
 
   updateGeosurveyProjectSegments: (
     projectId: string,
-    segments: { geospatial?: boolean; questionnaire?: boolean }
+    segments: {
+      geospatial?: boolean;
+      questionnaire?: boolean;
+      questionnaireGeofence?: boolean;
+    }
   ) =>
     apiFetch<{ item: import('../types').Project }>(
       `/api/geosurvey-projects/${projectId}/segments`,
@@ -227,6 +231,9 @@ export const geosurveyApi = {
     questionnaireId?: string;
     respondentId?: string;
     status?: string;
+    projectId?: string;
+    /** Strip embedded photo dataUrls for fast admin list screens. */
+    slim?: boolean;
   }) => {
     const {
       cacheResponses,
@@ -238,32 +245,74 @@ export const geosurveyApi = {
     if (params?.questionnaireId) search.set('questionnaireId', params.questionnaireId);
     if (params?.respondentId) search.set('respondentId', params.respondentId);
     if (params?.status) search.set('status', params.status);
+    if (params?.projectId) search.set('projectId', params.projectId);
+    if (params?.slim) search.set('slim', '1');
     const q = search.toString() ? `?${search}` : '';
     try {
       const result = await apiFetch<{ items: Record<string, unknown>[] }>(
         `/api/responses${q}`
       );
-      // Cache unfiltered enumerator lists so offline allocate/list still work.
-      if (!params?.status && params?.respondentId) {
-        cacheResponses(result.items || []);
-      } else if (!params?.status && !params?.questionnaireId && !params?.respondentId) {
-        cacheResponses(result.items || []);
-      } else {
-        // Merge this page into existing cache by id.
-        const byId = new Map<string, Record<string, unknown>>();
-        for (const item of getCachedResponses()) {
-          if (typeof item.id === 'string') byId.set(item.id, item);
+      // Never cache slim (photo-stripped) payloads — that would wipe local photos.
+      if (!params?.slim) {
+        if (!params?.status && params?.respondentId) {
+          cacheResponses(result.items || []);
+        } else if (
+          !params?.status &&
+          !params?.questionnaireId &&
+          !params?.respondentId &&
+          !params?.projectId
+        ) {
+          cacheResponses(result.items || []);
+        } else {
+          const byId = new Map<string, Record<string, unknown>>();
+          for (const item of getCachedResponses()) {
+            if (typeof item.id === 'string') byId.set(item.id, item);
+          }
+          for (const item of result.items || []) {
+            if (typeof item.id === 'string') byId.set(item.id, item);
+          }
+          cacheResponses(Array.from(byId.values()));
         }
-        for (const item of result.items || []) {
-          if (typeof item.id === 'string') byId.set(item.id, item);
-        }
-        cacheResponses(Array.from(byId.values()));
       }
-      return { items: mergeResponsesWithOffline(result.items || [], params) };
+      return {
+        items: params?.slim
+          ? result.items || []
+          : mergeResponsesWithOffline(result.items || [], params),
+      };
     } catch (error) {
       if (!isNetworkFailure(error)) throw error;
       return { items: mergeResponsesWithOffline(getCachedResponses(), params) };
     }
+  },
+
+  getResponse: (id: string, opts?: { slim?: boolean }) => {
+    const search = new URLSearchParams();
+    if (opts?.slim) search.set('slim', '1');
+    const q = search.toString() ? `?${search}` : '';
+    return apiFetch<{ item: Record<string, unknown> }>(`/api/responses/${id}${q}`);
+  },
+
+  /** Slim GPS pins for map layer (no full answer payloads). */
+  listResponseLocations: (params?: { projectId?: string; respondentId?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.projectId) search.set('projectId', params.projectId);
+    if (params?.respondentId) search.set('respondentId', params.respondentId);
+    const q = search.toString() ? `?${search}` : '';
+    return apiFetch<{
+      items: Array<{
+        id: string;
+        questionnaireId: string;
+        status: string;
+        respondentName?: string;
+        respondentEmail?: string;
+        submittedAt?: unknown;
+        lat: number;
+        lng: number;
+        accuracy?: number;
+        capturedAt?: unknown;
+        ward?: string;
+      }>;
+    }>(`/api/responses/locations${q}`);
   },
 
   saveResponse: async (

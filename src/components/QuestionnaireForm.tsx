@@ -1007,6 +1007,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   ): Omit<QuestionnaireResponse, 'id'> => {
     const base: Record<string, any> = {
       questionnaireId: questionnaire.id,
+      projectId,
       respondentId: user!.uid,
       responses,
       status
