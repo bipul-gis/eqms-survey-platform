@@ -4,7 +4,10 @@ import { Circle, CircleMarker, GeoJSON, MapContainer, TileLayer, Tooltip, useMap
 import { EyeOff, LocateFixed, MapPinned, Navigation } from 'lucide-react';
 import type { ZonePolygon } from '../types';
 import { zonesToGeoJson } from '../lib/assignedZones';
-import { findContainingZone } from '../lib/pointInPolygon';
+import {
+  ASSIGNED_ZONE_BUFFER_METERS,
+  findZoneWithinDistance,
+} from '../lib/pointInPolygon';
 import { useGeoLocation } from './GeoLocationProvider';
 
 const FitAssignedZones: React.FC<{ zones: ZonePolygon[] }> = ({ zones }) => {
@@ -46,8 +49,16 @@ export const EnumeratorAssignedZoneMap: React.FC<{
   const { location, error, requestLocation } = useGeoLocation();
   const [focusRequestKey, setFocusRequestKey] = useState(0);
   const zoneGeoJson = useMemo(() => zonesToGeoJson(zones), [zones]);
-  const containingZone = useMemo(
-    () => (location ? findContainingZone(location.lng, location.lat, zones) : null),
+  const zoneProximity = useMemo(
+    () =>
+      location
+        ? findZoneWithinDistance(
+            location.lng,
+            location.lat,
+            zones,
+            ASSIGNED_ZONE_BUFFER_METERS
+          )
+        : null,
     [location, zones]
   );
 
@@ -65,8 +76,8 @@ export const EnumeratorAssignedZoneMap: React.FC<{
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-bold text-slate-900">Your assigned survey zone</h2>
           <p className="text-[11px] leading-relaxed text-slate-600">
-            Strict geofence is on. Submit questionnaires only while you are inside the outlined
-            boundary.
+            Submit inside the outlined boundary as usual, or up to {ASSIGNED_ZONE_BUFFER_METERS} m
+            outside it.
           </p>
         </div>
         <button
@@ -116,8 +127,8 @@ export const EnumeratorAssignedZoneMap: React.FC<{
                     center={[location.lat, location.lng]}
                     radius={Math.max(location.accuracy || 0, 3)}
                     pathOptions={{
-                      color: containingZone ? '#16a34a' : '#dc2626',
-                      fillColor: containingZone ? '#22c55e' : '#ef4444',
+                      color: zoneProximity ? '#16a34a' : '#dc2626',
+                      fillColor: zoneProximity ? '#22c55e' : '#ef4444',
                       fillOpacity: 0.12,
                       weight: 1,
                     }}
@@ -127,7 +138,7 @@ export const EnumeratorAssignedZoneMap: React.FC<{
                     radius={8}
                     pathOptions={{
                       color: '#ffffff',
-                      fillColor: containingZone ? '#16a34a' : '#dc2626',
+                      fillColor: zoneProximity ? '#16a34a' : '#dc2626',
                       fillOpacity: 1,
                       weight: 3,
                     }}
@@ -155,11 +166,15 @@ export const EnumeratorAssignedZoneMap: React.FC<{
             {location ? (
               <span
                 className={`inline-flex items-center gap-1.5 font-semibold ${
-                  containingZone ? 'text-green-700' : 'text-red-700'
+                  zoneProximity ? 'text-green-700' : 'text-red-700'
                 }`}
               >
                 <Navigation size={13} />
-                {containingZone ? 'You are inside your assigned zone' : 'You are outside your assigned zone'}
+                {zoneProximity?.inside
+                  ? 'You are inside your assigned zone'
+                  : zoneProximity
+                    ? `You are within the ${ASSIGNED_ZONE_BUFFER_METERS} m boundary buffer`
+                    : `You are more than ${ASSIGNED_ZONE_BUFFER_METERS} m outside your assigned zone`}
               </span>
             ) : (
               <button

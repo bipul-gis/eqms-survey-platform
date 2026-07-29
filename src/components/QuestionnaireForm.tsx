@@ -90,7 +90,10 @@ import {
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
 import { geosurveyApi } from '../lib/geosurveyApi';
-import { findContainingZone } from '../lib/pointInPolygon';
+import {
+  ASSIGNED_ZONE_BUFFER_METERS,
+  findZoneWithinDistance,
+} from '../lib/pointInPolygon';
 import type { ZonePolygon } from '../types';
 interface QuestionnaireFormProps {
   questionnaire: Questionnaire;
@@ -948,18 +951,23 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       return {
         ok: false,
         message:
-          'Strict geofence is on. Capture GPS (or enable location) inside your assigned zone before submitting.',
+          `Strict geofence is on. Capture GPS inside your assigned zone or within ${ASSIGNED_ZONE_BUFFER_METERS} m of its boundary before submitting.`,
       };
     }
-    const zone = findContainingZone(pt.lng, pt.lat, geofenceZones);
-    if (!zone) {
+    const proximity = findZoneWithinDistance(
+      pt.lng,
+      pt.lat,
+      geofenceZones,
+      ASSIGNED_ZONE_BUFFER_METERS
+    );
+    if (!proximity) {
       return {
         ok: false,
         message:
-          'You are outside your assigned zone boundary. Move inside the assigned area and recapture GPS to submit.',
+          `You are more than ${ASSIGNED_ZONE_BUFFER_METERS} m outside your assigned zone. Move closer to the assigned area and recapture GPS to submit.`,
       };
     }
-    return { ok: true, zone };
+    return { ok: true, zone: proximity.zone };
   };
 
   // ---- validation --------------------------------------------------------
@@ -1371,7 +1379,8 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         <div className="px-5 py-2 bg-sky-50/80 border-b border-sky-100 text-[11px] text-sky-900 flex items-start gap-1.5 shrink-0">
           <MapPin size={12} className="mt-0.5 shrink-0" />
           <span>
-            Strict geofence: submit only from inside your assigned zone
+            Strict geofence: submit inside your assigned zone or within {ASSIGNED_ZONE_BUFFER_METERS} m
+            outside its boundary
             {geofenceZones.length === 1 && geofenceZones[0].assignValue
               ? ` (${geofenceZones[0].assignValue})`
               : ` (${geofenceZones.length} zone${geofenceZones.length === 1 ? '' : 's'})`}

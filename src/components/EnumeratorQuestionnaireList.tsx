@@ -33,6 +33,7 @@ import { QuestionnaireForm } from './QuestionnaireForm';
 import { AppFooter } from './AppFooter';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { fmtDate, tsToDate } from '../lib/responseExport';
+import { ASSIGNED_ZONE_BUFFER_METERS } from '../lib/pointInPolygon';
 import { ResponseIdCell } from './ResponseIdCell';
 import { readResponseIdSerial } from '../lib/responseIdSequence';
 import { EnumeratorAssignedZoneMap } from './EnumeratorAssignedZoneMap';
@@ -390,7 +391,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
               <div className="flex min-w-0 items-center gap-2 text-xs text-sky-900">
                 <MapPinned size={16} className="shrink-0" />
                 <span>
-                  Strict geofence is on. Surveys must be submitted inside your assigned zone.
+                  Strict geofence is on. Survey inside your assigned zone or within{' '}
+                  {ASSIGNED_ZONE_BUFFER_METERS} m outside its boundary.
                 </span>
               </div>
               <button

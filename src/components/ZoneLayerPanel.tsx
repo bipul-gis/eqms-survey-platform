@@ -12,6 +12,7 @@ import {
   type ParsedZoneFeature,
 } from '../lib/parseShapefile';
 import { updateProjectSegments } from '../lib/projects';
+import { ASSIGNED_ZONE_BUFFER_METERS } from '../lib/pointInPolygon';
 
 interface ZoneLayerPanelProps {
   project: Project;
@@ -311,8 +312,8 @@ export const ZoneLayerPanel: React.FC<ZoneLayerPanelProps> = ({
             onChange={(e) => setStrictGeofence(e.target.checked)}
             className="rounded border-slate-300 text-sky-600"
           />
-          Strict geofence — enumerators may only survey (map &amp; questionnaire) inside assigned
-          zones
+          Strict geofence — surveys are allowed inside assigned zones and up to{' '}
+          {ASSIGNED_ZONE_BUFFER_METERS} m outside their boundaries
         </label>
 
         <div className="flex flex-wrap gap-2">

@@ -32,6 +32,7 @@ import {
   activateProjectForGeosurvey
 } from '../lib/projects';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
+import { ASSIGNED_ZONE_BUFFER_METERS } from '../lib/pointInPolygon';
 
 interface ProjectPickerProps {
   currentUserUid: string;
@@ -515,7 +516,8 @@ const ProjectCard: React.FC<{
               </span>
             </label>
             <p className="text-[10px] text-slate-500 leading-snug">
-              Enumerators can only survey inside their assigned SHP zone boundaries for checked survey types.
+              Enumerators can survey inside their assigned SHP zones or within{' '}
+              {ASSIGNED_ZONE_BUFFER_METERS} m outside the boundary for checked survey types.
             </p>
           </div>
         )}

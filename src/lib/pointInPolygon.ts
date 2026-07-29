@@ -3,6 +3,8 @@
 type Ring = number[][];
 type Position = [number, number];
 
+export const ASSIGNED_ZONE_BUFFER_METERS = 50;
+
 function pointInRing(lng: number, lat: number, ring: Ring): boolean {
   // Ray casting
   let inside = false;
@@ -55,6 +57,103 @@ export function findContainingZone<T extends { geometry: unknown; assignValue?: 
     }
   }
   return null;
+}
+
+export type ZoneProximity<T> = {
+  zone: T;
+  inside: boolean;
+  distanceMeters: number;
+};
+
+function distanceToSegmentMeters(
+  lng: number,
+  lat: number,
+  start: number[],
+  end: number[]
+): number {
+  if (
+    start.length < 2 ||
+    end.length < 2 ||
+    !Number.isFinite(start[0]) ||
+    !Number.isFinite(start[1]) ||
+    !Number.isFinite(end[0]) ||
+    !Number.isFinite(end[1])
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  // Local equirectangular projection is sufficiently accurate for a 50 m tolerance.
+  const earthRadiusMeters = 6_371_008.8;
+  const radians = Math.PI / 180;
+  const longitudeScale = Math.cos(lat * radians);
+  const toLocalMeters = (position: number[]): [number, number] => [
+    (position[0] - lng) * radians * earthRadiusMeters * longitudeScale,
+    (position[1] - lat) * radians * earthRadiusMeters,
+  ];
+  const [ax, ay] = toLocalMeters(start);
+  const [bx, by] = toLocalMeters(end);
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  const t =
+    lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / lengthSquared));
+  return Math.hypot(ax + t * dx, ay + t * dy);
+}
+
+function distanceToRingMeters(lng: number, lat: number, ring: Ring): number {
+  if (ring.length < 2) return Number.POSITIVE_INFINITY;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < ring.length; i += 1) {
+    nearest = Math.min(
+      nearest,
+      distanceToSegmentMeters(lng, lat, ring[i], ring[(i + 1) % ring.length])
+    );
+  }
+  return nearest;
+}
+
+function distanceToGeometryBoundaryMeters(
+  lng: number,
+  lat: number,
+  geometry: { type?: string; coordinates?: unknown } | null | undefined
+): number {
+  if (!geometry?.type || geometry.coordinates == null) return Number.POSITIVE_INFINITY;
+  const polygons =
+    geometry.type === 'Polygon'
+      ? [geometry.coordinates as Ring[]]
+      : geometry.type === 'MultiPolygon'
+        ? (geometry.coordinates as Ring[][])
+        : [];
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const polygon of polygons) {
+    for (const ring of polygon) {
+      nearest = Math.min(nearest, distanceToRingMeters(lng, lat, ring));
+    }
+  }
+  return nearest;
+}
+
+/** Finds an assigned zone containing the point or within the allowed distance outside its edge. */
+export function findZoneWithinDistance<
+  T extends { geometry: unknown; assignValue?: string | null },
+>(lng: number, lat: number, zones: T[], maxDistanceMeters: number): ZoneProximity<T> | null {
+  const containingZone = findContainingZone(lng, lat, zones);
+  if (containingZone) {
+    return { zone: containingZone, inside: true, distanceMeters: 0 };
+  }
+
+  let nearest: ZoneProximity<T> | null = null;
+  for (const zone of zones) {
+    const distanceMeters = distanceToGeometryBoundaryMeters(
+      lng,
+      lat,
+      zone.geometry as { type?: string; coordinates?: unknown }
+    );
+    if (distanceMeters <= maxDistanceMeters && (!nearest || distanceMeters < nearest.distanceMeters)) {
+      nearest = { zone, inside: false, distanceMeters };
+    }
+  }
+  return nearest;
 }
 
 export function lngLatBoundsOfGeometry(
