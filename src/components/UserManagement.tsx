@@ -113,6 +113,8 @@ const EnumeratorProjectTaskRow: React.FC<{
   questionnaires: Questionnaire[];
   saving: boolean;
   wardHeldByOther: Map<string, { displayName: string; email: string }>;
+  /** Zone values already assigned to another enumerator (exclusive). */
+  zoneHeldByOther?: Map<string, { displayName: string; email: string }>;
   onSave: (next: {
     wards?: string[];
     zoneValues?: string[];
@@ -128,6 +130,7 @@ const EnumeratorProjectTaskRow: React.FC<{
   questionnaires,
   saving,
   wardHeldByOther,
+  zoneHeldByOther = new Map(),
   onSave
 }) => {
   const projectQIds = useMemo(() => new Set(questionnaires.map((q) => q.id)), [questionnaires]);
@@ -168,8 +171,11 @@ const EnumeratorProjectTaskRow: React.FC<{
   };
 
   const toggleZone = (v: string) => {
+    const key = normalizeWardKey(v);
+    const held = zoneHeldByOther.get(key);
+    // Cannot claim a zone already assigned to someone else.
+    if (held) return;
     setZoneValues((prev) => {
-      const key = normalizeWardKey(v);
       const has = prev.some((x) => normalizeWardKey(x) === key);
       if (has) return prev.filter((x) => normalizeWardKey(x) !== key);
       return [...prev, v].sort((a, b) => a.localeCompare(b));
@@ -186,7 +192,25 @@ const EnumeratorProjectTaskRow: React.FC<{
     setQuestionnaireIds(on ? questionnaires.map((q) => q.id) : []);
   };
 
+  const sameStringSet = (a: string[], b: string[]) => {
+    if (a.length !== b.length) return false;
+    const left = [...a].map((x) => normalizeWardKey(x)).sort();
+    const right = [...b].map((x) => normalizeWardKey(x)).sort();
+    return left.every((v, i) => v === right[i]);
+  };
+
+  const isDirty = (() => {
+    if (enableGeospatial && useZones) {
+      if (!sameStringSet(zoneValues, entry.assignedZoneValues || [])) return true;
+    }
+    if (enableQuestionnaire) {
+      if (!sameStringSet(questionnaireIds, initialQIds)) return true;
+    }
+    return false;
+  })();
+
   const handleSave = () => {
+    if (!isDirty || saving) return;
     onSave({
       ...(enableGeospatial
         ? useZones
@@ -251,22 +275,43 @@ const EnumeratorProjectTaskRow: React.FC<{
             </button>
           </div>
           <p className="text-[10px] text-gray-500 leading-relaxed">
-            Assign zone values from the imported SHP. These define the enumerator's work-area
-            boundary — survey access is controlled separately.
+            Each boundary value can be assigned to only one enumerator. Values already taken by
+            someone else are locked until cleared from their assignment.
           </p>
           <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
             {zoneOptions.map((v) => {
               const mine = zoneValues.some((x) => normalizeWardKey(x) === normalizeWardKey(v));
+              const held = zoneHeldByOther.get(normalizeWardKey(v));
+              const locked = Boolean(held) && !mine;
               return (
-                <label key={v} className="flex items-start gap-2 text-xs cursor-pointer select-none">
+                <label
+                  key={v}
+                  className={`flex items-start gap-2 text-xs select-none ${
+                    locked ? 'opacity-55 cursor-not-allowed' : 'cursor-pointer'
+                  }`}
+                  title={
+                    locked
+                      ? `Already assigned to ${held!.displayName} (${held!.email})`
+                      : undefined
+                  }
+                >
                   <input
                     type="checkbox"
                     checked={mine}
                     onChange={() => toggleZone(v)}
-                    disabled={saving}
+                    disabled={saving || locked}
                     className="rounded border-gray-300 text-sky-600 focus:ring-sky-500 mt-0.5 shrink-0"
                   />
-                  <span className="truncate text-gray-800">{v}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className={`truncate block ${locked ? 'text-gray-400' : 'text-gray-800'}`}>
+                      {v}
+                    </span>
+                    {locked && (
+                      <span className="block text-[9px] text-rose-600 mt-0.5 truncate">
+                        Taken by {held!.displayName}
+                      </span>
+                    )}
+                  </span>
                 </label>
               );
             })}
@@ -391,14 +436,16 @@ const EnumeratorProjectTaskRow: React.FC<{
         </div>
       )}
 
-      <button
-        type="button"
-        disabled={saving}
-        onClick={handleSave}
-        className="w-full text-xs font-bold py-2.5 rounded-lg bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-50 transition-colors"
-      >
-        {saving ? 'Saving…' : 'Save project assignment'}
-      </button>
+      {(enableGeospatial && useZones) || enableQuestionnaire ? (
+        <button
+          type="button"
+          disabled={saving || !isDirty}
+          onClick={handleSave}
+          className="w-full text-xs font-bold py-2.5 rounded-lg bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {saving ? 'Saving…' : isDirty ? 'Save project assignment' : 'No changes to save'}
+        </button>
+      ) : null}
     </div>
   );
 };
@@ -488,6 +535,23 @@ export const UserManagement: React.FC<{
     return result;
   }, [activeEnumerators]);
 
+  /** For each enumerator: zone values already assigned to someone else (exclusive). */
+  const zoneLocksByEnumeratorEmail = useMemo(() => {
+    const result = new Map<string, Map<string, { displayName: string; email: string }>>();
+    for (const target of activeEnumerators) {
+      const myKey = target.email.trim().toLowerCase();
+      const m = new Map<string, { displayName: string; email: string }>();
+      for (const e of activeEnumerators) {
+        if (e.email.trim().toLowerCase() === myKey) continue;
+        for (const z of e.assignedZoneValues || []) {
+          m.set(normalizeWardKey(z), { displayName: e.displayName, email: e.email });
+        }
+      }
+      result.set(target.email, m);
+    }
+    return result;
+  }, [activeEnumerators]);
+
   /** Same ward given to more than one enumerator (legacy or race) — admin should fix. */
   const duplicateWardAssignments = useMemo(() => {
     const keyToOwners = new Map<string, Set<string>>();
@@ -506,6 +570,29 @@ export const UserManagement: React.FC<{
     for (const [nk, set] of keyToOwners) {
       if (set.size > 1) {
         dups.push({ wardLabel: keyToLabel.get(nk) ?? nk, owners: [...set] });
+      }
+    }
+    return dups;
+  }, [activeEnumerators]);
+
+  /** Same zone value held by more than one enumerator — admin should fix. */
+  const duplicateZoneAssignments = useMemo(() => {
+    const keyToOwners = new Map<string, Set<string>>();
+    const keyToLabel = new Map<string, string>();
+    for (const e of activeEnumerators) {
+      const nameLabel = (e.displayName || '').trim() || e.email;
+      for (const z of e.assignedZoneValues || []) {
+        const nk = normalizeWardKey(z);
+        keyToLabel.set(nk, z);
+        const set = keyToOwners.get(nk) ?? new Set<string>();
+        set.add(nameLabel);
+        keyToOwners.set(nk, set);
+      }
+    }
+    const dups: { zoneLabel: string; owners: string[] }[] = [];
+    for (const [nk, set] of keyToOwners) {
+      if (set.size > 1) {
+        dups.push({ zoneLabel: keyToLabel.get(nk) ?? nk, owners: [...set] });
       }
     }
     return dups;
@@ -789,6 +876,22 @@ export const UserManagement: React.FC<{
         const normalized = [
           ...new Set(next.zoneValues.map((v) => String(v).trim()).filter(Boolean))
         ].sort((a, b) => a.localeCompare(b));
+        const myKey = entry.email.trim().toLowerCase();
+        for (const z of normalized) {
+          const zk = normalizeWardKey(z);
+          const conflict = activeEnumerators.find(
+            (e) =>
+              e.email.trim().toLowerCase() !== myKey &&
+              (e.assignedZoneValues || []).some((x) => normalizeWardKey(x) === zk)
+          );
+          if (conflict) {
+            setError(
+              `Cannot save: "${z}" is already assigned to ${conflict.displayName}. Remove it from that enumerator first.`
+            );
+            setTaskSavingEmail(null);
+            return;
+          }
+        }
         patch.assignedZoneValues = normalized;
         patch.assignedZoneLayerId = normalized.length && zoneLayerId ? zoneLayerId : null;
       }
@@ -1266,7 +1369,7 @@ export const UserManagement: React.FC<{
               </h3>
               <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
                 {activeTab === 'boundary'
-                  ? 'Assign SHP zone boundaries to enumerators. Boundaries define the work area and can apply to Geospatial Survey, Questionnaire Survey, or both (controlled from Project Picker).'
+                  ? 'Assign SHP zone boundaries to enumerators. Each boundary value can only be assigned to one enumerator at a time.'
                   : activeTab === 'geospatial'
                     ? 'Enable or disable the Geospatial Survey task per enumerator. The survey module is coming later; this only controls whether the enumerator sees the geospatial workspace.'
                     : 'Assign published questionnaire forms to enumerators. Boundary and geospatial assignments are preserved separately.'}
@@ -1336,6 +1439,23 @@ export const UserManagement: React.FC<{
               </p>
             )}
 
+            {activeTab === 'boundary' && segmentGeo && duplicateZoneAssignments.length > 0 && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1">
+                <p className="font-semibold">Overlapping boundary assignments detected</p>
+                <p className="text-amber-900">
+                  The same zone value is assigned to more than one enumerator. Adjust so each
+                  boundary has a single holder:
+                </p>
+                <ul className="list-disc list-inside text-amber-900">
+                  {duplicateZoneAssignments.map((d) => (
+                    <li key={d.zoneLabel}>
+                      <span className="font-medium">{d.zoneLabel}</span>: {d.owners.join(', ')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Boundary tab: zone value checkboxes */}
             {activeTab === 'boundary' && segmentGeo && project &&
               (activeEnumerators.length === 0 ? (
@@ -1359,6 +1479,7 @@ export const UserManagement: React.FC<{
                       zoneFieldLabel={zoneAssignField}
                       questionnaires={[]}
                       wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
+                      zoneHeldByOther={zoneLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
                       saving={taskSavingEmail === entry.email || clearingAllAssignments}
                       onSave={(next) => void saveEnumeratorProjectAssignment(entry, next)}
                     />
