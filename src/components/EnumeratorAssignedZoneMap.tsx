@@ -108,15 +108,49 @@ export const EnumeratorAssignedZoneMap: React.FC<{
                 key={zones.map((zone) => zone.id).join(':')}
                 data={zoneGeoJson}
                 style={{
-                  color: '#0ea5e9',
-                  weight: 3,
+                  color: '#0284c7',
+                  weight: 2,
                   opacity: 1,
-                  fillColor: '#38bdf8',
-                  fillOpacity: 0.15,
+                  fillColor: '#0ea5e9',
+                  fillOpacity: 0.08,
                 }}
                 onEachFeature={(feature, layer) => {
                   const label = String(feature.properties?.__label || '').trim();
-                  if (label) layer.bindTooltip(label, { sticky: true });
+                  if (label) {
+                    layer.bindTooltip(label, {
+                      permanent: true,
+                      direction: 'center',
+                      className: 'zone-label',
+                      opacity: 1,
+                    });
+                  }
+                  const baseStyle: L.PathOptions = {
+                    color: '#0284c7',
+                    weight: 2,
+                    fillColor: '#0ea5e9',
+                    fillOpacity: 0.08,
+                  };
+                  const hoverStyle: L.PathOptions = {
+                    color: '#38bdf8',
+                    weight: 4,
+                    fillColor: '#7dd3fc',
+                    fillOpacity: 0.22,
+                  };
+                  layer.on({
+                    mouseover: (e) => {
+                      const target = e.target as L.Path;
+                      target.setStyle(hoverStyle);
+                      if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+                        target.bringToFront();
+                      }
+                    },
+                    mouseout: (e) => {
+                      (e.target as L.Path).setStyle(baseStyle);
+                    },
+                    click: (e) => {
+                      L.DomEvent.stopPropagation(e);
+                    },
+                  });
                 }}
               />
               <FitAssignedZones zones={zones} />

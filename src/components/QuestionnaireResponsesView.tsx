@@ -1082,11 +1082,18 @@ const FitGpsBounds: React.FC<{
   return null;
 };
 
-const ZONE_BOUNDARY_STYLE = {
+const ZONE_BOUNDARY_STYLE: L.PathOptions = {
   color: '#0284c7',
   weight: 2,
   fillColor: '#0ea5e9',
   fillOpacity: 0.08,
+};
+
+const ZONE_BOUNDARY_HOVER_STYLE: L.PathOptions = {
+  color: '#38bdf8',
+  weight: 4,
+  fillColor: '#7dd3fc',
+  fillOpacity: 0.22,
 };
 
 const ResponsesMapPanel: React.FC<{
@@ -1198,7 +1205,31 @@ const ResponsesMapPanel: React.FC<{
               style={() => ZONE_BOUNDARY_STYLE}
               onEachFeature={(feature, layer) => {
                 const label = (feature?.properties as { __label?: string } | undefined)?.__label;
-                if (label) layer.bindTooltip(String(label), { sticky: true });
+                if (label) {
+                  layer.bindTooltip(String(label), {
+                    permanent: true,
+                    direction: 'center',
+                    className: 'zone-label',
+                    opacity: 1,
+                  });
+                }
+                // Highlight the polygon outline on hover — not a white click rectangle.
+                layer.on({
+                  mouseover: (e) => {
+                    const target = e.target as L.Path;
+                    target.setStyle(ZONE_BOUNDARY_HOVER_STYLE);
+                    if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+                      target.bringToFront();
+                    }
+                  },
+                  mouseout: (e) => {
+                    (e.target as L.Path).setStyle(ZONE_BOUNDARY_STYLE);
+                  },
+                  click: (e) => {
+                    // Keep map click-to-pan/zoom; suppress default path selection UI.
+                    L.DomEvent.stopPropagation(e);
+                  },
+                });
               }}
             />
           ) : null}

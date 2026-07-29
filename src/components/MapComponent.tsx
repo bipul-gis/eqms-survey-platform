@@ -886,10 +886,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               )}`}
               data={zoneBoundaries}
               style={() => ({
-                color: '#38bdf8',
+                color: '#0284c7',
                 weight: 2,
                 fillColor: '#0ea5e9',
-                fillOpacity: 0.15,
+                fillOpacity: 0.08,
               })}
               onEachFeature={(feature, layer) => {
                 const label =
@@ -901,11 +901,39 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   feature.properties?.Name;
                 if (label) {
                   layer.bindTooltip(String(label), {
-                    sticky: true,
+                    permanent: true,
                     direction: 'center',
-                    className: 'ward-label',
+                    className: 'zone-label',
+                    opacity: 1,
                   });
                 }
+                const baseStyle: L.PathOptions = {
+                  color: '#0284c7',
+                  weight: 2,
+                  fillColor: '#0ea5e9',
+                  fillOpacity: 0.08,
+                };
+                const hoverStyle: L.PathOptions = {
+                  color: '#38bdf8',
+                  weight: 4,
+                  fillColor: '#7dd3fc',
+                  fillOpacity: 0.22,
+                };
+                layer.on({
+                  mouseover: (e) => {
+                    const target = e.target as L.Path;
+                    target.setStyle(hoverStyle);
+                    if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+                      target.bringToFront();
+                    }
+                  },
+                  mouseout: (e) => {
+                    (e.target as L.Path).setStyle(baseStyle);
+                  },
+                  click: (e) => {
+                    L.DomEvent.stopPropagation(e);
+                  },
+                });
               }}
             />
           </>
