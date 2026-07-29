@@ -132,6 +132,12 @@ interface MapComponentProps {
   defaultShowSurveyLocations?: boolean;
   /** Fires when the HH Survey Location layer is toggled (for parent Firestore gating). */
   onSurveyLocationsVisibilityChange?: (visible: boolean) => void;
+  /** Optional zone boundary FeatureCollection (imported SHP polygons). */
+  zoneBoundaries?: GeoJSON.FeatureCollection | null;
+  /** Initial basemap. Enumerators with zones default to satellite. */
+  defaultBaseMap?: 'osm' | 'satellite' | 'hybrid';
+  /** Show assigned zone outlines (default true when zoneBoundaries provided). */
+  defaultShowZones?: boolean;
 }
 
 export interface SurveyLocationMarker {
@@ -204,6 +210,31 @@ const FocusOnEnumeratorLocation = ({
     lastFocusRequestKeyRef.current = focusRequestKey;
   }, [enabled, location, focusRequestKey, map]);
 
+  return null;
+};
+
+const FitToZoneBoundaries = ({
+  data,
+}: {
+  data: GeoJSON.FeatureCollection | null | undefined;
+}) => {
+  const map = useMap();
+  const fittedKeyRef = useRef<string>('');
+  useEffect(() => {
+    if (!data?.features?.length) return;
+    const key = `${data.features.length}:${String(data.features[0]?.id ?? '')}`;
+    if (fittedKeyRef.current === key) return;
+    try {
+      const layer = L.geoJSON(data as GeoJSON.GeoJsonObject);
+      const b = layer.getBounds();
+      if (b.isValid()) {
+        map.fitBounds(b, { padding: [40, 40], maxZoom: 16 });
+        fittedKeyRef.current = key;
+      }
+    } catch {
+      /* ignore bad geometry */
+    }
+  }, [data, map]);
   return null;
 };
 
@@ -597,7 +628,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   defaultShowLandmarks = true,
   surveyLocations,
   defaultShowSurveyLocations = true,
-  onSurveyLocationsVisibilityChange
+  onSurveyLocationsVisibilityChange,
+  zoneBoundaries = null,
+  defaultBaseMap = 'osm',
+  defaultShowZones = true,
 }) => {
   const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
@@ -606,6 +640,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isEnumeratorUser = userProfile?.role === 'enumerator';
   const [showWards, setShowWards] = useState(true);
+  const [showZones, setShowZones] = useState(defaultShowZones);
   const [showLandmarks, setShowLandmarks] = useState(defaultShowLandmarks);
   const [showSurveyLocations, setShowSurveyLocations] = useState(defaultShowSurveyLocations);
   useEffect(() => {
@@ -614,7 +649,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(false);
   const [enumeratorLocationFocusKey, setEnumeratorLocationFocusKey] = useState(0);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
-  const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>('osm');
+  const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>(defaultBaseMap);
+  useEffect(() => {
+    setBaseMap(defaultBaseMap);
+  }, [defaultBaseMap]);
+  useEffect(() => {
+    if (zoneBoundaries?.features?.length && isEnumeratorUser) {
+      setShowEnumeratorLocation(true);
+    }
+  }, [zoneBoundaries, isEnumeratorUser]);
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
   const landmarkPoints = useLandmarkGeoJsonPoints(landmarkGeoJsonRefreshKey);
   const [pulseFeatureId, setPulseFeatureId] = useState<string | null>(null);
@@ -810,6 +853,38 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               }
             }}
           />
+        )}
+
+        {/* Assigned / project zone boundaries from SHP import */}
+        {showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
+          <>
+            <FitToZoneBoundaries data={zoneBoundaries} />
+            <GeoJSON
+              key={`zones-${zoneBoundaries.features.length}`}
+              data={zoneBoundaries}
+              style={() => ({
+                color: '#38bdf8',
+                weight: 2,
+                fillColor: '#0ea5e9',
+                fillOpacity: 0.15,
+              })}
+              onEachFeature={(feature, layer) => {
+                const label =
+                  feature.properties?.__assignValue ||
+                  feature.properties?.ZONE_ID ||
+                  feature.properties?.Ward_Name ||
+                  feature.properties?.NAME ||
+                  feature.properties?.Name;
+                if (label) {
+                  layer.bindTooltip(String(label), {
+                    sticky: true,
+                    direction: 'center',
+                    className: 'ward-label',
+                  });
+                }
+              }}
+            />
+          </>
         )}
 
         {/* Existing Features */}
@@ -1034,6 +1109,22 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <input type="checkbox" checked={showWards} onChange={(e) => setShowWards(e.target.checked)} />
                 <span>Ward Boundaries</span>
               </label>
+              {zoneBoundaries && zoneBoundaries.features?.length > 0 && (
+                <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={showZones}
+                    onChange={(e) => setShowZones(e.target.checked)}
+                  />
+                  <span>
+                    Zone Boundaries
+                    <span className="text-[11px] font-normal text-slate-500">
+                      {' '}
+                      ({zoneBoundaries.features.length})
+                    </span>
+                  </span>
+                </label>
+              )}
               {/* Only render the HH Survey Location toggle when the parent
                   actually supplies the layer data. Hiding the control when
                   there's nothing to show keeps the panel uncluttered for

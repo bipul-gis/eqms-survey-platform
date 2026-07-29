@@ -80,6 +80,38 @@ export interface UserProfile {
    * Per-project slum tasking — `{ [projectId]: ['20151612364', …] }`.
    */
   projectSlumAssignments?: { [projectId: string]: string[] };
+  /**
+   * Values of the zone layer assignment field (e.g. ZONE_ID / Ward_Name)
+   * this enumerator may work in. When empty and no wards, questionnaire-only.
+   */
+  assignedZoneValues?: string[];
+  /** Per-project zone-value assignments — `{ [projectId]: ['Zone A', …] }`. */
+  projectZoneAssignments?: { [projectId: string]: string[] };
+  /** Active zone layer id used for assignment (project's imported SHP layer). */
+  assignedZoneLayerId?: string | null;
+}
+
+/** Imported zone boundary layer (SHP polygons + attribute table). */
+export interface ZoneLayer {
+  id: string;
+  projectId: string;
+  name: string;
+  assignmentField: string | null;
+  attributeFields: string[];
+  featureCount: number;
+  strictGeofence: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ZonePolygon {
+  id: string;
+  layerId: string;
+  projectId: string;
+  assignValue: string | null;
+  properties: Record<string, unknown>;
+  geometry: GeoJSON.Geometry | Record<string, unknown>;
+  updatedAt?: string;
 }
 
 /**
@@ -588,6 +620,10 @@ export interface QuestionnaireResponse {
     /** Total seconds spent watching to reach the threshold. */
     durationSeconds?: number;
   };
+  /** Zone polygon id when submitted under a strict geofence. */
+  zoneId?: string;
+  /** Assignment-field value of the containing zone (e.g. ZONE_ID). */
+  zoneAssignValue?: string;
   status: 'draft' | 'submitted' | 'reviewed';
   submittedAt?: unknown;
   /**

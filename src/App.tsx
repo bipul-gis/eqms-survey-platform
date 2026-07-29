@@ -8,8 +8,13 @@ import {
   useQuestionnaireSurveyLocations,
   type SurveyLocationLoadMode
 } from './hooks/useQuestionnaireSurveyLocations';
-import { FeatureStatus, GeoFeature, Project, Questionnaire, UserProfile } from './types';
+import { FeatureStatus, GeoFeature, Project, Questionnaire, UserProfile, ZoneLayer, ZonePolygon } from './types';
 import { initOfflineSupport } from './lib/offlineFirestore';
+import { zoneLayersApi } from './lib/zoneLayersApi';
+import {
+  assignedZoneValuesFromProfile,
+  zonesToGeoJson,
+} from './lib/assignedZones';
 
 initOfflineSupport();
 
@@ -41,6 +46,9 @@ const EnumeratorQuestionnaireList = lazy(() =>
   import('./components/EnumeratorQuestionnaireList').then((m) => ({
     default: m.EnumeratorQuestionnaireList,
   }))
+);
+const ZoneLayerPanel = lazy(() =>
+  import('./components/ZoneLayerPanel').then((m) => ({ default: m.ZoneLayerPanel }))
 );
 
 // Tiny full-screen fallback shown while a code-split chunk is being fetched.
@@ -389,6 +397,10 @@ const AppContent: React.FC = () => {
   const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showZoneLayerPanel, setShowZoneLayerPanel] = useState(false);
+  const [zoneLayer, setZoneLayer] = useState<ZoneLayer | null>(null);
+  const [zonePolygons, setZonePolygons] = useState<ZonePolygon[]>([]);
+  const [zoneRefreshKey, setZoneRefreshKey] = useState(0);
   /**
    * Admin top-level navigation. Admins land on `'home'` after sign-in and pick a
    * mode (Geospatial vs Questionnaire). Enumerators ignore this state — they
@@ -627,11 +639,27 @@ const AppContent: React.FC = () => {
     userProfile?.assignedWardName
   ]);
 
+  const assignedZoneValuesForFilter = useMemo(
+    () =>
+      assignedZoneValuesFromProfile(
+        {
+          assignedZoneValues: userProfile?.assignedZoneValues,
+          projectZoneAssignments: userProfile?.projectZoneAssignments,
+        },
+        currentProject?.id
+      ),
+    [
+      userProfile?.assignedZoneValues,
+      userProfile?.projectZoneAssignments,
+      currentProject?.id,
+    ]
+  );
+
   // ──────────────────────────────────────────────────────────────────────
   // Enumerator task profile
   //
   // An enumerator should only see survey segments they're actually assigned
-  // to. We derive booleans from their user profile (wards = geospatial,
+  // to. We derive booleans from their user profile (wards/zones = geospatial,
   // questionnaire ids = questionnaire) and route the UI accordingly:
   //   - both segments → "home" with a chooser (similar to admin landing)
   //   - geospatial only → existing map flow
@@ -642,8 +670,8 @@ const AppContent: React.FC = () => {
   // underlying assignment counts cross zero.
   // ──────────────────────────────────────────────────────────────────────
   const enumeratorHasGeoTasks = useMemo(
-    () => assignedWardsForFilter.length > 0,
-    [assignedWardsForFilter]
+    () => assignedWardsForFilter.length > 0 || assignedZoneValuesForFilter.length > 0,
+    [assignedWardsForFilter, assignedZoneValuesForFilter]
   );
   const enumeratorHasQTasks = useMemo(
     () => (userProfile?.assignedQuestionnaireIds || []).length > 0,
@@ -672,13 +700,16 @@ const AppContent: React.FC = () => {
     if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') {
       // Questionnaire-only enumerators never see the map, so skip the
       // potentially-large /features subscription entirely. Reverts to
-      // 'enumerator' the moment they're given any ward assignment.
+      // 'enumerator' the moment they're given any ward/zone assignment.
       const hasWards =
         (Array.isArray(userProfile.assignedWardNames) && userProfile.assignedWardNames.length > 0) ||
         (typeof userProfile.assignedWardName === 'string' && userProfile.assignedWardName.trim().length > 0);
+      const hasZones =
+        (Array.isArray(userProfile.assignedZoneValues) && userProfile.assignedZoneValues.length > 0) ||
+        Object.values(userProfile.projectZoneAssignments || {}).some((v) => Array.isArray(v) && v.length > 0);
       const hasQuestionnaires =
         (userProfile.assignedQuestionnaireIds?.length || 0) > 0;
-      if (!hasWards && hasQuestionnaires) return 'idle';
+      if (!hasWards && !hasZones && hasQuestionnaires) return 'idle';
       return 'enumerator';
     }
     return 'idle';
@@ -689,6 +720,8 @@ const AppContent: React.FC = () => {
     userProfile?.status,
     userProfile?.assignedWardName,
     userProfile?.assignedWardNames,
+    userProfile?.assignedZoneValues,
+    userProfile?.projectZoneAssignments,
     userProfile?.assignedQuestionnaireIds
   ]);
 
@@ -700,6 +733,99 @@ const AppContent: React.FC = () => {
     adminRefreshKey: adminFeaturesRefreshKey,
     enumeratorPersistRefreshKey: enumeratorFeaturesRefreshKey
   });
+
+  // Load project zone layer polygons (admin: all; enumerator: assigned values only).
+  useEffect(() => {
+    let cancelled = false;
+    const loadZones = async () => {
+      const isApproved =
+        userProfile?.status === 'approved' &&
+        (userProfile?.role === 'admin' || userProfile?.role === 'enumerator');
+      if (!isApproved) {
+        if (!cancelled) {
+          setZoneLayer(null);
+          setZonePolygons([]);
+        }
+        return;
+      }
+
+      try {
+        if (userProfile?.role === 'enumerator') {
+          if (assignedZoneValuesForFilter.length === 0) {
+            if (!cancelled) {
+              setZoneLayer(null);
+              setZonePolygons([]);
+            }
+            return;
+          }
+          // Enumerators may not have currentProject; API scopes polygons to their assignments.
+          const layerId = userProfile.assignedZoneLayerId || undefined;
+          let layer: ZoneLayer | null = null;
+          if (layerId) {
+            try {
+              layer = await zoneLayersApi.getLayer(layerId);
+            } catch {
+              layer = null;
+            }
+          }
+          const { items } = await zoneLayersApi.listPolygons({
+            ...(layerId ? { layerId } : {}),
+            assignValues: assignedZoneValuesForFilter,
+          });
+          if (cancelled) return;
+          setZoneLayer(layer);
+          setZonePolygons(items);
+          return;
+        }
+
+        // Admin: require an opened project.
+        const projectId = currentProject?.id;
+        if (!projectId) {
+          if (!cancelled) {
+            setZoneLayer(null);
+            setZonePolygons([]);
+          }
+          return;
+        }
+        const { items: layers } = await zoneLayersApi.listLayers(projectId);
+        const layer = layers[0] || null;
+        if (cancelled) return;
+        setZoneLayer(layer);
+        if (!layer) {
+          setZonePolygons([]);
+          return;
+        }
+        const { items } = await zoneLayersApi.listPolygons({
+          layerId: layer.id,
+          projectId,
+        });
+        if (!cancelled) setZonePolygons(items);
+      } catch (e) {
+        console.warn('Failed to load zone polygons', e);
+        if (!cancelled) {
+          setZoneLayer(null);
+          setZonePolygons([]);
+        }
+      }
+    };
+    void loadZones();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentProject?.id,
+    userProfile?.role,
+    userProfile?.status,
+    userProfile?.assignedZoneLayerId,
+    assignedZoneValuesForFilter,
+    showZoneLayerPanel,
+    zoneRefreshKey,
+  ]);
+
+  const zoneBoundaries = useMemo(() => {
+    if (!zonePolygons.length) return null;
+    return zonesToGeoJson(zonePolygons);
+  }, [zonePolygons]);
 
   // HH Survey Locations layer — reuse the same role gating as features so
   // approved admins see every response's GPS pin and approved enumerators
@@ -2069,6 +2195,8 @@ const AppContent: React.FC = () => {
     return (
       <EnumeratorQuestionnaireList
         userProfile={userProfile}
+        geofenceZones={zonePolygons}
+        strictGeofence={zoneLayer?.strictGeofence !== false && zonePolygons.length > 0}
         onLogout={async () => {
           await logout();
         }}
@@ -2088,6 +2216,8 @@ const AppContent: React.FC = () => {
     return (
       <EnumeratorQuestionnaireList
         userProfile={userProfile}
+        geofenceZones={zonePolygons}
+        strictGeofence={zoneLayer?.strictGeofence !== false && zonePolygons.length > 0}
         onBack={() => setEnumeratorMode('home')}
       />
     );
@@ -2352,7 +2482,7 @@ const AppContent: React.FC = () => {
                       field-collected landmarks, points, lines and polygons.
                     </p>
                     <div className="mt-4 flex flex-wrap gap-1.5">
-                      {['Map', 'QC', 'Landmarks', 'Wards', 'Shapefile export'].map((tag) => (
+                      {['Map', 'Zone SHP', 'QC', 'Landmarks', 'Wards', 'Shapefile export'].map((tag) => (
                         <span
                           key={tag}
                           className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
@@ -2526,6 +2656,20 @@ const AppContent: React.FC = () => {
               </span>
             </div>
           )}
+          {assignedZoneValuesForFilter.length > 0 && !isAdmin && (
+            <div
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-sky-50 rounded-full border border-sky-100 max-w-[min(100vw-12rem,320px)]"
+              title={`Assigned zones: ${assignedZoneValuesForFilter.join(', ')}`}
+            >
+              <Layers size={14} className="text-sky-600 shrink-0" />
+              <span className="text-xs font-semibold text-sky-800 truncate">
+                Zones:{' '}
+                {assignedZoneValuesForFilter.length <= 2
+                  ? assignedZoneValuesForFilter.join(', ')
+                  : `${assignedZoneValuesForFilter.length} selected`}
+              </span>
+            </div>
+          )}
           
           <div className="flex items-center gap-3 border-l border-slate-200 pl-4 ml-4">
             {/* Dual-segment enumerator: surface a "back to chooser" button so
@@ -2557,6 +2701,15 @@ const AppContent: React.FC = () => {
                   >
                     <Folder size={13} className="shrink-0" />
                     <span className="truncate">{currentProject.name}</span>
+                  </button>
+                )}
+                {currentProject && currentProjectHasGeo && (
+                  <button
+                    onClick={() => setShowZoneLayerPanel(true)}
+                    className="p-2 text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
+                    title="Zone boundaries (SHP import)"
+                  >
+                    <Layers size={20} />
                   </button>
                 )}
                 <button 
@@ -2615,6 +2768,11 @@ const AppContent: React.FC = () => {
               landmarkGeoJsonRefreshKey={isAdmin ? adminFeaturesRefreshKey : 0}
               surveyLocations={surveyLocations}
               onSurveyLocationsVisibilityChange={setHhSurveyLayerEnabled}
+              zoneBoundaries={zoneBoundaries}
+              defaultBaseMap={
+                !isAdmin && zoneBoundaries?.features?.length ? 'satellite' : 'osm'
+              }
+              defaultShowZones={!!zoneBoundaries?.features?.length}
             />
           ) : (
             <div className="p-6 overflow-y-auto w-full">
@@ -2813,6 +2971,18 @@ const AppContent: React.FC = () => {
           </div>
         )}
 
+        {isAdmin && showZoneLayerPanel && currentProject && (
+          <div className="absolute inset-0 z-[1004] bg-slate-900/50 flex items-center justify-center p-4">
+            <Suspense fallback={<ScreenFallback label="Loading zones…" />}>
+              <ZoneLayerPanel
+                project={currentProject}
+                onClose={() => setShowZoneLayerPanel(false)}
+                onChanged={() => setZoneRefreshKey((k) => k + 1)}
+              />
+            </Suspense>
+          </div>
+        )}
+
         {/* Questionnaire Builder is now reached via the admin home screen
             (see `adminMode === 'questionnaire'` branch above). */}
 
@@ -2824,6 +2994,8 @@ const AppContent: React.FC = () => {
               projectId={selectedQuestionnaire.projectId}
               onClose={() => setSelectedQuestionnaire(null)}
               initialLocation={questionnaireLocation || undefined}
+              geofenceZones={zonePolygons}
+              strictGeofence={zoneLayer?.strictGeofence !== false && zonePolygons.length > 0}
             />
           </div>
         )}

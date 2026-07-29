@@ -18,6 +18,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthProvider';
+import { useGeoLocation } from './GeoLocationProvider';
 import {
   Questionnaire,
   QuestionnaireResponse,
@@ -89,6 +90,8 @@ import {
   ruleValueMatchesCurrent
 } from './QuestionnaireRuntime';
 import { geosurveyApi } from '../lib/geosurveyApi';
+import { findContainingZone } from '../lib/pointInPolygon';
+import type { ZonePolygon } from '../types';
 interface QuestionnaireFormProps {
   questionnaire: Questionnaire;
   onClose: () => void;
@@ -117,6 +120,9 @@ interface QuestionnaireFormProps {
   projectId?: string;
   /** When true, always create a fresh response doc (ignore session draft id). */
   forceNew?: boolean;
+  /** Assigned zone polygons — when strictGeofence, GPS must fall inside one. */
+  geofenceZones?: ZonePolygon[];
+  strictGeofence?: boolean;
 }
 
 interface CapturedGps {
@@ -302,11 +308,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   existingResponse,
   readOnly = false,
   projectId: projectIdProp,
-  forceNew = false
+  forceNew = false,
+  geofenceZones = [],
+  strictGeofence = false,
 }) => {
   const { user, userProfile } = useAuth();
+  const { location: deviceLocation, requestLocation } = useGeoLocation();
   const projectId = projectIdProp || questionnaire.projectId || DEFAULT_PROJECT_ID;
   const isFullscreen = variant === 'fullscreen';
+  const geofenceActive = strictGeofence && !readOnly && geofenceZones.length > 0;
 
   const draftStorageKey =
     user?.uid && questionnaire.id
@@ -918,6 +928,40 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     if (!granted) setConsentGrantedAt(null);
   };
 
+  const resolveGeofencePoint = (): { lat: number; lng: number } | null => {
+    if (submissionGps) return { lat: submissionGps.lat, lng: submissionGps.lng };
+    if (currentLocation?.lat != null && currentLocation?.lng != null) {
+      return { lat: currentLocation.lat, lng: currentLocation.lng };
+    }
+    if (deviceLocation?.lat != null && deviceLocation?.lng != null) {
+      return { lat: deviceLocation.lat, lng: deviceLocation.lng };
+    }
+    return null;
+  };
+
+  const checkGeofence = ():
+    | { ok: true; zone: ZonePolygon | null }
+    | { ok: false; message: string } => {
+    if (!geofenceActive) return { ok: true, zone: null };
+    const pt = resolveGeofencePoint();
+    if (!pt) {
+      return {
+        ok: false,
+        message:
+          'Strict geofence is on. Capture GPS (or enable location) inside your assigned zone before submitting.',
+      };
+    }
+    const zone = findContainingZone(pt.lng, pt.lat, geofenceZones);
+    if (!zone) {
+      return {
+        ok: false,
+        message:
+          'You are outside your assigned zone boundary. Move inside the assigned area and recapture GPS to submit.',
+      };
+    }
+    return { ok: true, zone };
+  };
+
   // ---- validation --------------------------------------------------------
 
   const validateAll = (): boolean => {
@@ -942,8 +986,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     const consentOk = !consentGate?.enabled || consentGranted;
     const gpsOk =
       !submissionGpsConfig?.enabled || !submissionGpsConfig.required || submissionGps !== null;
+    const geofenceOk = !geofenceActive || checkGeofence().ok;
 
-    return Object.keys(newQ).length === 0 && Object.keys(newE).length === 0 && consentOk && gpsOk;
+    return (
+      Object.keys(newQ).length === 0 &&
+      Object.keys(newE).length === 0 &&
+      consentOk &&
+      gpsOk &&
+      geofenceOk
+    );
   };
 
   // ---- save / submit -----------------------------------------------------
@@ -979,6 +1030,13 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         // Prefer the moment GPS was locked — not the later Submit click.
         capturedAt: submissionGps.capturedAt || new Date().toISOString()
       });
+    }
+    if (geofenceActive) {
+      const gate = checkGeofence();
+      if (gate.ok && gate.zone) {
+        base.zoneId = gate.zone.id;
+        base.zoneAssignValue = gate.zone.assignValue || undefined;
+      }
     }
     if (status === 'submitted') {
       // Keep the original submit time if this response was already submitted
@@ -1174,6 +1232,13 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       return;
     }
     if (persistInFlightRef.current || saveState !== 'idle') return;
+    if (geofenceActive && !resolveGeofencePoint()) {
+      try {
+        await requestLocation?.();
+      } catch {
+        /* ignore */
+      }
+    }
     if (!validateAll()) {
       const missing: string[] = [];
       if (consentGate?.enabled && !consentGranted) missing.push('grant consent');
@@ -1183,6 +1248,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         submissionGps === null
       )
         missing.push('capture submission GPS');
+      const gate = checkGeofence();
+      if (geofenceActive && gate.ok === false) {
+        setSubmitError(gate.message);
+        return;
+      }
       const detail =
         missing.length > 0
           ? `Please ${missing.join(', ')} and fix any highlighted fields.`
@@ -1292,6 +1362,19 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           <span>
             {currentLocation.lat.toFixed(6)}, {currentLocation.lng.toFixed(6)}
             {currentLocation.ward && <> · Ward {currentLocation.ward}</>}
+          </span>
+        </div>
+      )}
+
+      {geofenceActive && (
+        <div className="px-5 py-2 bg-sky-50/80 border-b border-sky-100 text-[11px] text-sky-900 flex items-start gap-1.5 shrink-0">
+          <MapPin size={12} className="mt-0.5 shrink-0" />
+          <span>
+            Strict geofence: submit only from inside your assigned zone
+            {geofenceZones.length === 1 && geofenceZones[0].assignValue
+              ? ` (${geofenceZones[0].assignValue})`
+              : ` (${geofenceZones.length} zone${geofenceZones.length === 1 ? '' : 's'})`}
+            .
           </span>
         </div>
       )}

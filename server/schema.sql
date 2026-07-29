@@ -110,3 +110,38 @@ CREATE TABLE IF NOT EXISTS geosurvey_projects (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Generic zone boundary layers (imported SHP/GeoJSON polygons per project).
+-- When a project has no zone layer, questionnaire survey works as today.
+CREATE TABLE IF NOT EXISTS zone_layers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT 'Zones',
+  assignment_field TEXT,
+  attribute_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+  feature_count INTEGER NOT NULL DEFAULT 0,
+  strict_geofence BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_zone_layers_project ON zone_layers(project_id);
+
+CREATE TABLE IF NOT EXISTS zone_polygons (
+  id TEXT PRIMARY KEY,
+  layer_id TEXT NOT NULL REFERENCES zone_layers(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL,
+  assign_value TEXT,
+  properties JSONB NOT NULL DEFAULT '{}'::jsonb,
+  geometry JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_zone_polygons_layer ON zone_polygons(layer_id);
+CREATE INDEX IF NOT EXISTS idx_zone_polygons_project ON zone_polygons(project_id);
+CREATE INDEX IF NOT EXISTS idx_zone_polygons_assign ON zone_polygons(layer_id, assign_value);
+
+-- Enumerator zone-value assignments (generic attribute values from zone_layers.assignment_field).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_zone_values JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS project_zone_assignments JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_zone_layer_id TEXT;

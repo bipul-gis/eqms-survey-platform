@@ -14,6 +14,9 @@ export interface DbUser {
   assignedQuestionnaireIds: string[];
   assignedSlumIds: string[];
   projectSlumAssignments: Record<string, string[]>;
+  assignedZoneValues: string[];
+  projectZoneAssignments: Record<string, string[]>;
+  assignedZoneLayerId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +72,9 @@ function rowToUser(row: Record<string, unknown>): DbUser {
     assignedQuestionnaireIds: asStringArray(row.assigned_questionnaire_ids),
     assignedSlumIds: asStringArray(row.assigned_slum_ids),
     projectSlumAssignments: asStringMap(row.project_slum_assignments),
+    assignedZoneValues: asStringArray(row.assigned_zone_values),
+    projectZoneAssignments: asStringMap(row.project_zone_assignments),
+    assignedZoneLayerId: (row.assigned_zone_layer_id as string) || null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -89,6 +95,9 @@ export function userToProfile(user: DbUser) {
     assignedQuestionnaireIds: user.assignedQuestionnaireIds,
     assignedSlumIds: user.assignedSlumIds,
     projectSlumAssignments: user.projectSlumAssignments,
+    assignedZoneValues: user.assignedZoneValues,
+    projectZoneAssignments: user.projectZoneAssignments,
+    assignedZoneLayerId: user.assignedZoneLayerId,
   };
 }
 
@@ -158,7 +167,9 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       display_name = $2, mobile_number = $3, role = $4, status = $5,
       landmark_icon_scale = $6, assigned_ward_name = $7, assigned_ward_names = $8,
       project_ward_assignments = $9, assigned_questionnaire_ids = $10,
-      assigned_slum_ids = $11, project_slum_assignments = $12, updated_at = NOW()
+      assigned_slum_ids = $11, project_slum_assignments = $12,
+      assigned_zone_values = $13, project_zone_assignments = $14,
+      assigned_zone_layer_id = $15, updated_at = NOW()
      WHERE id = $1 RETURNING *`,
     [
       id,
@@ -173,6 +184,9 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       JSON.stringify(merged.assignedQuestionnaireIds || []),
       JSON.stringify(merged.assignedSlumIds || []),
       JSON.stringify(merged.projectSlumAssignments || {}),
+      JSON.stringify(merged.assignedZoneValues || []),
+      JSON.stringify(merged.projectZoneAssignments || {}),
+      merged.assignedZoneLayerId ?? null,
     ]
   );
   return rows[0] ? rowToUser(rows[0]) : null;

@@ -46,6 +46,15 @@ import {
   userToProfile,
 } from './userStore';
 import { revokeAuthSession } from './authStore';
+import {
+  createOrReplaceZoneLayer,
+  deleteZoneLayer,
+  distinctAssignValues,
+  getZoneLayer,
+  listZoneLayers,
+  listZonePolygons,
+  updateZoneLayerMeta,
+} from './zoneLayersStore';
 
 const PORT = Number(process.env.PORT || 3002);
 
@@ -239,6 +248,9 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     delete patch.assignedQuestionnaireIds;
     delete patch.assignedSlumIds;
     delete patch.projectSlumAssignments;
+    delete patch.assignedZoneValues;
+    delete patch.projectZoneAssignments;
+    delete patch.assignedZoneLayerId;
   }
   const allowedKeys = [
     'displayName',
@@ -252,6 +264,9 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     'assignedQuestionnaireIds',
     'assignedSlumIds',
     'projectSlumAssignments',
+    'assignedZoneValues',
+    'projectZoneAssignments',
+    'assignedZoneLayerId',
   ] as const;
   const cleanPatch: Record<string, unknown> = {};
   for (const key of allowedKeys) {
@@ -384,6 +399,105 @@ app.get('/api/features', requireApproved, async (req: GeosurveyAuthenticatedRequ
     assignedWards,
   });
   res.json({ items });
+});
+
+// ── Zone layers (generic SHP boundaries) ─────────────────────────────────
+app.get('/api/zone-layers', requireApproved, async (req, res) => {
+  const projectId = req.query.projectId ? String(req.query.projectId) : undefined;
+  res.json({ items: await listZoneLayers(projectId) });
+});
+
+app.get('/api/zone-layers/:id', requireApproved, async (req, res) => {
+  const layer = await getZoneLayer(req.params.id);
+  if (!layer) {
+    res.status(404).json({ error: 'Zone layer not found.' });
+    return;
+  }
+  res.json(layer);
+});
+
+app.get('/api/zone-layers/:id/assign-values', requireApproved, async (req, res) => {
+  res.json({ values: await distinctAssignValues(req.params.id) });
+});
+
+app.get('/api/zone-polygons', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
+  const session = req.geosurveySession!;
+  const layerId = req.query.layerId ? String(req.query.layerId) : undefined;
+  const projectId = req.query.projectId ? String(req.query.projectId) : undefined;
+  let assignValues: string[] | undefined;
+  if (session.user.role === 'enumerator') {
+    assignValues = session.user.assignedZoneValues || [];
+    if (assignValues.length === 0) {
+      res.json({ items: [] });
+      return;
+    }
+  } else if (req.query.assignValues) {
+    assignValues = String(req.query.assignValues)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  const items = await listZonePolygons({ layerId, projectId, assignValues });
+  res.json({ items });
+});
+
+app.post('/api/zone-layers/import', requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const projectId = String(body.projectId || '').trim();
+    if (!projectId) {
+      res.status(400).json({ error: 'projectId is required.' });
+      return;
+    }
+    const polygons = Array.isArray(body.polygons) ? body.polygons : [];
+    if (polygons.length === 0) {
+      res.status(400).json({ error: 'No polygons to import.' });
+      return;
+    }
+    const result = await createOrReplaceZoneLayer({
+      id: body.id ? String(body.id) : undefined,
+      projectId,
+      name: String(body.name || 'Zones'),
+      assignmentField: body.assignmentField != null ? String(body.assignmentField) : null,
+      attributeFields: Array.isArray(body.attributeFields)
+        ? body.attributeFields.map((f: unknown) => String(f))
+        : [],
+      strictGeofence: body.strictGeofence !== false,
+      polygons: polygons.map((p: Record<string, unknown>) => ({
+        id: p.id ? String(p.id) : undefined,
+        assignValue: p.assignValue != null ? String(p.assignValue) : null,
+        properties: (p.properties as Record<string, unknown>) || {},
+        geometry: (p.geometry as Record<string, unknown>) || {},
+      })),
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.patch('/api/zone-layers/:id', requireAdmin, async (req, res) => {
+  const updated = await updateZoneLayerMeta(req.params.id, {
+    name: req.body?.name != null ? String(req.body.name) : undefined,
+    assignmentField:
+      req.body?.assignmentField !== undefined
+        ? req.body.assignmentField == null
+          ? null
+          : String(req.body.assignmentField)
+        : undefined,
+    strictGeofence:
+      req.body?.strictGeofence !== undefined ? Boolean(req.body.strictGeofence) : undefined,
+  });
+  if (!updated) {
+    res.status(404).json({ error: 'Zone layer not found.' });
+    return;
+  }
+  res.json(updated);
+});
+
+app.delete('/api/zone-layers/:id', requireAdmin, async (req, res) => {
+  await deleteZoneLayer(req.params.id);
+  res.json({ ok: true });
 });
 
 app.post('/api/features', requireApproved, async (req, res) => {

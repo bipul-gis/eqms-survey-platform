@@ -20,6 +20,8 @@ import { fetchLandmarkGeoJson } from '../lib/landmarkGeoJson';
 import { Project, Questionnaire, UserProfile } from '../types';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { geosurveyApi } from '../lib/geosurveyApi';
+import { zoneLayersApi } from '../lib/zoneLayersApi';
+import { assignedZoneValuesFromProfile } from '../lib/assignedZones';
 
 type EnumeratorEntry = {
   email: string;
@@ -29,6 +31,8 @@ type EnumeratorEntry = {
   uids: string[];
   /** Normalized list (legacy single ward folded in when loading). */
   assignedWardNames: string[];
+  /** Zone attribute values from imported SHP assignment field. */
+  assignedZoneValues: string[];
   /** Union of `assignedQuestionnaireIds` across all UIDs sharing this email. */
   assignedQuestionnaireIds: string[];
 };
@@ -101,11 +105,15 @@ const EnumeratorProjectTaskRow: React.FC<{
   enableGeospatial: boolean;
   enableQuestionnaire: boolean;
   wardOptions: string[];
+  /** When set, geospatial assignment uses zone SHP attribute values. */
+  zoneOptions?: string[];
+  zoneFieldLabel?: string | null;
   questionnaires: Questionnaire[];
   saving: boolean;
   wardHeldByOther: Map<string, { displayName: string; email: string }>;
   onSave: (next: {
     wards?: string[];
+    zoneValues?: string[];
     questionnaireIds?: string[];
   }) => void;
 }> = ({
@@ -113,6 +121,8 @@ const EnumeratorProjectTaskRow: React.FC<{
   enableGeospatial,
   enableQuestionnaire,
   wardOptions,
+  zoneOptions = [],
+  zoneFieldLabel,
   questionnaires,
   saving,
   wardHeldByOther,
@@ -125,6 +135,7 @@ const EnumeratorProjectTaskRow: React.FC<{
   );
 
   const [wards, setWards] = useState<string[]>(() => [...entry.assignedWardNames]);
+  const [zoneValues, setZoneValues] = useState<string[]>(() => [...(entry.assignedZoneValues || [])]);
   const [questionnaireIds, setQuestionnaireIds] = useState<string[]>(initialQIds);
 
   useEffect(() => {
@@ -132,12 +143,17 @@ const EnumeratorProjectTaskRow: React.FC<{
   }, [entry.assignedWardNames, entry.email]);
 
   useEffect(() => {
+    setZoneValues([...(entry.assignedZoneValues || [])]);
+  }, [entry.assignedZoneValues, entry.email]);
+
+  useEffect(() => {
     setQuestionnaireIds(initialQIds);
   }, [initialQIds]);
 
   const allQuestionnairesOn =
     questionnaires.length > 0 && questionnaireIds.length === questionnaires.length;
-  const geospatialOn = wards.length > 0;
+  const useZones = zoneOptions.length > 0;
+  const geospatialOn = useZones ? zoneValues.length > 0 : wards.length > 0;
   const questionnaireOn = questionnaireIds.length > 0;
 
   const toggleWard = (w: string) => {
@@ -146,6 +162,15 @@ const EnumeratorProjectTaskRow: React.FC<{
       const has = prev.some((x) => normalizeWardKey(x) === key);
       if (has) return prev.filter((x) => normalizeWardKey(x) !== key);
       return [...prev, w].sort((a, b) => a.localeCompare(b));
+    });
+  };
+
+  const toggleZone = (v: string) => {
+    setZoneValues((prev) => {
+      const key = normalizeWardKey(v);
+      const has = prev.some((x) => normalizeWardKey(x) === key);
+      if (has) return prev.filter((x) => normalizeWardKey(x) !== key);
+      return [...prev, v].sort((a, b) => a.localeCompare(b));
     });
   };
 
@@ -161,7 +186,11 @@ const EnumeratorProjectTaskRow: React.FC<{
 
   const handleSave = () => {
     onSave({
-      ...(enableGeospatial ? { wards } : {}),
+      ...(enableGeospatial
+        ? useZones
+          ? { zoneValues, wards: [] }
+          : { wards, zoneValues: [] }
+        : {}),
       ...(enableQuestionnaire ? { questionnaireIds } : {})
     });
   };
@@ -201,7 +230,54 @@ const EnumeratorProjectTaskRow: React.FC<{
         </div>
       </div>
 
-      {enableGeospatial && (
+      {enableGeospatial && useZones && (
+        <div className="space-y-2 pt-2 border-t border-gray-200">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <MapPin size={13} className="text-sky-600 shrink-0" />
+              <label className="text-[10px] font-bold text-sky-700 uppercase tracking-wider">
+                Zone assignment{zoneFieldLabel ? ` · ${zoneFieldLabel}` : ''}
+              </label>
+            </div>
+            <button
+              type="button"
+              disabled={saving || zoneValues.length === 0}
+              onClick={() => setZoneValues([])}
+              className="text-[10px] font-semibold text-gray-500 hover:text-gray-800 disabled:opacity-40"
+            >
+              Clear zones
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Assign zone values from the imported SHP attribute table. Enumerator map and survey are
+            limited to these boundaries.
+          </p>
+          <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
+            {zoneOptions.map((v) => {
+              const mine = zoneValues.some((x) => normalizeWardKey(x) === normalizeWardKey(v));
+              return (
+                <label key={v} className="flex items-start gap-2 text-xs cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={mine}
+                    onChange={() => toggleZone(v)}
+                    disabled={saving}
+                    className="rounded border-gray-300 text-sky-600 focus:ring-sky-500 mt-0.5 shrink-0"
+                  />
+                  <span className="truncate text-gray-800">{v}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-gray-500">
+            {zoneValues.length === 0
+              ? 'No zones assigned.'
+              : `${zoneValues.length} zone value(s) assigned.`}
+          </p>
+        </div>
+      )}
+
+      {enableGeospatial && !useZones && (
         <div className="space-y-2 pt-2 border-t border-gray-200">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0">
@@ -221,7 +297,8 @@ const EnumeratorProjectTaskRow: React.FC<{
           </div>
           <p className="text-[10px] text-gray-500 leading-relaxed">
             Assign wards to give this enumerator the full geospatial survey for this project.
-            Each ward can only belong to one enumerator.
+            Each ward can only belong to one enumerator. Import a zone SHP for attribute-based
+            assignment instead.
           </p>
           <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1.5 bg-white">
             {wardOptions.length === 0 ? (
@@ -413,6 +490,9 @@ export const UserManagement: React.FC<{
   const [deactivatedEnumerators, setDeactivatedEnumerators] = useState<EnumeratorEntry[]>([]);
   const [totalEnumeratorsCount, setTotalEnumeratorsCount] = useState(0);
   const [landmarkWardOptions, setLandmarkWardOptions] = useState<string[]>([]);
+  const [zoneAssignOptions, setZoneAssignOptions] = useState<string[]>([]);
+  const [zoneAssignField, setZoneAssignField] = useState<string | null>(null);
+  const [zoneLayerId, setZoneLayerId] = useState<string | null>(null);
 
   const [enumActionLoadingEmail, setEnumActionLoadingEmail] = useState<string | null>(null);
   const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
@@ -549,6 +629,7 @@ export const UserManagement: React.FC<{
           const uid = data.uid;
           const existing = byEmail.get(emailKey);
           const wn = wardsFromUserProfile(data);
+          const zv = assignedZoneValuesFromProfile(data, targetProjectId);
           const qids = questionnaireIdsFromUserProfile(data);
           if (!existing) {
             byEmail.set(emailKey, {
@@ -557,6 +638,7 @@ export const UserManagement: React.FC<{
               mobileNumber: data.mobileNumber,
               uids: uid ? [uid] : [],
               assignedWardNames: status === 'approved' ? wn : [],
+              assignedZoneValues: status === 'approved' ? zv : [],
               assignedQuestionnaireIds: status === 'approved' ? qids : []
             });
             continue;
@@ -565,6 +647,7 @@ export const UserManagement: React.FC<{
           if (!existing.mobileNumber && data.mobileNumber) existing.mobileNumber = data.mobileNumber;
           if (status === 'approved') {
             existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wn])].sort((a, b) => a.localeCompare(b));
+            existing.assignedZoneValues = [...new Set([...existing.assignedZoneValues, ...zv])].sort((a, b) => a.localeCompare(b));
             existing.assignedQuestionnaireIds = [...new Set([...existing.assignedQuestionnaireIds, ...qids])].sort();
           }
         }
@@ -613,6 +696,45 @@ export const UserManagement: React.FC<{
       mounted = false;
     };
   }, []);
+
+  // Zone SHP assignment values for this project (generic attribute field).
+  useEffect(() => {
+    let mounted = true;
+    const loadZoneAssignOptions = async () => {
+      if (!project?.id || !segmentGeo) {
+        setZoneAssignOptions([]);
+        setZoneAssignField(null);
+        setZoneLayerId(null);
+        return;
+      }
+      try {
+        const { items } = await zoneLayersApi.listLayers(project.id);
+        const layer = items[0] || null;
+        if (!mounted) return;
+        if (!layer) {
+          setZoneAssignOptions([]);
+          setZoneAssignField(null);
+          setZoneLayerId(null);
+          return;
+        }
+        setZoneLayerId(layer.id);
+        setZoneAssignField(layer.assignmentField || null);
+        const { values } = await zoneLayersApi.listAssignValues(layer.id);
+        if (!mounted) return;
+        setZoneAssignOptions(values);
+      } catch (e) {
+        console.warn('Failed to load zone assign options', e);
+        if (!mounted) return;
+        setZoneAssignOptions([]);
+        setZoneAssignField(null);
+        setZoneLayerId(null);
+      }
+    };
+    void loadZoneAssignOptions();
+    return () => {
+      mounted = false;
+    };
+  }, [project?.id, segmentGeo]);
 
   useEffect(() => {
     setTotalEnumeratorsCount(pendingUsers.length + activeEnumeratorsCount + deactivatedEnumeratorsCount);
@@ -675,13 +797,14 @@ export const UserManagement: React.FC<{
 
   const saveEnumeratorProjectAssignment = async (
     entry: EnumeratorEntry,
-    next: { wards?: string[]; questionnaireIds?: string[] }
+    next: { wards?: string[]; zoneValues?: string[]; questionnaireIds?: string[] }
   ) => {
     try {
       setTaskSavingEmail(entry.email);
       setError(null);
 
       const patch: Partial<UserProfile> = {};
+      const projectId = project?.id;
 
       if (next.wards !== undefined) {
         const normalized = [...new Set(next.wards.map((w) => String(w).trim()).filter(Boolean))].sort(
@@ -707,6 +830,14 @@ export const UserManagement: React.FC<{
         patch.assignedWardName = null;
       }
 
+      if (next.zoneValues !== undefined) {
+        const normalized = [
+          ...new Set(next.zoneValues.map((v) => String(v).trim()).filter(Boolean))
+        ].sort((a, b) => a.localeCompare(b));
+        patch.assignedZoneValues = normalized;
+        patch.assignedZoneLayerId = normalized.length && zoneLayerId ? zoneLayerId : null;
+      }
+
       if (next.questionnaireIds !== undefined) {
         const projectQIds = new Set(projectQuestionnaires.map((q) => q.id));
         const preserved = (entry.assignedQuestionnaireIds || []).filter(
@@ -720,7 +851,25 @@ export const UserManagement: React.FC<{
         return;
       }
 
-      await Promise.all(entry.uids.map((uid) => geosurveyApi.updateUser(uid, patch)));
+      // Merge per-project zone map so other projects are preserved.
+      if (next.zoneValues !== undefined && projectId) {
+        const allUsers = await loadUsers();
+        await Promise.all(
+          entry.uids.map(async (uid) => {
+            const profile = allUsers.find((u) => u.uid === uid);
+            const existingMap = { ...(profile?.projectZoneAssignments || {}) };
+            const values = patch.assignedZoneValues || [];
+            if (values.length) existingMap[projectId] = values;
+            else delete existingMap[projectId];
+            await geosurveyApi.updateUser(uid, {
+              ...patch,
+              projectZoneAssignments: existingMap,
+            });
+          })
+        );
+      } else {
+        await Promise.all(entry.uids.map((uid) => geosurveyApi.updateUser(uid, patch)));
+      }
       await refreshAll();
     } catch (e) {
       console.error('Error saving project assignment:', e);
@@ -773,18 +922,26 @@ export const UserManagement: React.FC<{
       const allUids = Array.from(
         new Set(activeEnumerators.flatMap((entry) => entry.uids))
       ) as string[];
+      const projectId = project?.id;
+      const allUsers = projectId ? await loadUsers() : [];
       await Promise.all(
-        allUids.map((uid) =>
-          geosurveyApi.updateUser(uid, {
+        allUids.map((uid) => {
+          const profile = allUsers.find((u) => u.uid === uid);
+          const existingMap = { ...(profile?.projectZoneAssignments || {}) };
+          if (projectId) delete existingMap[projectId];
+          return geosurveyApi.updateUser(uid, {
             assignedWardNames: [],
-            assignedWardName: null
-          } as Partial<UserProfile>)
-        )
+            assignedWardName: null,
+            assignedZoneValues: [],
+            assignedZoneLayerId: null,
+            ...(projectId ? { projectZoneAssignments: existingMap } : {}),
+          } as Partial<UserProfile>);
+        })
       );
       await refreshAll();
     } catch (e) {
       console.error('Error clearing all ward assignments:', e);
-      setError('Failed to clear all ward assignments');
+      setError('Failed to clear all geospatial assignments');
     } finally {
       setClearingAllAssignments(false);
     }
@@ -1118,9 +1275,13 @@ export const UserManagement: React.FC<{
               <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
                 For each enumerator, assign the surveys this project enables
                 {segmentGeo && segmentQ
-                  ? ' — geospatial and/or full questionnaire'
+                  ? zoneAssignOptions.length > 0
+                    ? ' — zone boundaries and/or full questionnaire'
+                    : ' — geospatial and/or full questionnaire'
                   : segmentGeo
-                    ? ' — geospatial survey via wards'
+                    ? zoneAssignOptions.length > 0
+                      ? ' — geospatial survey via imported zone attributes'
+                      : ' — geospatial survey via wards'
                     : segmentQ
                       ? ' — full questionnaire survey'
                       : ''}
@@ -1134,14 +1295,20 @@ export const UserManagement: React.FC<{
                       disabled={clearingAllAssignments || activeEnumerators.length === 0}
                       onClick={() => {
                         const ok = confirm(
-                          'Clear ward assignments for all active enumerators?\n\nThis turns off geospatial survey for everyone until you assign wards again.'
+                          zoneAssignOptions.length > 0
+                            ? 'Clear zone/ward assignments for all active enumerators?\n\nThis turns off geospatial survey for everyone until you assign zones again.'
+                            : 'Clear ward assignments for all active enumerators?\n\nThis turns off geospatial survey for everyone until you assign wards again.'
                         );
                         if (!ok) return;
                         void clearAllEnumeratorWardAssignments();
                       }}
                       className="text-xs font-bold px-3 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-50"
                     >
-                      {clearingAllAssignments ? 'Clearing…' : 'Clear all geospatial (wards)'}
+                      {clearingAllAssignments
+                        ? 'Clearing…'
+                        : zoneAssignOptions.length > 0
+                          ? 'Clear all geospatial (zones)'
+                          : 'Clear all geospatial (wards)'}
                     </button>
                   )}
                   {segmentQ && (
@@ -1232,6 +1399,8 @@ export const UserManagement: React.FC<{
                       enableGeospatial={segmentGeo}
                       enableQuestionnaire={segmentQ}
                       wardOptions={wardNameOptions}
+                      zoneOptions={zoneAssignOptions}
+                      zoneFieldLabel={zoneAssignField}
                       questionnaires={projectQuestionnaires}
                       wardHeldByOther={wardLocksByEnumeratorEmail.get(entry.email) ?? new Map()}
                       saving={taskSavingEmail === entry.email || clearingAllAssignments}

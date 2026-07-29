@@ -26,7 +26,7 @@ import {
   Plus
 } from 'lucide-react';
 import { geosurveyApi } from '../lib/geosurveyApi';
-import { Project, Questionnaire, QuestionnaireResponse, UserProfile } from '../types';
+import { Project, Questionnaire, QuestionnaireResponse, UserProfile, ZonePolygon } from '../types';
 import { useAuth } from './AuthProvider';
 import { QuestionnaireForm } from './QuestionnaireForm';
 import { AppFooter } from './AppFooter';
@@ -43,6 +43,9 @@ interface EnumeratorQuestionnaireListProps {
   onLogout?: () => Promise<void> | void;
   /** Captured location to pre-fill on questionnaire submission, if any. */
   initialLocation?: { lat: number; lng: number; ward?: string };
+  /** Assigned zone polygons for strict survey geofencing (optional). */
+  geofenceZones?: ZonePolygon[];
+  strictGeofence?: boolean;
 }
 
 /**
@@ -77,7 +80,9 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   userProfile,
   onBack,
   onLogout,
-  initialLocation
+  initialLocation,
+  geofenceZones,
+  strictGeofence = false,
 }) => {
   const { user } = useAuth();
   const [questionnaires, setQuestionnaires] = useState<Questionnaire[]>([]);
@@ -481,6 +486,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             readOnly={opening.readOnly}
             forceNew={opening.forceNew}
             initialLocation={initialLocation}
+            geofenceZones={geofenceZones}
+            strictGeofence={strictGeofence}
             variant="fullscreen"
             onClose={() => {
               setOpening(null);
