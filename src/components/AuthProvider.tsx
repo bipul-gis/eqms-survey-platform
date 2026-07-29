@@ -1,12 +1,16 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { geosurveyApi, setStoredSessionToken, getStoredSessionToken } from '../lib/geosurveyApi';
+import {
+  geosurveyApi,
+  setStoredSessionToken,
+  getStoredSessionToken,
+  ApiError
+} from '../lib/geosurveyApi';
 import { UserProfile } from '../types';
 import { normalizedFullName } from '../lib/userDisplayName';
 import {
   cacheAuthProfile,
   clearCachedAuthProfile,
-  getCachedAuthProfile,
-  isNetworkFailure
+  getCachedAuthProfile
 } from '../lib/offlineResponses';
 
 export interface AuthUser {
@@ -25,6 +29,19 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+/**
+ * Only the server explicitly rejecting the token means the session is really
+ * gone. Everything else (API restart 5xx, gateway 502, offline) is transient,
+ * and discarding the token for those would sign out a still-valid session.
+ */
+function isAuthRejection(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
+}
+
+const SESSION_RETRY_DELAYS_MS = [1_500, 4_000];
+
+const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -54,13 +71,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     try {
       const session = await geosurveyApi.session();
-      if (!session?.profile?.uid || !session.sessionToken) {
-        throw new Error('Session expired. Please sign in again.');
-      }
+      if (!session?.profile?.uid || !session.sessionToken) return;
       applySession(session.profile, session.sessionToken);
     } catch (error) {
-      // Keep the last good session while offline; only clear on real auth failure.
-      if (isNetworkFailure(error)) return;
+      // Keep the last good session through offline gaps and server hiccups.
+      if (!isAuthRejection(error)) return;
       clearCachedAuthProfile();
       setStoredSessionToken(null);
       setUser(null);
@@ -78,26 +93,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!cancelled) setLoading(false);
           return;
         }
-        try {
-          const session = await geosurveyApi.session();
-          if (!cancelled) {
-            applySession(session.profile, session.sessionToken);
-          }
-        } catch (error) {
-          if (isNetworkFailure(error)) {
-            const cached = getCachedAuthProfile();
-            if (cached && cached.token === token && !cancelled) {
-              applySession(cached.profile as unknown as UserProfile, cached.token);
-              return;
+        // Retry transient failures so an API restart mid-launch does not look
+        // like a dead session.
+        let lastError: unknown = null;
+        for (let attempt = 0; attempt <= SESSION_RETRY_DELAYS_MS.length; attempt += 1) {
+          if (cancelled) return;
+          try {
+            const session = await geosurveyApi.session();
+            if (!cancelled) applySession(session.profile, session.sessionToken);
+            return;
+          } catch (error) {
+            lastError = error;
+            if (isAuthRejection(error)) break;
+            if (attempt < SESSION_RETRY_DELAYS_MS.length) {
+              await delay(SESSION_RETRY_DELAYS_MS[attempt]);
             }
           }
-          setStoredSessionToken(null);
-          clearCachedAuthProfile();
-          if (!cancelled) {
-            setUser(null);
-            setUserProfile(null);
-          }
         }
+        if (cancelled) return;
+
+        if (!isAuthRejection(lastError)) {
+          // Server unreachable: fall back to the cached profile and keep the
+          // token so the session resumes once the API is back.
+          const cached = getCachedAuthProfile();
+          if (cached && cached.token === token) {
+            applySession(cached.profile as unknown as UserProfile, cached.token);
+          }
+          return;
+        }
+
+        setStoredSessionToken(null);
+        clearCachedAuthProfile();
+        setUser(null);
+        setUserProfile(null);
       } finally {
         if (!cancelled) setLoading(false);
       }

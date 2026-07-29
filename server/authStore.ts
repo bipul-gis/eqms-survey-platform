@@ -11,6 +11,8 @@ export interface AuthSession {
 }
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Renew a session once it is inside the last half of its lifetime. */
+const SESSION_RENEW_THRESHOLD_MS = SESSION_TTL_MS / 2;
 
 export async function getPasswordHash(userId: string): Promise<string | null> {
   const { rows } = await pool.query(
@@ -47,7 +49,11 @@ export async function createAuthSession(userId: string): Promise<AuthSession> {
   const id = randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-  await pool.query('DELETE FROM auth_sessions WHERE user_id = $1', [userId]);
+  // Keep this account's other live sessions so the same user can stay signed
+  // in on phone and desktop at once; only drop rows that already expired.
+  await pool.query('DELETE FROM auth_sessions WHERE user_id = $1 AND expires_at <= NOW()', [
+    userId,
+  ]);
   await pool.query(
     `INSERT INTO auth_sessions (id, user_id, token, expires_at, created_at)
      VALUES ($1, $2, $3, $4, $5)`,
@@ -70,15 +76,29 @@ export async function getAuthSession(token: string): Promise<AuthSession | null>
   );
   const row = rows[0];
   if (!row) return null;
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
+  const expiresAtMs = new Date(row.expires_at).getTime();
+  if (expiresAtMs <= Date.now()) {
     await pool.query('DELETE FROM auth_sessions WHERE token = $1', [token]);
     return null;
   }
+
+  // Sliding window: an actively used session is renewed so field staff are not
+  // signed out mid-survey when the original 7 days run out.
+  let expiresAt = row.expires_at;
+  if (expiresAtMs - Date.now() < SESSION_RENEW_THRESHOLD_MS) {
+    const renewed = new Date(Date.now() + SESSION_TTL_MS);
+    await pool.query('UPDATE auth_sessions SET expires_at = $2 WHERE token = $1', [
+      token,
+      renewed.toISOString(),
+    ]);
+    expiresAt = renewed.toISOString();
+  }
+
   return {
     id: row.id,
     userId: row.user_id,
     token: row.token,
-    expiresAt: row.expires_at,
+    expiresAt,
     createdAt: row.created_at,
   };
 }
