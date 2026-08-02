@@ -2922,7 +2922,9 @@ const OPTION_DISABLE_OPERATORS: { value: LogicOperator; label: string; takesValu
   { value: 'contains', label: 'contains', takesValue: true },
   { value: 'notContains', label: 'does not contain', takesValue: true },
   { value: 'greaterThan', label: 'is greater than', takesValue: true },
+  { value: 'greaterThanOrEqual', label: 'is greater than or equal to', takesValue: true },
   { value: 'lessThan', label: 'is less than', takesValue: true },
+  { value: 'lessThanOrEqual', label: 'is less than or equal to', takesValue: true },
   { value: 'isEmpty', label: 'is empty', takesValue: false },
   { value: 'isNotEmpty', label: 'is not empty', takesValue: false }
 ];
@@ -3609,7 +3611,9 @@ const OPERATORS: { value: LogicOperator; label: string; takesValue: boolean }[] 
   { value: 'contains',     label: 'contains',       takesValue: true  },
   { value: 'notContains',  label: 'does not contain', takesValue: true },
   { value: 'greaterThan',  label: 'is greater than', takesValue: true },
+  { value: 'greaterThanOrEqual', label: 'is greater than or equal to', takesValue: true },
   { value: 'lessThan',     label: 'is less than',    takesValue: true },
+  { value: 'lessThanOrEqual', label: 'is less than or equal to', takesValue: true },
   { value: 'isEmpty',      label: 'is empty',        takesValue: false },
   { value: 'isNotEmpty',   label: 'is not empty',    takesValue: false }
 ];
@@ -4408,8 +4412,12 @@ const evaluateLogic = (
           .includes(String(v).toLowerCase());
       case 'greaterThan':
         return Number(a) > Number(v);
+      case 'greaterThanOrEqual':
+        return Number(a) >= Number(v);
       case 'lessThan':
         return Number(a) < Number(v);
+      case 'lessThanOrEqual':
+        return Number(a) <= Number(v);
       case 'isEmpty':
         return choiceAnswerIsLogicallyEmpty(a);
       case 'isNotEmpty':

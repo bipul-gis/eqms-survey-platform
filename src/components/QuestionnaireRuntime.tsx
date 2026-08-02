@@ -145,8 +145,12 @@ export const evaluateLogic = (
           .includes(String(v).toLowerCase());
       case 'greaterThan':
         return Number(a) > Number(v);
+      case 'greaterThanOrEqual':
+        return Number(a) >= Number(v);
       case 'lessThan':
         return Number(a) < Number(v);
+      case 'lessThanOrEqual':
+        return Number(a) <= Number(v);
       case 'isEmpty':
         return choiceAnswerIsLogicallyEmpty(a);
       case 'isNotEmpty':

@@ -336,7 +336,9 @@ export type LogicOperator =
   | 'contains'
   | 'notContains'
   | 'greaterThan'
+  | 'greaterThanOrEqual'
   | 'lessThan'
+  | 'lessThanOrEqual'
   | 'isEmpty'
   | 'isNotEmpty';
 
