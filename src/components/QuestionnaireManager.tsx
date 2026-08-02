@@ -4410,20 +4410,34 @@ const evaluateLogic = (
         return !choiceAnswerToComparableString(a)
           .toLowerCase()
           .includes(String(v).toLowerCase());
-      case 'greaterThan':
-        return Number(a) > Number(v);
-      case 'greaterThanOrEqual':
-        return Number(a) >= Number(v);
-      case 'lessThan':
-        return Number(a) < Number(v);
-      case 'lessThanOrEqual':
-        return Number(a) <= Number(v);
+      case 'greaterThan': {
+        const left = Number(a);
+        const right = Number(v);
+        return Number.isFinite(left) && Number.isFinite(right) && left > right;
+      }
+      case 'greaterThanOrEqual': {
+        const left = Number(a);
+        const right = Number(v);
+        return Number.isFinite(left) && Number.isFinite(right) && left >= right;
+      }
+      case 'lessThan': {
+        const left = Number(a);
+        const right = Number(v);
+        return Number.isFinite(left) && Number.isFinite(right) && left < right;
+      }
+      case 'lessThanOrEqual': {
+        const left = Number(a);
+        const right = Number(v);
+        return Number.isFinite(left) && Number.isFinite(right) && left <= right;
+      }
       case 'isEmpty':
         return choiceAnswerIsLogicallyEmpty(a);
       case 'isNotEmpty':
         return !choiceAnswerIsLogicallyEmpty(a);
       default:
-        return true;
+        // Unknown operators must fail closed — otherwise a newer rule saved
+        // from the builder (e.g. >=) would always match on older clients.
+        return false;
     }
   });
   return logic.combinator === 'AND' ? results.every(Boolean) : results.some(Boolean);
