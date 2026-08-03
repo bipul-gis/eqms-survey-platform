@@ -161,25 +161,28 @@ export const EnumeratorAssignedZoneMap: React.FC<{
 
   return (
     <section className="mb-4 overflow-hidden rounded-2xl border border-sky-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-start gap-3 border-b border-sky-100 bg-sky-50/80 px-4 py-3">
-        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white">
-          <MapPinned size={18} />
+      <div className="flex flex-col gap-3 border-b border-sky-100 bg-sky-50/80 px-4 py-3 sm:flex-row sm:items-start">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white">
+            <MapPinned size={18} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-bold leading-tight text-slate-900">
+              Your assigned survey zone
+            </h2>
+            <p className="mt-0.5 text-[11px] leading-snug text-slate-600">
+              Submit inside the outlined boundary, or up to {ASSIGNED_ZONE_BUFFER_METERS} m outside it.
+            </p>
+          </div>
         </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-bold text-slate-900">Your assigned survey zone</h2>
-          <p className="text-[11px] leading-relaxed text-slate-600">
-            Submit inside the outlined boundary as usual, or up to {ASSIGNED_ZONE_BUFFER_METERS} m
-            outside it.
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto sm:shrink-0">
           {Array.isArray(surveyLocations) && (
-            <label className="inline-flex items-center gap-1.5 rounded-lg bg-white/75 px-2.5 py-2 text-xs font-bold text-slate-700 ring-1 ring-sky-100">
+            <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-white/75 px-2.5 py-2 text-xs font-bold text-slate-700 ring-1 ring-sky-100">
               <input
                 type="checkbox"
                 checked={showSurveyLocations}
                 onChange={(e) => setShowSurveyLocations(e.target.checked)}
-                className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
               />
               {surveyLocationsLoading ? (
                 <Loader2 size={13} className="animate-spin text-sky-700" />
@@ -192,7 +195,7 @@ export const EnumeratorAssignedZoneMap: React.FC<{
           <button
             type="button"
             onClick={onHide}
-            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-600 hover:bg-white"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-600 hover:bg-white"
           >
             <EyeOff size={14} />
             Hide map
