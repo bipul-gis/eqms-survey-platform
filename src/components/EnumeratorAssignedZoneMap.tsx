@@ -176,22 +176,6 @@ export const EnumeratorAssignedZoneMap: React.FC<{
           </div>
         </div>
         <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto sm:shrink-0">
-          {Array.isArray(surveyLocations) && (
-            <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-white/75 px-2.5 py-2 text-xs font-bold text-slate-700 ring-1 ring-sky-100">
-              <input
-                type="checkbox"
-                checked={showSurveyLocations}
-                onChange={(e) => setShowSurveyLocations(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-              />
-              {surveyLocationsLoading ? (
-                <Loader2 size={13} className="animate-spin text-sky-700" />
-              ) : (
-                <MapPin size={13} className="text-slate-600" />
-              )}
-              <span>Survey points ({scopedSurveyLocations.length})</span>
-            </label>
-          )}
           <button
             type="button"
             onClick={onHide}
@@ -206,6 +190,22 @@ export const EnumeratorAssignedZoneMap: React.FC<{
       {zones.length > 0 ? (
         <>
           <div className="relative h-72 w-full sm:h-80">
+            {Array.isArray(surveyLocations) && (
+              <label className="absolute right-3 top-3 z-[500] inline-flex max-w-[calc(100%-5.5rem)] items-center gap-1.5 whitespace-nowrap rounded-lg bg-white px-2.5 py-2 text-xs font-bold text-slate-700 shadow-lg ring-1 ring-slate-200">
+                <input
+                  type="checkbox"
+                  checked={showSurveyLocations}
+                  onChange={(e) => setShowSurveyLocations(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                {surveyLocationsLoading ? (
+                  <Loader2 size={13} className="animate-spin text-sky-700" />
+                ) : (
+                  <MapPin size={13} className="text-slate-600" />
+                )}
+                <span className="truncate">Survey points ({scopedSurveyLocations.length})</span>
+              </label>
+            )}
             <MapContainer
               center={[23.7, 90.4]}
               zoom={7}
