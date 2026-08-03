@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import L from 'leaflet';
-import { Circle, CircleMarker, GeoJSON, MapContainer, TileLayer, Tooltip, useMap } from 'react-leaflet';
-import { EyeOff, LocateFixed, MapPinned, Navigation } from 'lucide-react';
+import { Circle, CircleMarker, GeoJSON, MapContainer, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
+import { EyeOff, Loader2, LocateFixed, MapPin, MapPinned, Navigation } from 'lucide-react';
 import type { ZonePolygon } from '../types';
 import { zonesToGeoJson } from '../lib/assignedZones';
 import {
@@ -9,6 +9,7 @@ import {
   findZoneWithinDistance,
 } from '../lib/pointInPolygon';
 import { useGeoLocation } from './GeoLocationProvider';
+import type { SurveyLocationPoint } from '../hooks/useQuestionnaireSurveyLocations';
 
 const FitAssignedZones: React.FC<{ zones: ZonePolygon[] }> = ({ zones }) => {
   const map = useMap();
@@ -42,13 +43,104 @@ const FocusCurrentLocation: React.FC<{
   return null;
 };
 
+const SURVEY_POINT_FILL = '#374151';
+const SURVEY_POINT_OUTLINE_BY_STATUS: Record<string, string> = {
+  draft: '#9ca3af',
+  submitted: '#111827',
+  reviewed: '#16a34a',
+};
+
+function formatSurveyTimestamp(value: unknown): string {
+  if (!value) return '-';
+  try {
+    if (typeof value === 'object' && value && typeof (value as any).toDate === 'function') {
+      return (value as any).toDate().toLocaleString();
+    }
+    if (typeof value === 'string' || typeof value === 'number') {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) return date.toLocaleString();
+    }
+  } catch {
+    /* ignore */
+  }
+  return '-';
+}
+
+const SurveyPointMarker: React.FC<{ point: SurveyLocationPoint }> = React.memo(({ point }) => {
+  const status = point.status || 'submitted';
+  const outline = SURVEY_POINT_OUTLINE_BY_STATUS[status] || SURVEY_POINT_OUTLINE_BY_STATUS.submitted;
+  const when = formatSurveyTimestamp(point.submittedAt || point.capturedAt);
+  return (
+    <CircleMarker
+      center={[point.lat, point.lng]}
+      radius={6}
+      pathOptions={{
+        color: outline,
+        fillColor: SURVEY_POINT_FILL,
+        fillOpacity: 0.9,
+        weight: 2,
+      }}
+    >
+      <Popup>
+        <div className="min-w-[210px]">
+          <div className="mb-2 border-b border-slate-200 pb-2">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-600">
+              Surveyed point
+            </p>
+            <p className="text-sm font-bold capitalize text-slate-900">{status}</p>
+          </div>
+          <table className="w-full text-[11px]">
+            <tbody>
+              <tr className="border-b border-slate-100">
+                <td className="py-1 pr-2 font-semibold text-slate-600">Lat</td>
+                <td className="py-1 font-mono text-slate-800">{point.lat.toFixed(6)}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1 pr-2 font-semibold text-slate-600">Lng</td>
+                <td className="py-1 font-mono text-slate-800">{point.lng.toFixed(6)}</td>
+              </tr>
+              {typeof point.accuracy === 'number' ? (
+                <tr className="border-b border-slate-100">
+                  <td className="py-1 pr-2 font-semibold text-slate-600">Accuracy</td>
+                  <td className="py-1 text-slate-800">+/- {Math.round(point.accuracy)} m</td>
+                </tr>
+              ) : null}
+              <tr>
+                <td className="py-1 pr-2 font-semibold text-slate-600">When</td>
+                <td className="py-1 text-slate-800">{when}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Popup>
+    </CircleMarker>
+  );
+});
+SurveyPointMarker.displayName = 'SurveyPointMarker';
+
 export const EnumeratorAssignedZoneMap: React.FC<{
   zones: ZonePolygon[];
   onHide: () => void;
-}> = ({ zones, onHide }) => {
+  surveyLocations?: SurveyLocationPoint[];
+  surveyLocationsLoading?: boolean;
+  surveyLocationsError?: Error | null;
+}> = ({ zones, onHide, surveyLocations, surveyLocationsLoading = false, surveyLocationsError }) => {
   const { location, error, requestLocation } = useGeoLocation();
   const [focusRequestKey, setFocusRequestKey] = useState(0);
+  const [showSurveyLocations, setShowSurveyLocations] = useState(true);
   const zoneGeoJson = useMemo(() => zonesToGeoJson(zones), [zones]);
+  const scopedSurveyLocations = useMemo(
+    () =>
+      (surveyLocations || []).filter((point) =>
+        findZoneWithinDistance(
+          point.lng,
+          point.lat,
+          zones,
+          ASSIGNED_ZONE_BUFFER_METERS
+        )
+      ),
+    [surveyLocations, zones]
+  );
   const zoneProximity = useMemo(
     () =>
       location
@@ -69,7 +161,7 @@ export const EnumeratorAssignedZoneMap: React.FC<{
 
   return (
     <section className="mb-4 overflow-hidden rounded-2xl border border-sky-200 bg-white shadow-sm">
-      <div className="flex items-start gap-3 border-b border-sky-100 bg-sky-50/80 px-4 py-3">
+      <div className="flex flex-wrap items-start gap-3 border-b border-sky-100 bg-sky-50/80 px-4 py-3">
         <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white">
           <MapPinned size={18} />
         </div>
@@ -80,14 +172,32 @@ export const EnumeratorAssignedZoneMap: React.FC<{
             outside it.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onHide}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-600 hover:bg-white"
-        >
-          <EyeOff size={14} />
-          Hide map
-        </button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {Array.isArray(surveyLocations) && (
+            <label className="inline-flex items-center gap-1.5 rounded-lg bg-white/75 px-2.5 py-2 text-xs font-bold text-slate-700 ring-1 ring-sky-100">
+              <input
+                type="checkbox"
+                checked={showSurveyLocations}
+                onChange={(e) => setShowSurveyLocations(e.target.checked)}
+                className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+              />
+              {surveyLocationsLoading ? (
+                <Loader2 size={13} className="animate-spin text-sky-700" />
+              ) : (
+                <MapPin size={13} className="text-slate-600" />
+              )}
+              <span>Survey points ({scopedSurveyLocations.length})</span>
+            </label>
+          )}
+          <button
+            type="button"
+            onClick={onHide}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-600 hover:bg-white"
+          >
+            <EyeOff size={14} />
+            Hide map
+          </button>
+        </div>
       </div>
 
       {zones.length > 0 ? (
@@ -155,6 +265,10 @@ export const EnumeratorAssignedZoneMap: React.FC<{
               />
               <FitAssignedZones zones={zones} />
               <FocusCurrentLocation location={location} requestKey={focusRequestKey} />
+              {showSurveyLocations &&
+                scopedSurveyLocations.map((point) => (
+                  <SurveyPointMarker key={`assigned_survey_point_${point.id}`} point={point} />
+                ))}
               {location && (
                 <>
                   <Circle
@@ -194,9 +308,18 @@ export const EnumeratorAssignedZoneMap: React.FC<{
             </button>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-2.5 text-xs">
-            <span className="text-slate-500">
-              {zones.length} assigned zone{zones.length === 1 ? '' : 's'}
-            </span>
+            <div className="flex flex-wrap items-center gap-2 text-slate-500">
+              <span>
+                {zones.length} assigned zone{zones.length === 1 ? '' : 's'}
+              </span>
+              {Array.isArray(surveyLocations) && (
+                <span>
+                  {scopedSurveyLocations.length} surveyed point
+                  {scopedSurveyLocations.length === 1 ? '' : 's'}
+                  {!showSurveyLocations ? ' hidden' : ''}
+                </span>
+              )}
+            </div>
             {location ? (
               <span
                 className={`inline-flex items-center gap-1.5 font-semibold ${
@@ -223,6 +346,11 @@ export const EnumeratorAssignedZoneMap: React.FC<{
           {error && !location && (
             <p className="border-t border-amber-100 bg-amber-50 px-4 py-2 text-[11px] text-amber-800">
               Location unavailable: {error}
+            </p>
+          )}
+          {surveyLocationsError && (
+            <p className="border-t border-amber-100 bg-amber-50 px-4 py-2 text-[11px] text-amber-800">
+              Survey locations unavailable: {surveyLocationsError.message}
             </p>
           )}
         </>

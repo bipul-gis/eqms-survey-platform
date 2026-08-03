@@ -37,6 +37,7 @@ import { ASSIGNED_ZONE_BUFFER_METERS } from '../lib/pointInPolygon';
 import { ResponseIdCell } from './ResponseIdCell';
 import { readResponseIdSerial } from '../lib/responseIdSequence';
 import { EnumeratorAssignedZoneMap } from './EnumeratorAssignedZoneMap';
+import { useQuestionnaireSurveyLocations } from '../hooks/useQuestionnaireSurveyLocations';
 
 interface EnumeratorQuestionnaireListProps {
   userProfile: UserProfile;
@@ -105,6 +106,22 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   /** Bumps to reload questionnaire docs + response stats (Refresh, form close/submit, draft delete). */
   const [refreshTick, setRefreshTick] = useState(0);
   const [showAssignedZoneMap, setShowAssignedZoneMap] = useState(true);
+  const assignedZoneProjectId = useMemo(() => {
+    const ids = [
+      ...new Set((geofenceZones || []).map((zone) => zone.projectId).filter(Boolean)),
+    ];
+    return ids.length === 1 ? ids[0] : undefined;
+  }, [geofenceZones]);
+  const {
+    locations: assignedZoneSurveyLocations,
+    loading: assignedZoneSurveyLocationsLoading,
+    error: assignedZoneSurveyLocationsError,
+  } = useQuestionnaireSurveyLocations({
+    mode: user?.uid ? 'enumerator' : 'idle',
+    userUid: user?.uid,
+    enabled: strictGeofence && showAssignedZoneMap && (geofenceZones?.length || 0) > 0,
+    projectId: assignedZoneProjectId,
+  });
 
   const assignedIds = useMemo(() => {
     const list = userProfile.assignedQuestionnaireIds || [];
@@ -385,6 +402,9 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             <EnumeratorAssignedZoneMap
               zones={geofenceZones || []}
               onHide={() => setShowAssignedZoneMap(false)}
+              surveyLocations={assignedZoneSurveyLocations}
+              surveyLocationsLoading={assignedZoneSurveyLocationsLoading}
+              surveyLocationsError={assignedZoneSurveyLocationsError}
             />
           ) : (
             <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-sky-200 bg-sky-50/80 px-4 py-3">

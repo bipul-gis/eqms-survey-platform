@@ -185,11 +185,20 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   const fetchFullResponsesForExport = async (
     ids: string[]
   ): Promise<QuestionnaireResponse[]> => {
-    const idSet = new Set(ids);
-    const { items } = await geosurveyApi.listResponses({
-      questionnaireId: questionnaire.id,
-    });
-    return (items as unknown as QuestionnaireResponse[]).filter((r) => idSet.has(r.id));
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    const out: QuestionnaireResponse[] = [];
+    const batchSize = 6;
+    for (let i = 0; i < uniqueIds.length; i += batchSize) {
+      const batch = uniqueIds.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (id) => {
+          const { item } = await geosurveyApi.getResponse(id);
+          return item as unknown as QuestionnaireResponse;
+        })
+      );
+      out.push(...results);
+    }
+    return out;
   };
 
   useEffect(() => {
