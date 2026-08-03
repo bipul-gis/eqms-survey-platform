@@ -58,15 +58,20 @@ const ZoneLayerPanel = lazy(() =>
 );
 
 
-// Tiny full-screen fallback shown while a code-split chunk is being fetched.
-const ScreenFallback: React.FC<{ label?: string }> = ({ label = 'Loading…' }) => (
-  <div className="min-h-screen flex items-center justify-center bg-slate-50">
-    <div className="flex items-center gap-3 text-slate-600">
-      <div className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" />
-      <span className="text-sm font-medium">{label}</span>
+const AppPreloader: React.FC<{ label?: string }> = ({ label = 'Preparing Geosurvey' }) => (
+  <div className="eqms-preloader">
+    <div className="eqms-preloader-panel" role="status" aria-live="polite">
+      <div className="eqms-preloader-logo-shell">
+        <img src="/eqms-logo.png" alt="EQMS" className="eqms-preloader-logo" />
+      </div>
+      <p className="eqms-preloader-title">Geosurvey</p>
+      <p className="eqms-preloader-label">{label}</p>
+      <div className="eqms-preloader-progress" aria-hidden="true" />
     </div>
   </div>
 );
+
+const ScreenFallback = AppPreloader;
 import {
   MapPin,
   Map as MapIcon,
@@ -2299,31 +2304,13 @@ const AppContent: React.FC = () => {
     }
   };
 
-  if (authLoading) return (
-    <div className="h-screen flex items-center justify-center bg-slate-50">
-      <div className="animate-bounce flex space-x-2">
-        <div className="h-3 w-3 bg-blue-600 rounded-full"></div>
-        <div className="h-3 w-3 bg-blue-600 rounded-full"></div>
-        <div className="h-3 w-3 bg-blue-600 rounded-full"></div>
-      </div>
-    </div>
-  );
+  if (authLoading) return <AppPreloader label="Starting secure workspace" />;
 
   if (!user) return <LoginScreen />;
 
   // If auth succeeded but profile is still loading, don't bounce back to login.
   if (!userProfile) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
-        <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 border border-slate-100 text-center">
-          <div className="mx-auto w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
-            <Shield size={28} className="text-white" />
-          </div>
-          <h1 className="text-2xl font-bold text-slate-800">Checking your access</h1>
-          <p className="text-slate-500 text-sm mt-2">Please wait...</p>
-        </div>
-      </div>
-    );
+    return <AppPreloader label="Checking your access" />;
   }
 
   if (userProfile.status === 'pending') {

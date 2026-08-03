@@ -161,29 +161,31 @@ export const EnumeratorAssignedZoneMap: React.FC<{
 
   return (
     <section className="mb-4 overflow-hidden rounded-2xl border border-sky-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-sky-100 bg-sky-50/80 px-4 py-3 sm:flex-row sm:items-start">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white">
-            <MapPinned size={18} />
+      <div className="border-b border-sky-100 bg-sky-50/80 px-3 py-2">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-600 text-white">
+            <MapPinned size={16} />
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-bold leading-tight text-slate-900">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <h2 className="truncate text-sm font-bold leading-tight text-slate-900">
               Your assigned survey zone
-            </h2>
-            <p className="mt-0.5 text-[11px] leading-snug text-slate-600">
-              Submit inside the outlined boundary, or up to {ASSIGNED_ZONE_BUFFER_METERS} m outside it.
+              </h2>
+              <button
+                type="button"
+                onClick={onHide}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-600 hover:bg-white"
+                aria-label="Hide map"
+                title="Hide map"
+              >
+                <EyeOff size={15} />
+                <span className="sr-only">Hide map</span>
+              </button>
+            </div>
+            <p className="mt-0.5 text-[11px] leading-tight text-slate-600">
+              Stay within {ASSIGNED_ZONE_BUFFER_METERS} m buffer of assigned boundary.
             </p>
           </div>
-        </div>
-        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto sm:shrink-0">
-          <button
-            type="button"
-            onClick={onHide}
-            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-600 hover:bg-white"
-          >
-            <EyeOff size={14} />
-            Hide map
-          </button>
         </div>
       </div>
 
