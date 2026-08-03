@@ -174,12 +174,12 @@ export const EnumeratorAssignedZoneMap: React.FC<{
               <button
                 type="button"
                 onClick={onHide}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-600 hover:bg-white"
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 text-xs font-semibold text-slate-600 hover:bg-white"
                 aria-label="Hide map"
                 title="Hide map"
               >
                 <EyeOff size={15} />
-                <span className="sr-only">Hide map</span>
+                <span>Hide map</span>
               </button>
             </div>
             <p className="mt-0.5 text-[11px] leading-tight text-slate-600">
