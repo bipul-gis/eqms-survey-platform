@@ -217,9 +217,9 @@ export async function flushOfflineResponseQueue(): Promise<{
           failed = pending.length - flushed;
           break;
         }
-        // Non-network failure (validation etc.) — drop so it doesn't block the queue forever.
-        console.warn('offlineResponses: dropping failed pending item', entry.id, e);
-        removePendingResponse(entry.id);
+        // Non-network failures (validation, auth, server-side issues) should stay queued
+        // so the enumerator can retry later instead of silently losing the submission.
+        console.warn('offlineResponses: keeping failed pending item for retry', entry.id, e);
         failed += 1;
       }
     }

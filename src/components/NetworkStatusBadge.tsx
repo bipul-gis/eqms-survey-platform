@@ -22,7 +22,7 @@ import { useOnlineStatus } from '../hooks/useOnlineStatus';
 export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
   className = ''
 }) => {
-  const { online, syncing, pendingCount } = useOnlineStatus();
+  const { online, syncing, pendingCount, retryPendingUploads } = useOnlineStatus();
 
   if (online && !syncing && pendingCount === 0) return null;
 
@@ -33,20 +33,22 @@ export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
         title="You're offline. Drafts and submissions are saved locally and will sync automatically when the connection returns."
       >
         <CloudOff size={12} className="shrink-0" />
-        <span>Offline · saving locally</span>
+        <span>{pendingCount > 0 ? `Offline · ${pendingCount} queued` : 'Offline · saving locally'}</span>
       </div>
     );
   }
 
-  // Online + syncing — show while the offline queue is flushing.
   return (
-    <div
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className}`}
-      title="Connected. Uploading offline drafts and submissions."
+    <button
+      type="button"
+      onClick={() => void retryPendingUploads()}
+      disabled={syncing}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className} ${syncing ? 'opacity-80 cursor-default' : 'hover:bg-sky-200 transition-colors'}`}
+      title={pendingCount > 0 ? `${pendingCount} response${pendingCount === 1 ? '' : 's'} waiting to upload.` : 'Connected. Uploading offline drafts and submissions.'}
     >
-      <RefreshCw size={12} className="shrink-0 animate-spin" />
-      <span>Syncing{pendingCount > 0 ? ` (${pendingCount})` : '…'}</span>
-    </div>
+      <RefreshCw size={12} className={`shrink-0 ${syncing ? 'animate-spin' : ''}`} />
+      <span>{syncing ? `Syncing (${pendingCount})` : `Retry uploads (${pendingCount})`}</span>
+    </button>
   );
 };
 
@@ -58,7 +60,7 @@ export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
 export const NetworkStatusBadgeAlways: React.FC<{ className?: string }> = ({
   className = ''
 }) => {
-  const { online, syncing, pendingCount } = useOnlineStatus();
+  const { online, syncing, pendingCount, retryPendingUploads } = useOnlineStatus();
 
   if (!online) {
     return (
@@ -66,18 +68,21 @@ export const NetworkStatusBadgeAlways: React.FC<{ className?: string }> = ({
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-200 ${className}`}
       >
         <CloudOff size={12} className="shrink-0" />
-        <span>Offline · saving locally</span>
+        <span>{pendingCount > 0 ? `Offline · ${pendingCount} queued` : 'Offline · saving locally'}</span>
       </div>
     );
   }
   if (syncing || pendingCount > 0) {
     return (
-      <div
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className}`}
+      <button
+        type="button"
+        onClick={() => void retryPendingUploads()}
+        disabled={syncing}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className} ${syncing ? 'opacity-80 cursor-default' : 'hover:bg-sky-200 transition-colors'}`}
       >
-        <RefreshCw size={12} className="shrink-0 animate-spin" />
-        <span>Syncing{pendingCount > 0 ? ` (${pendingCount})` : '…'}</span>
-      </div>
+        <RefreshCw size={12} className={`shrink-0 ${syncing ? 'animate-spin' : ''}`} />
+        <span>{syncing ? `Syncing (${pendingCount})` : `Retry uploads (${pendingCount})`}</span>
+      </button>
     );
   }
   return (

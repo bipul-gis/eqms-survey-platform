@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   countPendingResponses,
   flushOfflineResponseQueue
@@ -8,6 +8,7 @@ export interface NetworkState {
   online: boolean;
   syncing: boolean;
   pendingCount: number;
+  retryPendingUploads: () => Promise<void>;
 }
 
 /** Online status + offline queue flush on reconnect. */
@@ -20,20 +21,25 @@ export function useOnlineStatus(): NetworkState {
     typeof window === 'undefined' ? 0 : countPendingResponses()
   );
 
+  const refreshPending = useCallback(() => setPendingCount(countPendingResponses()), []);
+
+  const retryPendingUploads = useCallback(async () => {
+    if (typeof window === 'undefined' || syncing) return;
+    setSyncing(true);
+    try {
+      await flushOfflineResponseQueue();
+    } finally {
+      refreshPending();
+      setSyncing(false);
+    }
+  }, [refreshPending, syncing]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const refreshPending = () => setPendingCount(countPendingResponses());
-
     const goOnline = () => {
       setOnline(true);
-      setSyncing(true);
-      void flushOfflineResponseQueue()
-        .catch(() => undefined)
-        .finally(() => {
-          refreshPending();
-          setSyncing(false);
-        });
+      void retryPendingUploads();
     };
     const goOffline = () => {
       setOnline(false);
@@ -44,12 +50,13 @@ export function useOnlineStatus(): NetworkState {
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
     const interval = window.setInterval(refreshPending, 4000);
+    refreshPending();
     return () => {
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
       window.clearInterval(interval);
     };
-  }, []);
+  }, [refreshPending, retryPendingUploads]);
 
-  return { online, syncing, pendingCount };
+  return { online, syncing, pendingCount, retryPendingUploads };
 }
