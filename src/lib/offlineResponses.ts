@@ -267,20 +267,49 @@ export async function flushOfflineResponseQueue(): Promise<{
 }
 
 let onlineListenerAttached = false;
+let offlineFlushTimer: number | null = null;
+
+function tryFlushPendingResponses(reason: string): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (countPendingResponses() === 0) return;
+  void flushOfflineResponseQueue().catch((e) =>
+    console.warn(`offlineResponses: flush (${reason}) failed`, e)
+  );
+}
 
 /** Attach once from app bootstrap — flushes queue when connectivity returns. */
 export function ensureOfflineFlushListener(): void {
   if (typeof window === 'undefined' || onlineListenerAttached) return;
   onlineListenerAttached = true;
-  window.addEventListener('online', () => {
-    void flushOfflineResponseQueue().catch((e) =>
-      console.warn('offlineResponses: flush on reconnect failed', e)
-    );
-  });
+
+  const handleOnline = () => tryFlushPendingResponses('online');
+  const handleVisible = () => {
+    if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+      tryFlushPendingResponses('visible');
+    }
+  };
+
+  window.addEventListener('online', handleOnline);
+  window.addEventListener('focus', handleOnline);
+  window.addEventListener('pageshow', handleOnline);
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisible);
+  }
+
+  if (offlineFlushTimer) {
+    window.clearInterval(offlineFlushTimer);
+  }
+  offlineFlushTimer = window.setInterval(() => {
+    if (typeof navigator !== 'undefined' && navigator.onLine !== false) {
+      tryFlushPendingResponses('timer');
+    }
+  }, 5000);
+
   // Best-effort flush shortly after load if already online with leftovers.
   if (navigator.onLine && countPendingResponses() > 0) {
     window.setTimeout(() => {
-      void flushOfflineResponseQueue().catch(() => undefined);
+      tryFlushPendingResponses('startup');
     }, 1500);
   }
 }
