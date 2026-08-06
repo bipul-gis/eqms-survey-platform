@@ -331,14 +331,24 @@ export const geosurveyApi = {
       getCachedResponses
     } = await import('./offlineResponses');
 
-    const persistOnline = () =>
-      apiFetch<Record<string, unknown>>(
-        payload.id ? `/api/responses/${payload.id}` : '/api/responses',
+    const isTemporaryLocalId = (value: string): boolean =>
+      /^offline_/.test(value) || /^resp_/.test(value);
+
+    const persistOnline = () => {
+      const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+      const usePostAsNew = !id || isTemporaryLocalId(id);
+      const requestPayload = { ...payload } as Record<string, unknown>;
+      if (usePostAsNew) {
+        delete requestPayload.id;
+      }
+      return apiFetch<Record<string, unknown>>(
+        usePostAsNew ? '/api/responses' : `/api/responses/${id}`,
         {
-          method: payload.id ? 'PUT' : 'POST',
-          body: JSON.stringify(payload)
+          method: usePostAsNew ? 'POST' : 'PUT',
+          body: JSON.stringify(requestPayload)
         }
       );
+    };
 
     const queueLocally = () => {
       const queued = enqueueOfflineResponse(payload);

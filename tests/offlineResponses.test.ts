@@ -201,6 +201,86 @@ test('emits a queue-change event when a response is queued locally', async () =>
   }
 });
 
+test('replaces temporary offline ids with server ids when queued uploads succeed', async () => {
+  const store = new MemoryStorage();
+  const originalWindow = globalThis.window;
+  const originalNavigator = globalThis.navigator;
+  const originalFetch = globalThis.fetch;
+  let requestMethod: string | undefined;
+  let requestUrl: string | undefined;
+
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: store,
+      dispatchEvent: () => true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined
+    }
+  });
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { onLine: true }
+  });
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestMethod = (init?.method || 'GET').toUpperCase();
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ id: 'server-generated-id', questionnaireId: 'q1', status: 'submitted' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+
+  try {
+    const {
+      enqueueOfflineResponse,
+      flushOfflineResponseQueue,
+      getCachedResponses
+    } = await import('../src/lib/offlineResponses');
+
+    enqueueOfflineResponse({ id: 'offline_msgzjuga_13s17c', questionnaireId: 'q1', status: 'submitted' });
+    await flushOfflineResponseQueue();
+
+    assert.equal(requestMethod, 'POST');
+    assert.equal(requestUrl, '/api/responses');
+
+    const cached = getCachedResponses();
+    const saved = cached.find((item) => String(item.id) === 'server-generated-id');
+    assert.ok(saved);
+    assert.equal(saved?.id, 'server-generated-id');
+  } finally {
+    if (originalWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window;
+    } else {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: originalWindow
+      });
+    }
+
+    if (originalNavigator === undefined) {
+      delete (globalThis as { navigator?: unknown }).navigator;
+    } else {
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: originalNavigator
+      });
+    }
+
+    if (originalFetch === undefined) {
+      delete (globalThis as { fetch?: unknown }).fetch;
+    } else {
+      Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        value: originalFetch
+      });
+    }
+  }
+});
+
 test('queues offline submissions locally until the upload succeeds', async () => {
   const store = new MemoryStorage();
   const originalWindow = globalThis.window;
