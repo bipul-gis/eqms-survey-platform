@@ -47,13 +47,16 @@ export function useOnlineStatus(): NetworkState {
       refreshPending();
     };
 
+    const handleQueueChanged = () => refreshPending();
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
+    window.addEventListener('geosurvey:offline-queue-changed', handleQueueChanged);
     const interval = window.setInterval(refreshPending, 4000);
     refreshPending();
     return () => {
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
+      window.removeEventListener('geosurvey:offline-queue-changed', handleQueueChanged);
       window.clearInterval(interval);
     };
   }, [refreshPending, retryPendingUploads]);

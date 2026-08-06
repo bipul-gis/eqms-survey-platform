@@ -649,7 +649,7 @@ export interface QuestionnaireResponse {
   zoneId?: string;
   /** Assignment-field value of the containing zone (e.g. ZONE_ID). */
   zoneAssignValue?: string;
-  status: 'draft' | 'submitted' | 'reviewed';
+  status: 'draft' | 'submitted' | 'reviewed' | 'queued';
   submittedAt?: unknown;
   /**
    * Server-stamped on every write (draft save or submit). Lets the

@@ -49,7 +49,7 @@ interface QuestionnaireResponsesViewProps {
   onClose: () => void;
 }
 
-type StatusFilter = 'all' | 'draft' | 'submitted' | 'reviewed';
+type StatusFilter = 'all' | 'draft' | 'submitted' | 'queued' | 'reviewed';
 
 export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProps> = ({
   questionnaire: initialQuestionnaire,
@@ -204,6 +204,14 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   useEffect(() => {
     setQuestionnaire(initialQuestionnaire);
   }, [initialQuestionnaire]);
+
+  useEffect(() => {
+    const handleQueueChanged = () => void fetchResponses();
+    window.addEventListener('geosurvey:offline-queue-changed', handleQueueChanged);
+    return () => {
+      window.removeEventListener('geosurvey:offline-queue-changed', handleQueueChanged);
+    };
+  }, [questionnaire.id]);
 
   useEffect(() => {
     void fetchResponses();
@@ -367,9 +375,10 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   }, [responses, statusFilter, search]);
 
   const counts = useMemo(() => {
-    const c = { all: responses.length, draft: 0, submitted: 0, reviewed: 0 };
+    const c = { all: responses.length, draft: 0, submitted: 0, queued: 0, reviewed: 0 };
     for (const r of responses) {
       if (r.status === 'draft') c.draft++;
+      else if (r.status === 'queued') c.queued++;
       else if (r.status === 'submitted') c.submitted++;
       else if (r.status === 'reviewed') c.reviewed++;
     }
@@ -814,6 +823,7 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
                   [
                     ['all', 'All', counts.all],
                     ['submitted', 'Submitted', counts.submitted],
+                    ['queued', 'Queued', counts.queued],
                     ['reviewed', 'Reviewed', counts.reviewed],
                     ['draft', 'Draft', counts.draft]
                   ] as const
@@ -1892,6 +1902,8 @@ const StatusPillIcon: React.FC<{
     <CheckCircle2 size={14} className="text-emerald-500" />
   ) : status === 'submitted' ? (
     <FileText size={14} className="text-blue-500" />
+  ) : status === 'queued' ? (
+    <Clock size={14} className="text-amber-500" />
   ) : (
     <Clock size={14} className="text-slate-400" />
   );

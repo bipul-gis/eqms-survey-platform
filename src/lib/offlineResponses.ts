@@ -16,6 +16,7 @@ export type OfflinePendingResponse = Record<string, unknown> & {
   status?: string;
   _offlineQueuedAt?: string;
   _offlinePending?: true;
+  _offlineOriginalStatus?: string;
 };
 
 function storage(): Storage | null {
@@ -46,6 +47,15 @@ function writeJson(key: string, value: unknown): void {
     store.setItem(key, JSON.stringify(value));
   } catch (e) {
     console.warn('offlineResponses: localStorage write failed', e);
+  }
+}
+
+function notifyQueueChanged(): void {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  try {
+    window.dispatchEvent(new Event('geosurvey:offline-queue-changed'));
+  } catch {
+    /* ignore */
   }
 }
 
@@ -80,15 +90,19 @@ export function enqueueOfflineResponse(
     typeof payload.id === 'string' && payload.id.trim()
       ? payload.id.trim()
       : `offline_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const originalStatus = typeof payload.status === 'string' ? payload.status : undefined;
   const entry: OfflinePendingResponse = {
     ...payload,
     id,
+    status: originalStatus === 'submitted' ? 'queued' : originalStatus || 'draft',
     _offlineQueuedAt: new Date().toISOString(),
-    _offlinePending: true
+    _offlinePending: true,
+    _offlineOriginalStatus: originalStatus
   };
   const pending = getPendingResponses().filter((p) => p.id !== id);
   pending.push(entry);
   writeJson(PENDING_KEY, pending);
+  notifyQueueChanged();
 
   // Mirror into the responses cache so list/allocate see it immediately.
   const cached = getCachedResponses().filter((r) => String(r.id) !== id);
@@ -99,10 +113,12 @@ export function enqueueOfflineResponse(
 }
 
 export function removePendingResponse(id: string): void {
-  writeJson(
-    PENDING_KEY,
-    getPendingResponses().filter((p) => p.id !== id)
-  );
+  const before = getPendingResponses();
+  const next = before.filter((p) => p.id !== id);
+  writeJson(PENDING_KEY, next);
+  if (before.length !== next.length) {
+    notifyQueueChanged();
+  }
 }
 
 export function cacheResponses(items: Record<string, unknown>[]): void {
@@ -205,14 +221,31 @@ export async function flushOfflineResponseQueue(): Promise<{
     let flushed = 0;
     let failed = 0;
     for (const entry of pending) {
-      const { _offlineQueuedAt, _offlinePending, ...payload } = entry;
+      const { _offlineQueuedAt, _offlinePending, _offlineOriginalStatus, ...payload } = entry;
       void _offlineQueuedAt;
       void _offlinePending;
+      const originalStatus = typeof _offlineOriginalStatus === 'string' ? _offlineOriginalStatus : undefined;
+      const uploadPayload = {
+        ...payload,
+        status: originalStatus || payload.status || 'submitted'
+      } as Record<string, unknown>;
       try {
-        await geosurveyApi.saveResponse(payload, { skipOfflineQueue: true });
+        const saved = await geosurveyApi.saveResponse(uploadPayload, { skipOfflineQueue: true });
         removePendingResponse(entry.id);
+        const cached = getCachedResponses().filter((item) => String(item.id) !== String(entry.id));
+        const savedId = typeof (saved as { id?: string }).id === 'string' ? (saved as { id?: string }).id : String(entry.id);
+        cached.push({
+          ...entry,
+          ...saved,
+          id: savedId,
+          status: typeof (saved as { status?: unknown }).status === 'string'
+            ? (saved as { status: string }).status
+            : originalStatus || payload.status || 'submitted'
+        });
+        cacheResponses(cached);
         flushed += 1;
       } catch (e) {
+        console.warn('offlineResponses: flush attempt failed', entry.id, e);
         if (isNetworkFailure(e)) {
           failed = pending.length - flushed;
           break;

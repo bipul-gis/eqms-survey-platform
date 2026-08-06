@@ -61,6 +61,7 @@ interface EnumeratorQuestionnaireListProps {
 interface QuestionnaireStats {
   draft: number;
   submitted: number;
+  queued: number;
   reviewed: number;
   /** Most recent draft response for this questionnaire, if any. */
   latestDraft: QuestionnaireResponse | null;
@@ -71,6 +72,7 @@ interface QuestionnaireStats {
 const EMPTY_STATS: QuestionnaireStats = {
   draft: 0,
   submitted: 0,
+  queued: 0,
   reviewed: 0,
   latestDraft: null,
   all: []
@@ -213,6 +215,14 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   // Re-fetched whenever the form closes so counters/lists stay in sync
   // after the enumerator saves, submits, or deletes a draft.
   useEffect(() => {
+    const handleQueueChanged = () => setRefreshTick((tick) => tick + 1);
+    window.addEventListener('geosurvey:offline-queue-changed', handleQueueChanged);
+    return () => {
+      window.removeEventListener('geosurvey:offline-queue-changed', handleQueueChanged);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!user?.uid) return;
     let cancelled = false;
     const run = async () => {
@@ -233,6 +243,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           list.sort((a, b) => responseTime(b) - responseTime(a));
           let draft = 0;
           let submitted = 0;
+          let queued = 0;
           let reviewed = 0;
           let latestDraft: QuestionnaireResponse | null = null;
           for (const r of list) {
@@ -240,9 +251,10 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
               draft += 1;
               if (!latestDraft) latestDraft = r;
             } else if (r.status === 'reviewed') reviewed += 1;
+            else if (r.status === 'queued') queued += 1;
             else submitted += 1;
           }
-          next[qid] = { draft, submitted, reviewed, latestDraft, all: list };
+          next[qid] = { draft, submitted, queued, reviewed, latestDraft, all: list };
         }
         if (!cancelled) setResponseStats(next);
       } catch (e) {
@@ -286,13 +298,15 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   const totals = useMemo(() => {
     let draft = 0;
     let submitted = 0;
+    let queued = 0;
     let reviewed = 0;
     for (const s of Object.values(responseStats) as QuestionnaireStats[]) {
       draft += s.draft;
       submitted += s.submitted;
+      queued += s.queued;
       reviewed += s.reviewed;
     }
-    return { draft, submitted, reviewed };
+    return { draft, submitted, queued, reviewed };
   }, [responseStats]);
 
   /**
@@ -730,7 +744,7 @@ const EmptyState: React.FC<{
 // so no extra Firestore round-trips are needed when this opens.
 // ---------------------------------------------------------------------------
 
-type ResponseFilter = 'all' | 'draft' | 'submitted' | 'reviewed';
+type ResponseFilter = 'all' | 'draft' | 'submitted' | 'queued' | 'reviewed';
 
 const MyResponsesPanel: React.FC<{
   questionnaire: Questionnaire;
@@ -805,6 +819,7 @@ const MyResponsesPanel: React.FC<{
               ['all', 'All', totalCount],
               ['draft', 'Drafts', stats.draft],
               ['submitted', 'Submitted', stats.submitted],
+              ['queued', 'Queued', stats.queued],
               ['reviewed', 'Reviewed', stats.reviewed]
             ] as const
           ).map(([value, label, count]) => (
@@ -1061,12 +1076,14 @@ const ResponseStatusPill: React.FC<{
       ? 'bg-indigo-100 text-indigo-700'
       : status === 'submitted'
         ? 'bg-emerald-100 text-emerald-700'
-        : 'bg-amber-100 text-amber-700';
+        : status === 'queued'
+          ? 'bg-orange-100 text-orange-700'
+          : 'bg-amber-100 text-amber-700';
   return (
     <span
       className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${styles}`}
     >
-      {status}
+      {status === 'queued' ? 'queued' : status}
     </span>
   );
 };

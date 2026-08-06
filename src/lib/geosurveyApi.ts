@@ -1,15 +1,20 @@
 export function getApiBase(): string {
-  const base = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+  const base = env?.VITE_API_BASE_URL as string | undefined;
   if (base) return base.replace(/\/$/, '');
   if (typeof window !== 'undefined') {
-    // Capacitor Android/iOS WebViews have no Vite proxy — call the live API.
     const cap = (
       window as unknown as {
         Capacitor?: { isNativePlatform?: () => boolean };
+        location?: { origin?: string; href?: string };
       }
     ).Capacitor;
     if (cap?.isNativePlatform?.()) {
       return 'https://geosurvey.eqmscl.com';
+    }
+    const origin = window.location?.origin;
+    if (origin && !origin.startsWith('file://')) {
+      return origin;
     }
     // Browser builds served from the same host use relative /api paths.
     return '';

@@ -94,6 +94,7 @@ import {
   ASSIGNED_ZONE_BUFFER_METERS,
   findZoneWithinDistance,
 } from '../lib/pointInPolygon';
+import { countPendingResponses } from '../lib/offlineResponses';
 import type { ZonePolygon } from '../types';
 interface QuestionnaireFormProps {
   questionnaire: Questionnaire;
@@ -1177,7 +1178,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     }
   };
 
-  const persistResponse = async (status: 'draft' | 'submitted'): Promise<string> => {
+  const persistResponse = async (status: 'draft' | 'submitted'): Promise<{ savedId: string; queued: boolean }> => {
     const existingId = draftDocIdRef.current;
     let responseData = buildResponseData(status);
     responseData = await applyDwellingIdBeforeSave(responseData, status, existingId);
@@ -1193,6 +1194,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         existingId ? { ...responseData, id: existingId } : responseData
       );
       const savedId = String((saved as { id?: string }).id ?? optimisticId);
+      const queued = Boolean(
+        (saved as { status?: string; _offlinePending?: boolean }).status === 'queued' ||
+        (saved as { _offlinePending?: boolean })._offlinePending === true
+      );
       rememberDraftDocId(savedId);
       if (status === 'submitted' && draftStorageKey) {
         try {
@@ -1201,7 +1206,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           /* ignore */
         }
       }
-      return savedId;
+      return { savedId, queued };
     } catch (error) {
       if (!existingId) clearRememberedDraftDocId();
       throw error;
@@ -1274,14 +1279,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     setSaveState('submitting');
     try {
       const responseData = buildResponseData('submitted');
-      const savedId = await persistResponse('submitted');
+      const { savedId, queued } = await persistResponse('submitted');
       invalidateDwellingIdCache(questionnaire.id);
       invalidateResponseIdCache(questionnaire.id);
       onSubmit?.({ ...(responseData as any), id: savedId } as QuestionnaireResponse);
       const offline = await isDeviceOffline();
+      const pendingCount = countPendingResponses();
       alert(
-        offline
-          ? 'Submission saved on this device. It will upload automatically once you reconnect — no need to resubmit.'
+        queued || offline
+          ? `Submission queued for upload${pendingCount > 0 ? ` (${pendingCount} pending)` : ''}. It will upload automatically once you reconnect.`
           : 'Questionnaire submitted successfully!'
       );
       onClose();

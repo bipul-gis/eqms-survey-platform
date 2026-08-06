@@ -155,7 +155,7 @@ export interface SurveyLocationMarker {
   questionnaireId?: string;
   /** Optional questionnaire display name — populated by the caller when known. */
   questionnaireTitle?: string;
-  status?: 'draft' | 'submitted' | 'reviewed';
+  status?: 'draft' | 'submitted' | 'reviewed' | 'queued';
   submittedAt?: unknown;
   capturedAt?: unknown;
   ward?: string;
