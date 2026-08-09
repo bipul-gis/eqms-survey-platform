@@ -956,13 +956,15 @@ const AppContent: React.FC = () => {
 
   /**
    * Questionnaire submissions must fall inside assigned zone polygons when:
-   * - zones exist, zone-layer strict geofence is on, and
-   * - for an opened project: geospatial is on and merge (questionnaireGeofence) is on
-   * - for enumerators: their assigned zone layer already carries strictGeofence
+   * - the project has an imported boundary layer,
+   * - strict geofence is enabled for that layer/project,
+   * - and the enumerator actually has assigned zone values for the active project.
    */
   const questionnaireStrictGeofence = useMemo(() => {
     if (!zonePolygons.length) return false;
     if (zoneLayer && zoneLayer.strictGeofence === false) return false;
+    if (isAdmin) return false;
+    if (assignedZoneValuesForFilter.length === 0) return false;
     if (currentProject) {
       if (currentProject.segments?.geospatial !== true) return false;
       const ba = currentProject.segments?.boundaryAppliesTo;
@@ -976,6 +978,8 @@ const AppContent: React.FC = () => {
   }, [
     zonePolygons.length,
     zoneLayer,
+    isAdmin,
+    assignedZoneValuesForFilter.length,
     currentProject?.segments?.geospatial,
     currentProject?.segments?.boundaryAppliesTo,
     currentProject?.segments?.questionnaireGeofence,
