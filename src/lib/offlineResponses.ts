@@ -4,7 +4,9 @@
  * merges them into list reads, and flushes when connectivity returns.
  */
 
-const PENDING_KEY = 'geosurvey_offline_pending_responses';
+const PENDING_MANIFEST_KEY = 'geosurvey_offline_pending_responses_manifest';
+const OFFLINE_QUEUE_DB_NAME = 'geosurvey_offline_queue';
+const OFFLINE_QUEUE_STORE_NAME = 'pending_responses';
 const RESPONSES_CACHE_KEY = 'geosurvey_cached_responses';
 const QUESTIONNAIRES_CACHE_KEY = 'geosurvey_cached_questionnaires';
 const PROFILE_CACHE_KEY = 'geosurvey_cached_auth_profile';
@@ -18,6 +20,10 @@ export type OfflinePendingResponse = Record<string, unknown> & {
   _offlinePending?: true;
   _offlineOriginalStatus?: string;
 };
+
+let pendingQueueCache: OfflinePendingResponse[] = readPendingManifest();
+let pendingQueueHydrated = false;
+let pendingQueueLoadPromise: Promise<void> | null = null;
 
 function storage(): Storage | null {
   if (typeof window === 'undefined') return null;
@@ -50,6 +56,171 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
+function cloneForManifest(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneForManifest(item));
+  }
+  if (!value || typeof value !== 'object') {
+    if (
+      typeof value === 'string' &&
+      (value.startsWith('data:image') || value.startsWith('blob:'))
+    ) {
+      return { hasPhoto: true, fileName: 'photo.jpg' };
+    }
+    return value;
+  }
+
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  let hadPhotoPayload = false;
+
+  for (const [key, child] of Object.entries(input)) {
+    if (key === 'dataUrl') {
+      hadPhotoPayload = true;
+      continue;
+    }
+    output[key] = cloneForManifest(child);
+    if (key === 'fileName' || key === 'mimeType' || key === 'capturedAt' || key === 'source') {
+      hadPhotoPayload = true;
+    }
+  }
+
+  if (hadPhotoPayload && output.hasPhoto !== true && output._photo !== true) {
+    output.hasPhoto = true;
+  }
+
+  return output;
+}
+
+export function normalizeResponseForCache(entry: Record<string, unknown>): Record<string, unknown> {
+  return cloneForManifest(entry) as OfflinePendingResponse;
+}
+
+function normalizePendingResponse(entry: OfflinePendingResponse): OfflinePendingResponse {
+  return normalizeResponseForCache(entry) as OfflinePendingResponse;
+}
+
+function mergePendingResponses(...lists: OfflinePendingResponse[][]): OfflinePendingResponse[] {
+  const byId = new Map<string, OfflinePendingResponse>();
+  for (const list of lists) {
+    for (const item of list) {
+      if (!item || typeof item.id !== 'string' || !item.id) continue;
+      byId.set(item.id, item);
+    }
+  }
+  return Array.from(byId.values());
+}
+
+function readPendingManifest(): OfflinePendingResponse[] {
+  return readJson<OfflinePendingResponse[]>(PENDING_MANIFEST_KEY, []);
+}
+
+function writePendingManifest(entries: OfflinePendingResponse[]): void {
+  writeJson(PENDING_MANIFEST_KEY, entries.map((entry) => normalizePendingResponse(entry)));
+}
+
+function setPendingQueue(entries: OfflinePendingResponse[], notify = true): void {
+  pendingQueueCache = mergePendingResponses(entries);
+  pendingQueueHydrated = true;
+  writePendingManifest(pendingQueueCache);
+  if (notify) notifyQueueChanged();
+}
+
+function indexedDbFactory(): IDBFactory | null {
+  if (typeof window === 'undefined') return null;
+  return window.indexedDB ?? null;
+}
+
+function openOfflineQueueDb(): Promise<IDBDatabase | null> {
+  const factory = indexedDbFactory();
+  if (!factory) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const request = factory.open(OFFLINE_QUEUE_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(OFFLINE_QUEUE_STORE_NAME)) {
+        db.createObjectStore(OFFLINE_QUEUE_STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Failed to open offline queue db'));
+  });
+}
+
+async function readOfflineQueueDb(): Promise<OfflinePendingResponse[]> {
+  const db = await openOfflineQueueDb();
+  if (!db) return [];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_QUEUE_STORE_NAME, 'readonly');
+    const store = tx.objectStore(OFFLINE_QUEUE_STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      const items = Array.isArray(request.result) ? (request.result as OfflinePendingResponse[]) : [];
+      resolve(items);
+    };
+    request.onerror = () => reject(request.error || new Error('Failed to read offline queue db'));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error('Failed to read offline queue db'));
+    };
+  });
+}
+
+async function persistOfflineQueueEntry(entry: OfflinePendingResponse): Promise<void> {
+  const db = await openOfflineQueueDb();
+  if (!db) return;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_QUEUE_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(OFFLINE_QUEUE_STORE_NAME);
+    store.put(entry);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('Failed to persist offline queue entry'));
+    tx.onabort = () => reject(tx.error || new Error('Failed to persist offline queue entry'));
+  }).finally(() => db.close());
+}
+
+async function deleteOfflineQueueEntry(id: string): Promise<void> {
+  const db = await openOfflineQueueDb();
+  if (!db) return;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_QUEUE_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(OFFLINE_QUEUE_STORE_NAME);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('Failed to delete offline queue entry'));
+    tx.onabort = () => reject(tx.error || new Error('Failed to delete offline queue entry'));
+  }).finally(() => db.close());
+}
+
+async function hydratePendingQueue(): Promise<void> {
+  if (pendingQueueLoadPromise) {
+    await pendingQueueLoadPromise;
+    return;
+  }
+
+  pendingQueueLoadPromise = (async () => {
+    const manifest = readPendingManifest();
+    pendingQueueCache = mergePendingResponses(pendingQueueCache, manifest);
+    try {
+      const persisted = await readOfflineQueueDb();
+      if (persisted.length > 0) {
+        pendingQueueCache = mergePendingResponses(pendingQueueCache, persisted);
+      }
+    } catch (e) {
+      console.warn('offlineResponses: failed to hydrate indexed queue', e);
+    }
+    pendingQueueHydrated = true;
+    writePendingManifest(pendingQueueCache);
+  })();
+
+  try {
+    await pendingQueueLoadPromise;
+  } finally {
+    pendingQueueLoadPromise = null;
+  }
+}
+
 function notifyQueueChanged(): void {
   if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
   try {
@@ -75,7 +246,7 @@ export function isNetworkFailure(error: unknown): boolean {
 }
 
 export function getPendingResponses(): OfflinePendingResponse[] {
-  return readJson<OfflinePendingResponse[]>(PENDING_KEY, []);
+  return pendingQueueHydrated ? pendingQueueCache : readPendingManifest();
 }
 
 export function countPendingResponses(): number {
@@ -99,30 +270,36 @@ export function enqueueOfflineResponse(
     _offlinePending: true,
     _offlineOriginalStatus: originalStatus
   };
-  const pending = getPendingResponses().filter((p) => p.id !== id);
-  pending.push(entry);
-  writeJson(PENDING_KEY, pending);
-  notifyQueueChanged();
+  setPendingQueue([...getPendingResponses().filter((p) => p.id !== id), entry]);
 
   // Mirror into the responses cache so list/allocate see it immediately.
   const cached = getCachedResponses().filter((r) => String(r.id) !== id);
-  cached.push(entry);
+  cached.push(normalizePendingResponse(entry));
   cacheResponses(cached);
 
   return entry;
 }
 
+export async function persistQueuedResponse(entry: OfflinePendingResponse): Promise<void> {
+  await persistOfflineQueueEntry(entry);
+  await hydratePendingQueue();
+  setPendingQueue([...getPendingResponses().filter((p) => p.id !== entry.id), entry], false);
+}
+
 export function removePendingResponse(id: string): void {
   const before = getPendingResponses();
   const next = before.filter((p) => p.id !== id);
-  writeJson(PENDING_KEY, next);
-  if (before.length !== next.length) {
-    notifyQueueChanged();
-  }
+  setPendingQueue(next, before.length !== next.length);
+  void deleteOfflineQueueEntry(id).catch((e) =>
+    console.warn('offlineResponses: failed to delete pending queue entry', id, e)
+  );
 }
 
 export function cacheResponses(items: Record<string, unknown>[]): void {
-  writeJson(RESPONSES_CACHE_KEY, items);
+  writeJson(
+    RESPONSES_CACHE_KEY,
+    items.map((item) => normalizeResponseForCache(item))
+  );
 }
 
 export function getCachedResponses(): Record<string, unknown>[] {
@@ -216,6 +393,7 @@ export async function flushOfflineResponseQueue(): Promise<{
   }
 
   flushInFlight = (async () => {
+    await hydratePendingQueue();
     const { geosurveyApi } = await import('./geosurveyApi');
     const pending = getPendingResponses();
     let flushed = 0;
@@ -282,6 +460,12 @@ export function ensureOfflineFlushListener(): void {
   if (typeof window === 'undefined' || onlineListenerAttached) return;
   onlineListenerAttached = true;
 
+  void hydratePendingQueue().then(() => {
+    if (navigator.onLine && countPendingResponses() > 0) {
+      tryFlushPendingResponses('hydrate');
+    }
+  });
+
   const handleOnline = () => tryFlushPendingResponses('online');
   const handleVisible = () => {
     if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
@@ -312,4 +496,10 @@ export function ensureOfflineFlushListener(): void {
       tryFlushPendingResponses('startup');
     }, 1500);
   }
+}
+
+export function resetOfflineResponsesForTests(): void {
+  pendingQueueCache = [];
+  pendingQueueHydrated = false;
+  pendingQueueLoadPromise = null;
 }

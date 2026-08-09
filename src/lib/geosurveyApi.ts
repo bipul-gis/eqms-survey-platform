@@ -326,6 +326,7 @@ export const geosurveyApi = {
   ) => {
     const {
       enqueueOfflineResponse,
+      persistQueuedResponse,
       isNetworkFailure,
       cacheResponses,
       getCachedResponses
@@ -350,8 +351,13 @@ export const geosurveyApi = {
       );
     };
 
-    const queueLocally = () => {
+    const queueLocally = async () => {
       const queued = enqueueOfflineResponse(payload);
+      try {
+        await persistQueuedResponse(queued);
+      } catch (e) {
+        console.warn('geosurveyApi: failed to persist queued response payload', e);
+      }
       return queued as Record<string, unknown>;
     };
 
