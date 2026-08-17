@@ -25,6 +25,24 @@ function writeAsciiField(view: DataView, fieldLength: number, str: string, offse
   return offset + fieldLength;
 }
 
+/**
+ * Field name in the 11-byte descriptor slot. The dBase spec requires an
+ * ASCII name padded with NULs — space padding leaves the name literally
+ * containing spaces, which ArcMap rejects as an invalid field (QGIS and most
+ * JS readers trim it and appear fine, hiding the bug).
+ */
+function writeFieldName(view: DataView, str: string, offset: number): void {
+  const name = str.slice(0, MAX_FIELD);
+  for (let i = 0; i < 11; i++) {
+    let code = 0;
+    if (i < name.length) {
+      const ch = name.charCodeAt(i);
+      code = ch > 0 && ch < 128 ? ch : 0x5f;
+    }
+    view.setUint8(offset + i, code);
+  }
+}
+
 function writeUtf8CString(view: DataView, byteLength: number, str: string, offset: number): number {
   const bytes = new TextEncoder().encode(str);
   let i = 0;
@@ -136,7 +154,7 @@ export function buildDbfUtf8Buffer(data: Array<Record<string, unknown>>): ArrayB
 
   view.setUint8(0, 0x03);
   view.setUint8(1, now.getFullYear() - 1900);
-  view.setUint8(2, now.getMonth());
+  view.setUint8(2, now.getMonth() + 1);
   view.setUint8(3, now.getDate());
   view.setUint32(4, data.length, true);
   view.setUint16(8, headerLength, true);
@@ -145,7 +163,7 @@ export function buildDbfUtf8Buffer(data: Array<Record<string, unknown>>): ArrayB
 
   field_meta.forEach((f, i) => {
     const base = 32 + i * 32;
-    writeAsciiField(view, MAX_FIELD, f.name, base);
+    writeFieldName(view, f.name, base);
     view.setInt8(base + 11, f.type.charCodeAt(0));
     view.setInt8(base + 16, f.size);
     if (f.type === 'N') view.setInt8(base + 17, 3);
