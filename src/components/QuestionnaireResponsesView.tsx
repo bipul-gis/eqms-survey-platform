@@ -34,14 +34,16 @@ import {
   Users
 } from 'lucide-react';
 import {
+  buildResponsesShpFieldMappingCsv,
   buildResponsesTable,
-  downloadResponsesCsv,
+  createResponsesExportAccumulator,
+  downloadResponsesCsvFromTable,
   fmtDate,
   tsToDate
 } from '../lib/responseExport';
 // Lazy-load SHP export (jszip + shp-write) — only when the button is clicked.
 const loadDownloadResponsesShpZip = () =>
-  import('../lib/responseShpExport').then((m) => m.downloadResponsesShpZip);
+  import('../lib/responseShpExport').then((m) => m.downloadResponsesShpZipFromBundle);
 import 'leaflet/dist/leaflet.css';
 
 interface QuestionnaireResponsesViewProps {
@@ -50,6 +52,9 @@ interface QuestionnaireResponsesViewProps {
 }
 
 type StatusFilter = 'all' | 'draft' | 'submitted' | 'queued' | 'reviewed';
+
+/** Above this many responses, a photo export gets a "this is slow" warning. */
+const LARGE_PHOTO_EXPORT_THRESHOLD = 300;
 
 export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProps> = ({
   questionnaire: initialQuestionnaire,
@@ -69,6 +74,12 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
   const [deleteAllConfirmText, setDeleteAllConfirmText] = useState('');
   const [deletingAll, setDeletingAll] = useState(false);
   const [exportingShp, setExportingShp] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [includePhotos, setIncludePhotos] = useState(true);
+  const [exportProgress, setExportProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [deleteAllProgress, setDeleteAllProgress] = useState<{
     done: number;
     total: number;
@@ -181,24 +192,48 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     }
   };
 
-  /** Full payloads (with photos) for the currently filtered response ids. */
-  const fetchFullResponsesForExport = async (
-    ids: string[]
-  ): Promise<QuestionnaireResponse[]> => {
+  /**
+   * Stream full payloads (with photos) for the given ids, one page per
+   * request. Pages are handed to the caller and then dropped, so a survey with
+   * thousands of photo-bearing responses never sits in memory all at once.
+   */
+  const streamFullResponsesForExport = async (
+    ids: string[],
+    onPage: (page: QuestionnaireResponse[]) => void
+  ): Promise<void> => {
     const uniqueIds = [...new Set(ids.filter(Boolean))];
-    const out: QuestionnaireResponse[] = [];
-    const batchSize = 6;
-    for (let i = 0; i < uniqueIds.length; i += batchSize) {
-      const batch = uniqueIds.slice(i, i + batchSize);
-      const results = await Promise.all(
-        batch.map(async (id) => {
-          const { item } = await geosurveyApi.getResponse(id);
-          return item as unknown as QuestionnaireResponse;
-        })
+    const pageSize = 50;
+    setExportProgress({ done: 0, total: uniqueIds.length });
+    for (let i = 0; i < uniqueIds.length; i += pageSize) {
+      const pageIds = uniqueIds.slice(i, i + pageSize);
+      const { items } = await geosurveyApi.getResponsesBatch(pageIds);
+      const byId = new Map(
+        (items as unknown as QuestionnaireResponse[]).map((item) => [item.id, item])
       );
-      out.push(...results);
+      onPage(pageIds.map((id) => byId.get(id)).filter(Boolean) as QuestionnaireResponse[]);
+      setExportProgress({
+        done: Math.min(i + pageSize, uniqueIds.length),
+        total: uniqueIds.length
+      });
+      // Yield to the browser so the progress label repaints between pages.
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    return out;
+  };
+
+  /** Rows for the current filter: streamed full payloads, or the slim list. */
+  const buildExportBundle = async () => {
+    const accumulator = createResponsesExportAccumulator(questionnaire, filtered, {
+      attachPhotos: includePhotos
+    });
+    if (includePhotos) {
+      await streamFullResponsesForExport(
+        filtered.map((r) => r.id),
+        (page) => accumulator.addPage(page)
+      );
+    } else {
+      accumulator.addPage(filtered);
+    }
+    return accumulator.result();
   };
 
   useEffect(() => {
@@ -633,22 +668,40 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
     }
   };
 
+  /**
+   * Photo payloads are ~100× the size of the answers, so warn before pulling
+   * thousands of them into the browser.
+   */
+  const confirmLargePhotoExport = (): boolean => {
+    if (!includePhotos || filtered.length <= LARGE_PHOTO_EXPORT_THRESHOLD) return true;
+    return confirm(
+      `${filtered.length} responses with photos can take several minutes to download.\n\n` +
+        'OK to continue, or Cancel and untick "Include photos" for a fast data-only export.'
+    );
+  };
+
   const handleExportCsv = async () => {
     if (filtered.length === 0) {
       alert('Nothing to export — no responses match the current filter.');
       return;
     }
+    if (!confirmLargePhotoExport()) return;
+    setExportingCsv(true);
     try {
-      const full = await fetchFullResponsesForExport(filtered.map((r) => r.id));
-      const { photoCount } = await downloadResponsesCsv(questionnaire, full);
+      const bundle = await buildExportBundle();
+      const { photoCount } = await downloadResponsesCsvFromTable(questionnaire, bundle);
       alert(
         photoCount > 0
           ? `CSV ZIP ready with ${photoCount} photo file(s) under photos/{survey-type}/. Names: enumeratorId_enumeratorName_responseId_serial.`
-          : 'CSV ZIP ready (no photo answers in this export).'
+          : 'CSV ZIP ready (no photo files in this export).'
       );
     } catch (error) {
+      console.error('CSV export failed', error);
       const message = error instanceof Error ? error.message : String(error);
       alert(`Failed to export CSV: ${message}`);
+    } finally {
+      setExportingCsv(false);
+      setExportProgress(null);
     }
   };
 
@@ -657,13 +710,15 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
       alert('Nothing to export — no responses match the current filter.');
       return;
     }
+    if (!confirmLargePhotoExport()) return;
     setExportingShp(true);
     try {
       const downloadShp = await loadDownloadResponsesShpZip();
-      const full = await fetchFullResponsesForExport(filtered.map((r) => r.id));
+      const bundle = await buildExportBundle();
       const { exported, skippedNoGps, photoCount } = await downloadShp(
         questionnaire,
-        full
+        bundle,
+        buildResponsesShpFieldMappingCsv(questionnaire, filtered)
       );
       const photoNote =
         photoCount > 0
@@ -679,10 +734,12 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
         alert(`SHP ZIP ready: ${exported} point(s).${photoNote}${mappingNote}`);
       }
     } catch (error) {
+      console.error('SHP export failed', error);
       const message = error instanceof Error ? error.message : String(error);
       alert(`Failed to export shapefile: ${message}`);
     } finally {
       setExportingShp(false);
+      setExportProgress(null);
     }
   };
 
@@ -728,21 +785,44 @@ export const QuestionnaireResponsesView: React.FC<QuestionnaireResponsesViewProp
           </button>
         )}
         <div className="flex items-center gap-2">
+          <label
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 select-none"
+            title="Photos are large. Untick for a fast, data-only export."
+          >
+            <input
+              type="checkbox"
+              checked={includePhotos}
+              onChange={(e) => setIncludePhotos(e.target.checked)}
+              disabled={exportingCsv || exportingShp}
+              className="accent-emerald-600"
+            />
+            Include photos
+          </label>
           <button
             onClick={() => void handleExportCsv()}
-            disabled={loading || filtered.length === 0}
+            disabled={loading || exportingCsv || exportingShp || filtered.length === 0}
             className="px-3 py-2 text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
             title="Download matching responses as a ZIP (CSV + photos/ folder with attached images)"
           >
-            <FileSpreadsheet size={15} /> Export CSV ({filtered.length})
+            <FileSpreadsheet size={15} />{' '}
+            {exportingCsv
+              ? exportProgress
+                ? `Exporting CSV… ${exportProgress.done}/${exportProgress.total}`
+                : 'Exporting CSV…'
+              : `Export CSV (${filtered.length})`}
           </button>
           <button
             onClick={() => void handleExportShp()}
-            disabled={loading || exportingShp || filtered.length === 0}
+            disabled={loading || exportingCsv || exportingShp || filtered.length === 0}
             className="px-3 py-2 text-sm font-semibold bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5 transition-colors"
             title="Download zipped shapefile (WGS84) with photos/ attached. Includes field_mapping.csv for CSV column → DBF name lookup."
           >
-            <MapIcon size={15} /> {exportingShp ? 'Exporting SHP…' : `Export SHP ZIP (${filtered.length})`}
+            <MapIcon size={15} />{' '}
+            {exportingShp
+              ? exportProgress
+                ? `Exporting SHP… ${exportProgress.done}/${exportProgress.total}`
+                : 'Exporting SHP…'
+              : `Export SHP ZIP (${filtered.length})`}
           </button>
         </div>
       </header>

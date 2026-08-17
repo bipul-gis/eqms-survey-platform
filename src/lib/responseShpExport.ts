@@ -11,7 +11,8 @@ import {
   buildResponsesShpFieldMappingCsv,
   buildResponsesTable,
   responsePointForShp,
-  slugifyExportBasename
+  slugifyExportBasename,
+  type ResponsesExportBundle
 } from './responseExport';
 
 const loadShpWrite = () => import('@mapbox/shp-write').then((m) => m.default ?? m);
@@ -33,13 +34,16 @@ export type ResponsesShpExportResult = {
   photoCount: number;
 };
 
-export async function downloadResponsesShpZip(
+/**
+ * Zip an already-built export bundle (rows + per-row points + photos).
+ * `mappingCsv` is the CSV column → DBF field lookup shipped inside the ZIP.
+ */
+export async function downloadResponsesShpZipFromBundle(
   q: Questionnaire,
-  responses: QuestionnaireResponse[]
+  bundle: ResponsesExportBundle,
+  mappingCsv: string
 ): Promise<ResponsesShpExportResult> {
-  const { header, rows, photoAttachments } = buildResponsesTable(q, responses, {
-    attachPhotos: true
-  });
+  const { header, rows, points, photoAttachments } = bundle;
   const features: Array<{
     type: 'Feature';
     geometry: { type: 'Point'; coordinates: [number, number] };
@@ -47,8 +51,8 @@ export async function downloadResponsesShpZip(
   }> = [];
 
   let skippedNoGps = 0;
-  for (let i = 0; i < responses.length; i++) {
-    const coords = responsePointForShp(responses[i]);
+  for (let i = 0; i < rows.length; i++) {
+    const coords = points[i];
     if (!coords) {
       skippedNoGps += 1;
       continue;
@@ -96,7 +100,6 @@ export async function downloadResponsesShpZip(
   const propRows = features.map((f) => f.properties as Record<string, unknown>);
   blob = await patchShapefileZipUtf8Dbf(blob, baseName, baseName, propRows);
 
-  const mappingCsv = buildResponsesShpFieldMappingCsv(q, responses);
   const zip = await JSZip.loadAsync(await blob.arrayBuffer());
   zip.file(`${baseName}_field_mapping.csv`, mappingCsv);
   addPhotoAttachmentsToZip(zip, photoAttachments);
@@ -109,11 +112,24 @@ export async function downloadResponsesShpZip(
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+  // Revoking straight away can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 
   return {
     exported: features.length,
     skippedNoGps,
     photoCount: photoAttachments.length
   };
+}
+
+export async function downloadResponsesShpZip(
+  q: Questionnaire,
+  responses: QuestionnaireResponse[]
+): Promise<ResponsesShpExportResult> {
+  const table = buildResponsesTable(q, responses, { attachPhotos: true });
+  return downloadResponsesShpZipFromBundle(
+    q,
+    { ...table, points: responses.map((r) => responsePointForShp(r)) },
+    buildResponsesShpFieldMappingCsv(q, responses)
+  );
 }

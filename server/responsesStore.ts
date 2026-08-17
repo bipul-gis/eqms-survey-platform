@@ -60,6 +60,23 @@ export async function listResponses(filters: {
   return rows.map((r) => r.payload as Record<string, unknown>);
 }
 
+/**
+ * Full payloads for a set of ids — used by CSV/SHP export, which pages
+ * through the filtered ids instead of issuing one request per response.
+ */
+export async function listResponsesByIds(
+  ids: string[],
+  opts?: { slim?: boolean }
+): Promise<Record<string, unknown>[]> {
+  if (ids.length === 0) return [];
+  const selectExpr = opts?.slim ? `${SLIM_PAYLOAD_SQL} AS payload` : 'payload';
+  const { rows } = await pool.query(
+    `SELECT ${selectExpr} FROM questionnaire_responses WHERE id = ANY($1::text[])`,
+    [ids]
+  );
+  return rows.map((r) => r.payload as Record<string, unknown>);
+}
+
 export async function getResponseById(
   id: string,
   opts?: { slim?: boolean }

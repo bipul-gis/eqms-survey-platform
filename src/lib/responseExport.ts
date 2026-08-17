@@ -386,21 +386,33 @@ export type ResponsesTableWithPhotos = ResponsesTable & {
   photoAttachments: ExportPhotoAttachment[];
 };
 
-export const buildResponsesTable = (
+/**
+ * Column layout for one export run. Fixing this up front lets the export
+ * stream responses page by page and still produce a single consistent table.
+ */
+export type ResponsesExportPlan = {
+  questions: Question[];
+  columns: ResponsesExportColumn[];
+  enumFields: Question[];
+  consentEnabled: boolean;
+  header: string[];
+};
+
+/**
+ * Derive export columns from the questionnaire plus every answer key present
+ * in `responses` (slim payloads are enough — they keep answer keys).
+ */
+export const planResponsesExport = (
   q: Questionnaire,
-  responses: QuestionnaireResponse[],
-  options?: BuildResponsesTableOptions
-): ResponsesTableWithPhotos => {
-  const attachPhotos = !!options?.attachPhotos;
-  const photoMap = new Map<string, ExportPhotoAttachment>();
+  responses: QuestionnaireResponse[]
+): ResponsesExportPlan => {
   const enumFields = q.enumeratorInfo?.fields || [];
   const consentEnabled = !!q.consentGate?.enabled;
   const questions = mergeQuestionsWithResponseKeys(
     getExportOrderedQuestions(q),
     responses
   );
-  const exportColumns = buildResponsesExportColumns(questions);
-
+  const columns = buildResponsesExportColumns(questions);
   const header: string[] = [
     'Submission ID',
     'Status',
@@ -418,78 +430,139 @@ export const buildResponsesTable = (
     'Submission GPS Captured At',
     'Submission GPS Duration (s)',
     ...enumFields.map((f) => `Info: ${f.question || f.key || f.id}`),
-    ...exportColumns.map(responsesExportColumnHeader)
+    ...columns.map(responsesExportColumnHeader)
   ];
+  return { questions, columns, enumFields, consentEnabled, header };
+};
 
-  const rows: string[][] = responses.map((r) => {
-    let photoSerial = 0;
-    const enumValues = enumFields.map((f) => {
-      const raw = r.enumeratorInfo?.[f.id];
-      let photoPath: string | null = null;
-      if (attachPhotos && f.type === 'photo') {
-        photoSerial += 1;
-        photoPath = collectResponsePhotoAttachment(
-          {
-            response: r,
-            photoQuestion: f,
-            allQuestions: questions,
-            photoSerial,
-            value: raw,
-            questionKey: `info_${f.key || f.id}`
-          },
-          photoMap
-        );
-      }
-      return stringifyAnswer(raw, f, photoPath);
-    });
-    const answerValues = exportColumns.map((col) => {
-      const raw = r.responses?.[col.question.id];
-      let photoPath: string | null = null;
-      if (attachPhotos && col.kind === 'question' && col.question.type === 'photo') {
-        photoSerial += 1;
-        photoPath = collectResponsePhotoAttachment(
-          {
-            response: r,
-            photoQuestion: col.question,
-            allQuestions: questions,
-            photoSerial,
-            value: raw,
-            questionKey: col.question.key || col.question.id
-          },
-          photoMap
-        );
-      }
-      return responsesExportColumnCell(col, r, photoPath);
-    });
-    const sub = r.submissionLocation;
-    const { lat: exportLat, lng: exportLng } = exportLatLng(r);
-    return [
-      r.id,
-      r.status,
-      fmtDate(r.submittedAt),
-      r.respondentName || '',
-      r.respondentEmail || '',
-      r.respondentId || '',
-      exportLat,
-      exportLng,
-      r.location?.ward || '',
-      ...(consentEnabled
-        ? [r.consentGranted ? 'Yes' : 'No', fmtDate(r.consentGrantedAt)]
-        : []),
-      sub?.lat != null ? String(sub.lat) : '',
-      sub?.lng != null ? String(sub.lng) : '',
-      sub?.accuracy != null ? String(sub.accuracy) : '',
-      fmtDate(sub?.capturedAt),
-      sub?.durationSeconds != null ? String(sub.durationSeconds) : '',
-      ...enumValues,
-      ...answerValues
-    ];
+const buildResponseRow = (
+  plan: ResponsesExportPlan,
+  r: QuestionnaireResponse,
+  photoMap: Map<string, ExportPhotoAttachment>,
+  attachPhotos: boolean
+): string[] => {
+  let photoSerial = 0;
+  const enumValues = plan.enumFields.map((f) => {
+    const raw = r.enumeratorInfo?.[f.id];
+    let photoPath: string | null = null;
+    if (attachPhotos && f.type === 'photo') {
+      photoSerial += 1;
+      photoPath = collectResponsePhotoAttachment(
+        {
+          response: r,
+          photoQuestion: f,
+          allQuestions: plan.questions,
+          photoSerial,
+          value: raw,
+          questionKey: `info_${f.key || f.id}`
+        },
+        photoMap
+      );
+    }
+    return stringifyAnswer(raw, f, photoPath);
   });
+  const answerValues = plan.columns.map((col) => {
+    const raw = r.responses?.[col.question.id];
+    let photoPath: string | null = null;
+    if (attachPhotos && col.kind === 'question' && col.question.type === 'photo') {
+      photoSerial += 1;
+      photoPath = collectResponsePhotoAttachment(
+        {
+          response: r,
+          photoQuestion: col.question,
+          allQuestions: plan.questions,
+          photoSerial,
+          value: raw,
+          questionKey: col.question.key || col.question.id
+        },
+        photoMap
+      );
+    }
+    return responsesExportColumnCell(col, r, photoPath);
+  });
+  const sub = r.submissionLocation;
+  const { lat: exportLat, lng: exportLng } = exportLatLng(r);
+  return [
+    r.id,
+    r.status,
+    fmtDate(r.submittedAt),
+    r.respondentName || '',
+    r.respondentEmail || '',
+    r.respondentId || '',
+    exportLat,
+    exportLng,
+    r.location?.ward || '',
+    ...(plan.consentEnabled
+      ? [r.consentGranted ? 'Yes' : 'No', fmtDate(r.consentGrantedAt)]
+      : []),
+    sub?.lat != null ? String(sub.lat) : '',
+    sub?.lng != null ? String(sub.lng) : '',
+    sub?.accuracy != null ? String(sub.accuracy) : '',
+    fmtDate(sub?.capturedAt),
+    sub?.durationSeconds != null ? String(sub.durationSeconds) : '',
+    ...enumValues,
+    ...answerValues
+  ];
+};
 
+export const buildResponsesTable = (
+  q: Questionnaire,
+  responses: QuestionnaireResponse[],
+  options?: BuildResponsesTableOptions
+): ResponsesTableWithPhotos => {
+  const attachPhotos = !!options?.attachPhotos;
+  const photoMap = new Map<string, ExportPhotoAttachment>();
+  const plan = planResponsesExport(q, responses);
+  const rows = responses.map((r) => buildResponseRow(plan, r, photoMap, attachPhotos));
   return {
-    header,
+    header: plan.header,
     rows,
     photoAttachments: Array.from(photoMap.values())
+  };
+};
+
+export type ResponsesExportBundle = ResponsesTableWithPhotos & {
+  /** WGS84 point per row (null when the response has no usable GPS). */
+  points: ([number, number] | null)[];
+};
+
+export type ResponsesExportAccumulator = {
+  /** Convert one fetched page into rows; the payloads can be released after. */
+  addPage: (responses: QuestionnaireResponse[]) => void;
+  count: () => number;
+  result: () => ResponsesExportBundle;
+};
+
+/**
+ * Build the export table incrementally so the browser never has to hold every
+ * full response payload at once. `planResponses` supplies the column layout
+ * (pass the slim list already loaded in the admin view).
+ */
+export const createResponsesExportAccumulator = (
+  q: Questionnaire,
+  planResponses: QuestionnaireResponse[],
+  options?: BuildResponsesTableOptions
+): ResponsesExportAccumulator => {
+  const attachPhotos = !!options?.attachPhotos;
+  const plan = planResponsesExport(q, planResponses);
+  const photoMap = new Map<string, ExportPhotoAttachment>();
+  const rows: string[][] = [];
+  const points: ([number, number] | null)[] = [];
+
+  return {
+    addPage: (pageResponses) => {
+      for (const r of pageResponses) {
+        rows.push(buildResponseRow(plan, r, photoMap, attachPhotos));
+        points.push(responsePointForShp(r));
+      }
+    },
+    count: () => rows.length,
+    result: () => ({
+      header: plan.header,
+      rows,
+      points,
+      photoAttachments: Array.from(photoMap.values())
+    })
   };
 };
 
@@ -683,24 +756,31 @@ export type ResponsesCsvExportResult = {
  * Download responses as a ZIP: `*.csv` plus attached `photos/*.jpg` files.
  * Photo columns contain relative paths like `photos/resp_xxx_qkey.jpg`.
  */
-export const downloadResponsesCsv = async (
+/** Download an already-built table as a ZIP (CSV + attached photo files). */
+export const downloadResponsesCsvFromTable = async (
   q: Questionnaire,
-  responses: QuestionnaireResponse[]
+  table: ResponsesTableWithPhotos
 ): Promise<ResponsesCsvExportResult> => {
-  const { header, rows, photoAttachments } = buildResponsesTable(q, responses, {
-    attachPhotos: true
-  });
   const csv =
     '\uFEFF' +
-    [header, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
+    [table.header, ...table.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
 
   const baseName = `${slugify(q.title)}_responses`;
   const JSZip = (await import('jszip')).default;
   const zip = new JSZip();
   zip.file(`${baseName}.csv`, csv);
-  addPhotoAttachmentsToZip(zip, photoAttachments);
+  addPhotoAttachmentsToZip(zip, table.photoAttachments);
 
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
   triggerDownload(blob, `${baseName}_${Date.now()}.zip`);
-  return { photoCount: photoAttachments.length };
+  return { photoCount: table.photoAttachments.length };
 };
+
+export const downloadResponsesCsv = async (
+  q: Questionnaire,
+  responses: QuestionnaireResponse[]
+): Promise<ResponsesCsvExportResult> =>
+  downloadResponsesCsvFromTable(
+    q,
+    buildResponsesTable(q, responses, { attachPhotos: true })
+  );

@@ -290,6 +290,13 @@ export const geosurveyApi = {
     }
   },
 
+  /** Full payloads for a page of response ids (CSV/SHP export). */
+  getResponsesBatch: (ids: string[]) =>
+    apiFetch<{ items: Record<string, unknown>[] }>('/api/responses/export-batch', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+
   getResponse: (id: string, opts?: { slim?: boolean }) => {
     const search = new URLSearchParams();
     if (opts?.slim) search.set('slim', '1');

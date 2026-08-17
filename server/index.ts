@@ -38,7 +38,14 @@ import {
   listQuestionnaires,
   upsertQuestionnaire,
 } from './questionnairesStore';
-import { deleteResponse, getResponseById, listResponseLocations, listResponses, upsertResponse } from './responsesStore';
+import {
+  deleteResponse,
+  getResponseById,
+  listResponseLocations,
+  listResponses,
+  listResponsesByIds,
+  upsertResponse,
+} from './responsesStore';
 import {
   blockDeletedUser,
   findUserById,
@@ -396,6 +403,34 @@ app.get('/api/responses/locations', requireApproved, async (req: GeosurveyAuthen
       : undefined
     : req.geosurveySession!.user.id;
   res.json({ items: await listResponseLocations({ projectId, respondentId }) });
+});
+
+/**
+ * Full payloads for a page of ids. CSV/SHP export walks the filtered ids in
+ * pages instead of one request per response — a 3,500-response survey with
+ * photos was previously 3,500 round trips and never finished in the browser.
+ */
+const EXPORT_BATCH_MAX_IDS = 200;
+
+app.post('/api/responses/export-batch', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
+  const isAdmin = req.geosurveySession!.user.role === 'admin';
+  const rawIds = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]) : [];
+  const ids = [...new Set(rawIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(
+    0,
+    EXPORT_BATCH_MAX_IDS
+  );
+  if (ids.length === 0) {
+    res.json({ items: [] });
+    return;
+  }
+  const items = await listResponsesByIds(ids);
+  res.json({
+    items: isAdmin
+      ? items
+      : items.filter(
+          (item) => String(item.respondentId || '') === req.geosurveySession!.user.id
+        ),
+  });
 });
 
 app.get('/api/responses/:id', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
