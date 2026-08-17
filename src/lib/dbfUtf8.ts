@@ -52,9 +52,12 @@ function assignDbfFieldNames(keys: string[]): Map<string, string> {
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^A-Za-z0-9_]/g, '_')
       .replace(/^[0-9]/, '_$&')
-      .toUpperCase();
+      .toUpperCase()
+      .slice(0, MAX_FIELD);
+    // Fall back after slicing too: Bangla/CJK labels reduce to all underscores,
+    // and a leading Latin token (e.g. "DBH") can sit past the 8-char window,
+    // leaving an all-underscore stub. Index-based names stay unique + readable.
     if (!base || /^_+$/.test(base)) base = `F${index}`;
-    base = base.slice(0, MAX_FIELD);
     let name = base;
     let n = 2;
     while (used.has(name)) {

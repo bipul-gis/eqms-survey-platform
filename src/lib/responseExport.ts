@@ -16,6 +16,7 @@ import {
   QuestionnaireResponse
 } from '../types';
 import { mapLabelsToDbfFieldNames } from './dbfUtf8';
+import { inferBranchingPrefixQuestionId } from './responseIdSequence';
 import {
   formatChoiceAnswerForExport,
   isOtherSpecifyAnswer
@@ -306,7 +307,7 @@ const buildResponsesExportColumns = (questions: Question[]): ResponsesExportColu
   return cols;
 };
 
-const responsesExportColumnHeader = (col: ResponsesExportColumn): string => {
+const responsesExportColumnBaseHeader = (col: ResponsesExportColumn): string => {
   if (col.kind === 'question') {
     const qq = col.question;
     return qq.question || qq.key || qq.id;
@@ -314,6 +315,96 @@ const responsesExportColumnHeader = (col: ResponsesExportColumn): string => {
   const qq = col.question;
   const base = qq.question || qq.key || qq.id;
   return `${base} — ${col.row}`;
+};
+
+/**
+ * Human tag for the survey branch a question belongs to, e.g. `একক গাছ` or
+ * `বৃক্ষগুচ্ছ (ক্যানোপি)`. Walks the question's own display logic and its
+ * parent chain looking for a condition on the survey-type (branching)
+ * question, then returns that option's label. Empty when the question isn't
+ * branch-gated. Used only to disambiguate duplicate column headers.
+ */
+const branchTagForColumn = (
+  col: ResponsesExportColumn,
+  allQuestions: Question[],
+  branchingId: string | undefined
+): string => {
+  if (!branchingId) return '';
+  const parent = allQuestions.find((q) => q.id === branchingId);
+  if (!parent) return '';
+  const opts = ensureOptions(parent.options);
+  const guard = new Set<string>();
+  let cur: Question | undefined = col.question;
+  while (cur && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    if (cur.logic?.enabled && cur.logic.conditions) {
+      for (const cond of cur.logic.conditions) {
+        if (cond.questionId !== branchingId) continue;
+        const v = cond.value;
+        const hit =
+          opts.find((o) => o.value === v) || opts.find((o) => o.label === v);
+        const label = (hit?.label || hit?.value || v || '').toString().trim();
+        if (label) return label;
+      }
+    }
+    cur = cur.parentId ? allQuestions.find((q) => q.id === cur!.parentId) : undefined;
+  }
+  return '';
+};
+
+/**
+ * Unique header per question column. Duplicate labels (common when a survey
+ * has parallel branches that reuse question text, e.g. একক vs বৃক্ষগুচ্ছ) get
+ * their branch appended; any remaining collision gets a numeric suffix. Both
+ * CSV and the SHP/DBF rely on this so no column is dropped or ambiguous.
+ * `reserved` seeds already-used names (system + enumerator-info headers).
+ */
+const buildUniqueColumnHeaders = (
+  cols: ResponsesExportColumn[],
+  allQuestions: Question[],
+  reserved: Iterable<string>
+): string[] => {
+  const branchingId = inferBranchingPrefixQuestionId(allQuestions);
+  const base = cols.map(responsesExportColumnBaseHeader);
+  const counts = new Map<string, number>();
+  for (const b of base) counts.set(b, (counts.get(b) || 0) + 1);
+  const seen = new Set<string>(reserved);
+  return cols.map((col, i) => {
+    let header = base[i];
+    if ((counts.get(base[i]) || 0) > 1) {
+      const tag = branchTagForColumn(col, allQuestions, branchingId);
+      if (tag) header = `${base[i]} (${tag})`;
+    }
+    let unique = header;
+    let n = 2;
+    while (seen.has(unique)) unique = `${header} (${n++})`;
+    seen.add(unique);
+    return unique;
+  });
+};
+
+/** System + enumerator-info column headers, in export order (no question columns). */
+const buildSystemAndEnumHeaders = (q: Questionnaire): string[] => {
+  const enumFields = q.enumeratorInfo?.fields || [];
+  const consentEnabled = !!q.consentGate?.enabled;
+  return [
+    'Submission ID',
+    'Status',
+    'Submitted At',
+    'Enumerator',
+    'Enumerator Email',
+    'Enumerator UID',
+    'Latitude',
+    'Longitude',
+    'Ward',
+    ...(consentEnabled ? (['Consent Granted', 'Consent Granted At'] as const) : []),
+    'Submission GPS Latitude',
+    'Submission GPS Longitude',
+    'Submission GPS Accuracy (m)',
+    'Submission GPS Captured At',
+    'Submission GPS Duration (s)',
+    ...enumFields.map((f) => `Info: ${f.question || f.key || f.id}`)
+  ];
 };
 
 const responsesExportColumnCell = (
@@ -396,6 +487,8 @@ export type ResponsesExportPlan = {
   enumFields: Question[];
   consentEnabled: boolean;
   header: string[];
+  /** Unique header for each entry in `columns` (branch-tagged when needed). */
+  columnHeaders: string[];
 };
 
 /**
@@ -413,26 +506,10 @@ export const planResponsesExport = (
     responses
   );
   const columns = buildResponsesExportColumns(questions);
-  const header: string[] = [
-    'Submission ID',
-    'Status',
-    'Submitted At',
-    'Enumerator',
-    'Enumerator Email',
-    'Enumerator UID',
-    'Latitude',
-    'Longitude',
-    'Ward',
-    ...(consentEnabled ? (['Consent Granted', 'Consent Granted At'] as const) : []),
-    'Submission GPS Latitude',
-    'Submission GPS Longitude',
-    'Submission GPS Accuracy (m)',
-    'Submission GPS Captured At',
-    'Submission GPS Duration (s)',
-    ...enumFields.map((f) => `Info: ${f.question || f.key || f.id}`),
-    ...columns.map(responsesExportColumnHeader)
-  ];
-  return { questions, columns, enumFields, consentEnabled, header };
+  const preHeaders = buildSystemAndEnumHeaders(q);
+  const columnHeaders = buildUniqueColumnHeaders(columns, questions, preHeaders);
+  const header = [...preHeaders, ...columnHeaders];
+  return { questions, columns, enumFields, consentEnabled, header, columnHeaders };
 };
 
 const buildResponseRow = (
@@ -650,29 +727,35 @@ export const buildResponsesExportFieldDescriptors = (
     });
   }
 
-  for (const col of exportColumns) {
+  // Same unique headers the CSV/SHP columns use, so the mapping is 1:1 with
+  // the actual DBF fields (duplicate branch labels are disambiguated).
+  const columnHeaders = buildUniqueColumnHeaders(
+    exportColumns,
+    questions,
+    buildSystemAndEnumHeaders(q)
+  );
+  exportColumns.forEach((col, i) => {
+    const qq = col.question;
     if (col.kind === 'question') {
-      const qq = col.question;
       const label = qq.question || qq.key || qq.id;
       out.push({
-        csvHeader: label,
+        csvHeader: columnHeaders[i],
         sourceType: 'question',
         questionId: qq.id,
         fieldKey: qq.key,
         sourceDetail: `Question type "${qq.type}": ${label}`
       });
     } else {
-      const qq = col.question;
       const base = qq.question || qq.key || qq.id;
       out.push({
-        csvHeader: `${base} — ${col.row}`,
+        csvHeader: columnHeaders[i],
         sourceType: 'matrix_row',
         questionId: qq.id,
         fieldKey: qq.key,
         sourceDetail: `Matrix question "${base}", row label: ${col.row}`
       });
     }
-  }
+  });
 
   return out;
 };
