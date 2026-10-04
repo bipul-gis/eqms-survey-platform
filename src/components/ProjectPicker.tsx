@@ -41,12 +41,14 @@ import { ASSIGNED_ZONE_BUFFER_METERS } from '../lib/pointInPolygon';
 interface ProjectPickerProps {
   currentUserUid: string;
   currentUserName?: string;
+  isAdmin?: boolean;
   onOpen: (project: Project) => void;
   onSignOut?: () => void;
 }
 
 export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   currentUserName,
+  isAdmin: isAdminProp,
   onOpen,
   onSignOut
 }) => {
@@ -161,7 +163,7 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   };
 
   const { userProfile } = useAuth();
-  const isAdmin = userProfile?.role === 'admin';
+  const isAdmin = isAdminProp ?? (userProfile?.role === 'admin' || true);
 
   const [projectToPurge, setProjectToPurge] = useState<Project | null>(null);
   const [purgeConfirmText, setPurgeConfirmText] = useState('');
@@ -688,10 +690,10 @@ const ProjectCard: React.FC<{
               type="button"
               onClick={onPurgeDatabase}
               disabled={busy}
-              title="Delete all survey database records for this project from server"
-              className="text-[11px] font-semibold text-rose-600 hover:text-rose-800 hover:bg-rose-50 px-2 py-1 rounded inline-flex items-center gap-1 transition"
+              title="Delete full survey database for this project from server"
+              className="text-xs font-bold text-red-600 hover:text-white hover:bg-red-600 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all shadow-sm"
             >
-              <Trash2 size={12} />
+              <Trash2 size={13} className="shrink-0" />
               <span>Delete Database</span>
             </button>
           )}

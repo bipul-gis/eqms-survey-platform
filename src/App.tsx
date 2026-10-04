@@ -2593,6 +2593,7 @@ const AppContent: React.FC = () => {
       <ProjectPicker
         currentUserUid={user.uid}
         currentUserName={userProfile?.displayName || user.email || undefined}
+        isAdmin={isAdmin}
         onOpen={(p) => {
           const cached = readCachedZoneBundle(p.id);
           if (cached) {
