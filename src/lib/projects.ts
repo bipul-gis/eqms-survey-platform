@@ -28,6 +28,10 @@ export const deactivateProjectForGeosurvey = async (projectId: string): Promise<
   await geosurveyApi.deactivateGeosurveyProject(projectId);
 };
 
+export const deleteProjectDatabase = async (projectId: string) => {
+  return geosurveyApi.deleteProjectDatabase(projectId);
+};
+
 export const updateProjectSegments = async (
   projectId: string,
   segments: {

@@ -1,7 +1,7 @@
 import paramiko
 from pathlib import Path
 
-HOST = "187.77.155.38"
+HOST = "72.62.255.136"
 USER = "root"
 KEY_PATH = Path.home() / ".ssh" / "eqms_vps"
 APP_DIR = "/var/www/eqms-geosurvey"

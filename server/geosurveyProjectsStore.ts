@@ -221,3 +221,89 @@ export async function deactivateGeosurveyProject(projectId: string): Promise<voi
     [projectId]
   );
 }
+
+export interface PurgeProjectResult {
+  projectId: string;
+  deletedResponses: number;
+  deletedQuestionnaires: number;
+  deletedZoneLayers: number;
+  deletedZonePolygons: number;
+}
+
+/**
+ * Permanently deletes all survey database data for a specific project:
+ * - All survey responses for the questionnaires under this project
+ * - All questionnaires under this project
+ * - All zone polygons and zone layers under this project
+ * - Cleans up user project assignments for this project
+ * - Deactivates/removes the project record from geosurvey_projects
+ */
+export async function purgeProjectData(projectId: string): Promise<PurgeProjectResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Delete questionnaire responses for all questionnaires of this project
+    const respRes = await client.query(
+      `DELETE FROM questionnaire_responses
+       WHERE questionnaire_id IN (SELECT id FROM questionnaires WHERE project_id = $1)
+       RETURNING id`,
+      [projectId]
+    );
+
+    // 2. Delete questionnaires for this project
+    const qsnRes = await client.query(
+      `DELETE FROM questionnaires WHERE project_id = $1 RETURNING id`,
+      [projectId]
+    );
+
+    // 3. Delete zone polygons and zone layers
+    const polyRes = await client.query(
+      `DELETE FROM zone_polygons WHERE project_id = $1 RETURNING id`,
+      [projectId]
+    );
+    const layerRes = await client.query(
+      `DELETE FROM zone_layers WHERE project_id = $1 RETURNING id`,
+      [projectId]
+    );
+
+    // 4. Remove project from user assignments (project_zone_assignments, project_slum_assignments, assigned_geospatial_project_ids)
+    await client.query(
+      `UPDATE users
+       SET
+         project_zone_assignments = project_zone_assignments - $1,
+         project_slum_assignments = project_slum_assignments - $1,
+         project_ward_assignments = project_ward_assignments - $1,
+         assigned_geospatial_project_ids = (
+           SELECT coalesce(jsonb_agg(elem), '[]'::jsonb)
+           FROM jsonb_array_elements_text(assigned_geospatial_project_ids) elem
+           WHERE elem <> $1
+         )
+       WHERE
+         project_zone_assignments ? $1 OR
+         project_slum_assignments ? $1 OR
+         project_ward_assignments ? $1 OR
+         assigned_geospatial_project_ids @> to_jsonb($1::text)`,
+      [projectId]
+    );
+
+    // 5. Delete project entry from geosurvey_projects
+    await client.query(`DELETE FROM geosurvey_projects WHERE project_id = $1`, [projectId]);
+
+    await client.query('COMMIT');
+
+    return {
+      projectId,
+      deletedResponses: respRes.rowCount || 0,
+      deletedQuestionnaires: qsnRes.rowCount || 0,
+      deletedZonePolygons: polyRes.rowCount || 0,
+      deletedZoneLayers: layerRes.rowCount || 0,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+

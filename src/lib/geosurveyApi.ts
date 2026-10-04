@@ -153,6 +153,21 @@ export const geosurveyApi = {
       method: 'POST',
     }),
 
+  deleteProjectDatabase: (projectId: string) =>
+    apiFetch<{
+      ok: boolean;
+      message: string;
+      result: {
+        projectId: string;
+        deletedResponses: number;
+        deletedQuestionnaires: number;
+        deletedZoneLayers: number;
+        deletedZonePolygons: number;
+      };
+    }>(`/api/geosurvey-projects/${projectId}/database`, {
+      method: 'DELETE',
+    }),
+
   updateGeosurveyProjectSegments: (
     projectId: string,
     segments: {

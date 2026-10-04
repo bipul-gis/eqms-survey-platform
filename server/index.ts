@@ -31,6 +31,7 @@ import {
   deactivateGeosurveyProject,
   listActiveGeosurveyProjects,
   updateGeosurveyProjectSegments,
+  purgeProjectData,
 } from './geosurveyProjectsStore';
 import {
   countQuestionnairesByProject,
@@ -216,6 +217,19 @@ app.post('/api/geosurvey-projects/:id/deactivate', requireAdmin, async (req, res
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.delete('/api/geosurvey-projects/:id/database', requireAdmin, async (req, res) => {
+  try {
+    const result = await purgeProjectData(req.params.id);
+    res.json({
+      ok: true,
+      message: 'Project survey database permanently deleted from server.',
+      result,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
