@@ -21,6 +21,7 @@ import {
   readCachedZoneBundle,
   writeCachedZoneBundle,
 } from './lib/zoneCache';
+import { deleteProjectDatabase } from './lib/projects';
 
 initOfflineSupport();
 
@@ -92,7 +93,9 @@ import {
   LayoutGrid,
   ClipboardList,
   ChevronRight,
-  Folder
+  Folder,
+  Trash2,
+  Loader2
 } from 'lucide-react';
 import {
   bulkUpsertFeatures,
@@ -490,6 +493,11 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     movingFeatureRef.current = movingFeature;
   }, [movingFeature]);
+  const [projectToPurge, setProjectToPurge] = useState<Project | null>(null);
+  const [purgeConfirmText, setPurgeConfirmText] = useState('');
+  const [purgingProject, setPurgingProject] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
+
   const [lastMovedPoint, setLastMovedPoint] = useState<{
     featureId: string;
     featureName: string;
@@ -2844,6 +2852,40 @@ const AppContent: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Danger Zone: Purge Project Survey Database from Server */}
+            <div className="mt-4 bg-rose-50/60 rounded-2xl border border-rose-200 p-5 shadow-sm">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center text-rose-600">
+                    <Trash2 size={18} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-rose-900 flex items-center gap-1.5">
+                      <span>Delete Survey Database</span>
+                      <span className="text-[10px] bg-rose-200 text-rose-800 font-bold px-1.5 py-0.5 rounded uppercase">
+                        Admin Only
+                      </span>
+                    </p>
+                    <p className="text-xs text-rose-700/80">
+                      Permanently wipe all survey responses, questionnaires, and SHP zone data for{' '}
+                      <span className="font-semibold text-rose-950">{currentProject.name}</span> from the server database.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setProjectToPurge(currentProject);
+                    setPurgeConfirmText('');
+                    setPurgeError(null);
+                  }}
+                  className="text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 px-4 py-2 rounded-lg flex items-center gap-1.5 transition-all shadow-sm"
+                >
+                  <Trash2 size={13} />
+                  Delete Database
+                </button>
+              </div>
+            </div>
           </div>
         </main>
         <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
@@ -2861,6 +2903,110 @@ const AppContent: React.FC = () => {
                 onClose={() => setShowUserManagement(false)}
               />
             </PanelSuspense>
+          </div>
+        )}
+
+        {/* Project Survey Database Purge Confirmation Modal */}
+        {projectToPurge && (
+          <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-red-100">
+              <div className="bg-gradient-to-r from-red-600 to-rose-700 px-6 py-4 text-white flex items-center gap-3">
+                <div className="p-2 bg-white/10 rounded-xl">
+                  <Trash2 size={22} className="text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold">Delete Survey Database</h3>
+                  <p className="text-xs text-red-100">Project-based server data purge</p>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 text-xs text-red-800 space-y-2">
+                  <p className="font-bold flex items-center gap-1.5 text-red-900">
+                    <AlertCircle size={15} /> Warning: Irreversible Action
+                  </p>
+                  <p>
+                    This will permanently delete all survey data stored on the server for project{' '}
+                    <span className="font-bold underline">{projectToPurge.name}</span> (Code: {projectToPurge.code}):
+                  </p>
+                  <ul className="list-disc pl-4 space-y-1 text-red-700">
+                    <li>All submitted questionnaire responses and survey records</li>
+                    <li>All questionnaires and questions created under this project</li>
+                    <li>All uploaded zone layers, SHP polygon boundaries and geofences</li>
+                    <li>All user enumerator task assignments for this project</li>
+                  </ul>
+                </div>
+
+                {purgeError && (
+                  <p className="text-xs text-red-600 bg-red-50 p-2.5 rounded-lg border border-red-200">
+                    {purgeError}
+                  </p>
+                )}
+
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-700 block">
+                    To confirm, type <span className="font-mono font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded border border-red-200">DELETE</span> below:
+                  </label>
+                  <input
+                    type="text"
+                    value={purgeConfirmText}
+                    onChange={(e) => setPurgeConfirmText(e.target.value)}
+                    placeholder="Type DELETE to confirm"
+                    disabled={purgingProject}
+                    className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none uppercase font-mono tracking-wider"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!purgingProject) {
+                        setProjectToPurge(null);
+                        setPurgeConfirmText('');
+                        setPurgeError(null);
+                      }
+                    }}
+                    disabled={purgingProject}
+                    className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!projectToPurge) return;
+                      try {
+                        setPurgingProject(true);
+                        setPurgeError(null);
+                        await deleteProjectDatabase(projectToPurge.id);
+                        clearCachedZoneBundle(projectToPurge.id);
+                        setProjectToPurge(null);
+                        setPurgeConfirmText('');
+                        setCurrentProject(null);
+                      } catch (e) {
+                        setPurgeError(e instanceof Error ? e.message : String(e));
+                      } finally {
+                        setPurgingProject(false);
+                      }
+                    }}
+                    disabled={purgeConfirmText.trim() !== 'DELETE' || purgingProject}
+                    className="px-4 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg shadow-sm flex items-center gap-1.5 transition"
+                  >
+                    {purgingProject ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" /> Purging from Server…
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 size={14} /> Permanently Delete
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>
