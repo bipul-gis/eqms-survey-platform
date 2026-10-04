@@ -356,9 +356,16 @@ const PointMarker = React.memo(({
             <p className="text-sm font-bold text-slate-900 leading-snug">{adminEnumeratorDisplayName}</p>
           </div>
         ) : null}
-        <p className="text-xs font-bold text-gray-700 mb-2">
-          {feature.attributes?.__source === 'geojson_upload' || feature.attributes?.projectId ? 'Feature Attributes' : 'Landmark Attributes'}
-        </p>
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-xs font-bold text-gray-700">
+            {feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload' || feature.attributes?.projectId ? 'Feature Attributes' : 'Landmark Attributes'}
+          </p>
+          {(feature.attributes?.__layerName || feature.attributes?.layerName) && (
+            <span className="text-[10px] bg-sky-100 text-sky-800 font-semibold px-2 py-0.5 rounded-full">
+              {feature.attributes?.__layerName || feature.attributes?.layerName}
+            </span>
+          )}
+        </div>
         <div className="max-h-48 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
             <tbody>
@@ -455,10 +462,17 @@ const LineMarker = React.memo(({
   >
     <Popup autoPan={false}>
       <div className="min-w-[220px]">
-        <p className="text-xs font-bold text-slate-800 mb-1.5 flex items-center justify-between">
-          <span>Line Feature</span>
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+            <span>Line Feature</span>
+            {(feature.attributes?.__layerName || feature.attributes?.layerName) && (
+              <span className="text-[10px] bg-indigo-50 text-indigo-700 font-semibold px-1.5 py-0.5 rounded border border-indigo-100">
+                {feature.attributes?.__layerName || feature.attributes?.layerName}
+              </span>
+            )}
+          </p>
           <span className="text-[10px] text-slate-400 font-mono">#{feature.id.slice(0, 8)}</span>
-        </p>
+        </div>
         <div className="max-h-40 overflow-auto border border-gray-100 rounded mb-2">
           <table className="w-full text-[10px]">
             <tbody>
@@ -531,10 +545,17 @@ const PolygonMarker = React.memo(({
   >
     <Popup autoPan={false}>
       <div className="min-w-[220px]">
-        <p className="text-xs font-bold text-slate-800 mb-1.5 flex items-center justify-between">
-          <span>Polygon Feature</span>
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+            <span>Polygon Feature</span>
+            {(feature.attributes?.__layerName || feature.attributes?.layerName) && (
+              <span className="text-[10px] bg-teal-50 text-teal-700 font-semibold px-1.5 py-0.5 rounded border border-teal-100">
+                {feature.attributes?.__layerName || feature.attributes?.layerName}
+              </span>
+            )}
+          </p>
           <span className="text-[10px] text-slate-400 font-mono">#{feature.id.slice(0, 8)}</span>
-        </p>
+        </div>
         <div className="max-h-40 overflow-auto border border-gray-100 rounded mb-2">
           <table className="w-full text-[10px]">
             <tbody>
@@ -777,6 +798,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showZones, setShowZones] = useState(defaultShowZones);
   const [showLandmarks, setShowLandmarks] = useState(defaultShowLandmarks);
   const [showSurveyLocations, setShowSurveyLocations] = useState(defaultShowSurveyLocations);
+  // Multi-layer support: track visibility of user-imported layers (default: all visible)
+  const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
     onSurveyLocationsVisibilityChange?.(showSurveyLocations);
   }, [showSurveyLocations, onSurveyLocationsVisibilityChange]);
@@ -805,6 +829,30 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const isAddingFeature = !!addFeatureType;
   const landmarkScaleHydratedRef = useRef(false);
   const pulseTimerRef = useRef<number | null>(null);
+
+  // Group imported features by their layer name
+  const distinctImportedLayers = useMemo(() => {
+    const layerMap = new Map<string, { count: number; types: Set<string> }>();
+    for (const f of features) {
+      const name = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || '').trim();
+      if (!name) continue;
+      const existing = layerMap.get(name) || { count: 0, types: new Set<string>() };
+      existing.count++;
+      existing.types.add(f.type);
+      layerMap.set(name, existing);
+    }
+    return Array.from(layerMap.entries()).map(([name, info]) => ({
+      name,
+      count: info.count,
+      types: Array.from(info.types),
+    }));
+  }, [features]);
+
+  const isFeatureLayerVisible = useCallback((f: GeoFeature) => {
+    const name = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || '').trim();
+    if (!name) return true; // Default features without layer name are visible
+    return layerVisibility[name] !== false; // Visible unless explicitly unchecked
+  }, [layerVisibility]);
 
   const selectedFeature = selectedFeatureId
     ? features.find((f) => f.id === selectedFeatureId) || null
@@ -1060,7 +1108,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
 
         {/* Existing Features */}
-        {features.map(feature => {
+        {features.filter(isFeatureLayerVisible).map(feature => {
           const isSelected = feature.id === selectedFeatureId;
           const isMoveTarget = feature.id === movingFeatureId;
           const isPulsing = feature.id === pulseFeatureId;
@@ -1351,6 +1399,64 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 </label>
               )}
             </div>
+
+            {/* Imported Geospatial Survey Layers */}
+            {distinctImportedLayers.length > 0 && (
+              <div className="border-t pt-2 mt-2">
+                <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                  <span>Geospatial Layers</span>
+                  <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-1.5 py-0.5 rounded border border-sky-100">
+                    {distinctImportedLayers.length}
+                  </span>
+                </div>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {distinctImportedLayers.map((lyr) => {
+                    const isVisible = layerVisibility[lyr.name] !== false;
+                    return (
+                      <label
+                        key={lyr.name}
+                        className="flex items-center justify-between gap-2 p-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={isVisible}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setLayerVisibility((prev) => ({
+                                ...prev,
+                                [lyr.name]: checked,
+                              }));
+                            }}
+                            className="rounded text-sky-600 focus:ring-sky-500"
+                          />
+                          <span className={`truncate font-medium ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
+                            {lyr.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {lyr.types.map((t) => (
+                            <span
+                              key={t}
+                              className={`text-[9px] px-1 py-0.2 rounded font-semibold uppercase ${
+                                t === 'point'
+                                  ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                  : t === 'line'
+                                  ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                  : 'bg-teal-50 text-teal-700 border border-teal-200'
+                              }`}
+                            >
+                              {t}
+                            </span>
+                          ))}
+                          <span className="text-[10px] text-slate-400">({lyr.count})</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
