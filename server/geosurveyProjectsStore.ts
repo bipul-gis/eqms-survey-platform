@@ -267,6 +267,12 @@ export async function purgeProjectData(projectId: string): Promise<PurgeProjectR
       [projectId]
     );
 
+    // 3b. Delete features belonging to this project
+    await client.query(
+      `DELETE FROM features WHERE project_id = $1`,
+      [projectId]
+    );
+
     // 4. Remove project from user assignments (project_zone_assignments, project_slum_assignments, assigned_geospatial_project_ids)
     await client.query(
       `UPDATE users

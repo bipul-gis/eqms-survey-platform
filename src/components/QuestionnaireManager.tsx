@@ -26,6 +26,7 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
+import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import {
   collapseAccidentalResponseIdQuestions,
   formatResponseId,
@@ -41,7 +42,10 @@ import {
   isOtherChoiceDisabled,
   isOtherChoiceHidden,
   ConsentGateForm,
-  PhotoCaptureWidget
+  PhotoCaptureWidget,
+  getLocalizedText,
+  getLocalizedOptionText,
+  type SurveyLanguage
 } from './QuestionnaireRuntime';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
@@ -118,6 +122,10 @@ import {
   OperationType
 } from '../lib/firebase';
 import { geosurveyApi } from '../lib/geosurveyApi';
+import {
+  shouldSeedUddQuestionnaireForProject,
+  uddSocioEconomicQuestionnaireTemplate,
+} from '../data/uddSurveyQuestionnaire';
 
 // Lazy: QuestionnaireResponsesView pulls in the CSV export helpers and a
 // fairly large response table. Keep it out of the initial chunk so admins
@@ -616,20 +624,37 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
       setFetchError(null);
       const result = await geosurveyApi.listQuestionnaires();
       const list = result.items as unknown as Questionnaire[];
-      // Sort newest first by `updatedAt` — values may be Firestore Timestamps,
-      // ISO strings, or pending serverTimestamp placeholders; `toMillis` handles
-      // all of those without throwing (the previous `localeCompare` crash
-      // silently swallowed the whole result set, hiding just-saved drafts).
       list.sort((a, b) => toMillis(b.updatedAt) - toMillis(a.updatedAt));
-      // Scope by current project. Legacy questionnaires without `projectId`
-      // are treated as belonging to the canonical default project so they
-      // don't disappear after the project layer was introduced.
       const filtered = scopeProjectId
         ? list.filter((it) => {
             const pid = it.projectId || DEFAULT_PROJECT_ID;
             return pid === scopeProjectId;
           })
         : list;
+
+      if (filtered.length === 0 && scopeProjectId && project?.name && shouldSeedUddQuestionnaireForProject(scopeProjectId, project.name)) {
+        const seeded = uddSocioEconomicQuestionnaireTemplate(scopeProjectId, project.name);
+        const nowIso = new Date().toISOString();
+        const payload = {
+          ...seeded,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          isActive: true,
+          projectId: scopeProjectId,
+        };
+        const ref = await geosurveyApi.saveQuestionnaire(payload as Record<string, unknown>);
+        const created: Questionnaire = {
+          ...(seeded as Questionnaire),
+          ...(ref as unknown as Questionnaire),
+          id: String((ref as { id?: string } | undefined)?.id ?? seeded.id),
+          projectId: scopeProjectId,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        setQuestionnaires([created]);
+        return;
+      }
+
       setQuestionnaires(filtered);
     } catch (error) {
       console.error('Error fetching questionnaires:', error);
@@ -1019,7 +1044,10 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     }
   );
   const [questions, setQuestions] = useState<Question[]>(() => {
-    const src = collapseAccidentalResponseIdQuestions(questionnaire?.questions || []);
+    const src = normalizeQuestionnaireSectionQuestions(
+      collapseAccidentalResponseIdQuestions(questionnaire?.questions || []),
+      questionnaire?.sections || []
+    );
     return src.map((q) => ({
       ...q,
       options: ensureOptionShape(q.options),
@@ -4541,6 +4569,7 @@ const PreviewDialog: React.FC<{
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [enumeratorAnswers, setEnumeratorAnswers] = useState<Record<string, unknown>>({});
   const [consentGranted, setConsentGranted] = useState(false);
+  const [previewLanguage, setPreviewLanguage] = useState<SurveyLanguage>('en');
   /** Questions are revealed only when the gate is disabled or has been accepted. */
   const questionsUnlocked = !consentGate.enabled || consentGranted;
 
@@ -4681,14 +4710,28 @@ const PreviewDialog: React.FC<{
             <div className="flex items-center gap-2 text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">
               <Eye size={12} /> Preview mode
             </div>
-            <h3 className="font-bold text-slate-900">{title || 'Untitled Questionnaire'}</h3>
+            <h3 className="font-bold text-slate-900">{getLocalizedText(title, previewLanguage) || 'Untitled Questionnaire'}</h3>
             <p className="text-xs text-slate-500">
               v{version || '1.0'} • {visibleQuestions.length} visible questions
             </p>
           </div>
-          <button onClick={onClose} className="p-1 text-slate-500 hover:bg-white/60 rounded">
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-medium text-slate-700">
+              <span className="uppercase tracking-wide text-slate-500">Language</span>
+              <select
+                aria-label="Preview language"
+                value={previewLanguage}
+                onChange={(e) => setPreviewLanguage(e.target.value as SurveyLanguage)}
+                className="bg-transparent font-semibold outline-none"
+              >
+                <option value="en">ENG</option>
+                <option value="bn">বাংলা</option>
+              </select>
+            </label>
+            <button onClick={onClose} className="p-1 text-slate-500 hover:bg-white/60 rounded" title="Close preview">
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {settings.showProgress && (
@@ -4706,7 +4749,7 @@ const PreviewDialog: React.FC<{
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {descriptionBlocks.length > 0 && (
             <div className="border-b border-slate-100 pb-4">
-              <DescriptionRenderer blocks={descriptionBlocks} />
+              <DescriptionRenderer blocks={descriptionBlocks} language={previewLanguage} />
             </div>
           )}
           {enumeratorInfo.enabled && enumeratorInfo.fields.length > 0 && (
@@ -4715,6 +4758,7 @@ const PreviewDialog: React.FC<{
               answers={enumeratorAnswers}
               logicAnswers={previewLogicAnswers}
               onChange={(id, v) => setEnumeratorAnswers((prev) => ({ ...prev, [id]: v }))}
+              language={previewLanguage}
             />
           )}
           {consentGate.enabled && (
@@ -4723,6 +4767,7 @@ const PreviewDialog: React.FC<{
               granted={consentGranted}
               onChange={setConsentGranted}
               enumeratorDisplayName={enumeratorResolvedDisplayName(userProfile, user)}
+              language={previewLanguage}
             />
           )}
           {!questionsUnlocked ? (
@@ -4772,6 +4817,7 @@ const PreviewDialog: React.FC<{
                           onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
                           allAnswers={previewLogicAnswers}
                           allQuestions={questions}
+                          language={previewLanguage}
                         />
                         {locked && (
                           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
@@ -4788,14 +4834,14 @@ const PreviewDialog: React.FC<{
                   <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                     Conclusion
                   </div>
-                  <DescriptionRenderer blocks={conclusionBlocks} />
+                  <DescriptionRenderer blocks={conclusionBlocks} language={previewLanguage} />
                 </div>
               )}
               {submissionGps.enabled && (
                 <SubmissionGpsCaptureWidget
                   config={submissionGps}
-                  title={submissionGps.title}
-                  description={submissionGps.description}
+                  title={getLocalizedText(submissionGps.title, previewLanguage)}
+                  description={getLocalizedText(submissionGps.description, previewLanguage)}
                 />
               )}
             </>
@@ -4891,7 +4937,8 @@ const PreviewQuestion: React.FC<{
   onChange: (v: unknown) => void;
   allAnswers?: Record<string, unknown>;
   allQuestions?: Question[];
-}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions }) => {
+  language?: SurveyLanguage;
+}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions, language = 'en' }) => {
   const opts =
     question.type === 'section' ? [] : ensureOptionShape(question.options);
   const cls =
@@ -4929,9 +4976,9 @@ const PreviewQuestion: React.FC<{
     return (
       <div className="border-t-2 border-indigo-200 pt-3">
         <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Section</div>
-        <h4 className="text-base font-bold text-slate-900">{question.question}</h4>
+        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language as SurveyLanguage)}</h4>
         {question.description && (
-          <p className="text-xs text-slate-500 mt-1">{question.description}</p>
+          <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>
         )}
       </div>
     );
@@ -4950,14 +4997,17 @@ const PreviewQuestion: React.FC<{
           inputMode={question.type === 'phone' ? 'tel' : undefined}
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={
+          placeholder={getLocalizedText(
+            (
             question.placeholder ||
             (question.type === 'email'
               ? 'name@example.com'
               : question.type === 'phone'
-                ? '01712345678'
+                ? '০১৭১২৩৪৫৬৭৮ / 01712345678'
                 : undefined)
-          }
+            ),
+            language as SurveyLanguage
+          )}
           className={cls}
         />
       );
@@ -4967,7 +5017,7 @@ const PreviewQuestion: React.FC<{
                       <textarea
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={question.placeholder}
+          placeholder={getLocalizedText(question.placeholder, language as SurveyLanguage)}
                         rows={3}
           className={`${cls} resize-none`}
         />
@@ -4979,7 +5029,7 @@ const PreviewQuestion: React.FC<{
           type="number"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={question.placeholder}
+          placeholder={getLocalizedText(question.placeholder, language as SurveyLanguage)}
           min={question.validation?.min}
           max={question.validation?.max}
           step={question.validation?.step}
@@ -5021,7 +5071,7 @@ const PreviewQuestion: React.FC<{
               className={`${cls} pr-12`}
             />
             <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              Years
+              {getLocalizedText('Years / বছর', language as SurveyLanguage)}
             </span>
           </div>
           <div className="flex-1 min-w-0 relative">
@@ -5037,7 +5087,7 @@ const PreviewQuestion: React.FC<{
               className={`${cls} pr-14`}
             />
             <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              Months
+              {getLocalizedText('Months / মাস', language as SurveyLanguage)}
             </span>
           </div>
         </div>
@@ -5102,6 +5152,7 @@ const PreviewQuestion: React.FC<{
           getOptionHidden={getOptionHidden}
           otherDisabled={isOtherChoiceDisabled(question, answersMap)}
           otherHidden={isOtherChoiceHidden(question, answersMap)}
+          language={language}
         />
       );
       break;
@@ -5130,7 +5181,7 @@ const PreviewQuestion: React.FC<{
                 value={o.value}
                 disabled={isChoiceOptionDisabled(o, answersMap)}
               >
-                {o.label}
+                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
               </option>
             ))}
         </select>
@@ -5151,6 +5202,7 @@ const PreviewQuestion: React.FC<{
           getOptionHidden={getOptionHidden}
           otherDisabled={isOtherChoiceDisabled(question, answersMap)}
           otherHidden={isOtherChoiceHidden(question, answersMap)}
+          language={language}
         />
       );
       break;
@@ -5178,7 +5230,7 @@ const PreviewQuestion: React.FC<{
                     );
                   }}
                 />
-                {o.label}
+                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
               </label>
             );
           })}
@@ -5272,7 +5324,7 @@ const PreviewQuestion: React.FC<{
                 <th />
                 {(question.columns || []).map((c) => (
                   <th key={c} className="text-xs font-semibold text-slate-600 px-2 py-1">
-                    {c}
+                    {getLocalizedText(c, language as SurveyLanguage)}
                   </th>
                 ))}
               </tr>
@@ -5282,7 +5334,7 @@ const PreviewQuestion: React.FC<{
                 const matrixVal = (value as Record<string, string>) || {};
                 return (
                   <tr key={r} className="border-t border-slate-100">
-                    <td className="text-xs text-slate-700 pr-2">{r}</td>
+                    <td className="text-xs text-slate-700 pr-2">{getLocalizedText(r, language as SurveyLanguage)}</td>
                     {(question.columns || []).map((c) => (
                       <td key={`${r}_${c}`} className="text-center px-2 py-1">
                         <input
@@ -5310,11 +5362,11 @@ const PreviewQuestion: React.FC<{
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-slate-800">
         {prefix !== '' && `${prefix}. `}
-        {question.question || 'Untitled question'}
+        {getLocalizedText(question.question, language as SurveyLanguage) || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
       {question.description && (
-        <p className="text-xs text-slate-500 -mt-1">{question.description}</p>
+        <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>
       )}
       {body}
                 </div>
@@ -5723,7 +5775,8 @@ const EnumeratorInfoTable: React.FC<{
   answers: Record<string, unknown>;
   logicAnswers?: Record<string, unknown>;
   onChange: (fieldId: string, value: unknown) => void;
-}> = ({ info, answers, logicAnswers, onChange }) => {
+  language?: SurveyLanguage;
+}> = ({ info, answers, logicAnswers, onChange, language = 'en' }) => {
   const cls =
     'w-full text-sm border border-slate-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500';
   const logicCtx = logicAnswers ?? answers;
@@ -5748,7 +5801,7 @@ const EnumeratorInfoTable: React.FC<{
             type="text"
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={f.placeholder}
+            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
             className={cls}
           />
         );
@@ -5757,7 +5810,7 @@ const EnumeratorInfoTable: React.FC<{
                       <textarea
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={f.placeholder}
+            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
             rows={2}
             className={`${cls} resize-none`}
           />
@@ -5805,7 +5858,7 @@ const EnumeratorInfoTable: React.FC<{
                 className={`${cls} pr-12`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                Years
+                {getLocalizedText('Years / বছর', language as SurveyLanguage)}
               </span>
             </div>
             <div className="flex-1 min-w-0 relative">
@@ -5821,7 +5874,7 @@ const EnumeratorInfoTable: React.FC<{
                 className={`${cls} pr-14`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                Months
+                {getLocalizedText('Months / মাস', language as SurveyLanguage)}
               </span>
             </div>
           </div>
@@ -5869,6 +5922,7 @@ const EnumeratorInfoTable: React.FC<{
             getOptionHidden={getOptionHidden}
             otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
             otherHidden={isOtherChoiceHidden(f, logicCtx)}
+            language={language}
           />
         );
       case 'radio':
@@ -5886,6 +5940,7 @@ const EnumeratorInfoTable: React.FC<{
             getOptionHidden={getOptionHidden}
             otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
             otherHidden={isOtherChoiceHidden(f, logicCtx)}
+            language={language}
           />
         );
       case 'checkbox': {
@@ -5912,7 +5967,7 @@ const EnumeratorInfoTable: React.FC<{
                     )
                   }
                 />
-                {o.label}
+                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
               </label>
             ))}
     </div>
@@ -5942,7 +5997,7 @@ const EnumeratorInfoTable: React.FC<{
               .filter((o) => !isChoiceOptionHidden(o, logicCtx))
               .map((o) => (
               <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, logicCtx)}>
-                {o.label}
+                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
               </option>
             ))}
           </select>
@@ -5957,9 +6012,9 @@ const EnumeratorInfoTable: React.FC<{
       <div className="px-4 py-2.5 bg-indigo-600 text-white flex items-center gap-2">
         <IdCard size={16} />
         <div>
-          <div className="text-sm font-bold">{info.title || 'Enumerator Information'}</div>
+          <div className="text-sm font-bold">{getLocalizedText(info.title, language as SurveyLanguage) || 'Enumerator Information'}</div>
           {info.description && (
-            <div className="text-[11px] text-indigo-100/90">{info.description}</div>
+            <div className="text-[11px] text-indigo-100/90">{getLocalizedText(info.description, language as SurveyLanguage)}</div>
                   )}
                 </div>
               </div>
@@ -5968,7 +6023,7 @@ const EnumeratorInfoTable: React.FC<{
           {info.fields.map((f) => (
             <tr key={f.id} className="border-t border-indigo-100/80 first:border-t-0">
               <th className="text-left text-xs font-semibold text-slate-700 align-middle bg-indigo-50/70 px-4 py-2 w-1/3 border-r border-indigo-100/80">
-                {f.question || 'Untitled field'}
+                {getLocalizedText(f.question, language as SurveyLanguage) || 'Untitled field'}
                 {f.required && <span className="text-red-500 ml-1">*</span>}
               </th>
               <td className="px-4 py-2 align-middle bg-white">{renderInput(f)}</td>
@@ -6966,7 +7021,7 @@ const DescriptionBlockEditor: React.FC<{
 // DescriptionRenderer — read-only display of rich description blocks
 // ===========================================================================
 
-const DescriptionRenderer: React.FC<{ blocks: DescriptionBlock[] }> = ({ blocks }) => {
+const DescriptionRenderer: React.FC<{ blocks: DescriptionBlock[]; language?: SurveyLanguage }> = ({ blocks, language = 'en' }) => {
   if (!blocks || blocks.length === 0) return null;
   return (
     <div className="space-y-3">
@@ -6980,14 +7035,14 @@ const DescriptionRenderer: React.FC<{ blocks: DescriptionBlock[] }> = ({ blocks 
                 : 'text-base font-bold text-slate-800';
           return (
             <div key={b.id} className={sizeClass}>
-              {b.text || <span className="text-slate-300 italic">(empty title)</span>}
+              {getLocalizedText(b.text, language as SurveyLanguage) || <span className="text-slate-300 italic">(empty title)</span>}
             </div>
           );
         }
         if (b.type === 'paragraph') {
           return (
             <p key={b.id} className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-              {b.text}
+              {getLocalizedText(b.text, language as SurveyLanguage)}
             </p>
           );
         }
@@ -7004,7 +7059,7 @@ const DescriptionRenderer: React.FC<{ blocks: DescriptionBlock[] }> = ({ blocks 
                         key={ci}
                         className="border border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-700"
                       >
-                        {cell}
+                        {getLocalizedText(cell, language as SurveyLanguage)}
                       </th>
                     ))}
                   </tr>
@@ -7018,7 +7073,7 @@ const DescriptionRenderer: React.FC<{ blocks: DescriptionBlock[] }> = ({ blocks 
                         key={ci}
                         className="border border-slate-200 px-3 py-2 text-slate-700"
                       >
-                        {cell}
+                        {getLocalizedText(cell, language as SurveyLanguage)}
                       </td>
                     ))}
                   </tr>

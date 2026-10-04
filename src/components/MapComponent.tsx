@@ -104,6 +104,8 @@ interface MapComponentProps {
   onRequestMoveFeature?: (feature: GeoFeature) => void;
   onCancelMoveFeature?: () => void;
   onLandmarkPointSelect?: (point: { lat: number; lng: number; properties: Record<string, any> }) => void;
+  /** Direct action to launch questionnaire survey linked to this geospatial feature */
+  onFillQuestionnaire?: (feature: GeoFeature) => void;
   selectedFeatureId?: string;
   featureFocusRequestKey?: number;
   movingFeatureId?: string | null;
@@ -320,7 +322,8 @@ const PointMarker = React.memo(({
   adminEnumeratorDisplayName,
   onFeatureSelect,
   onRequestMoveFeature,
-  onCancelMoveFeature
+  onCancelMoveFeature,
+  onFillQuestionnaire
 }: {
   feature: GeoFeature;
   isSelected: boolean;
@@ -333,6 +336,7 @@ const PointMarker = React.memo(({
   onFeatureSelect: (f: GeoFeature) => void;
   onRequestMoveFeature?: (f: GeoFeature) => void;
   onCancelMoveFeature?: () => void;
+  onFillQuestionnaire?: (f: GeoFeature) => void;
 }) => (
   <CircleMarker
     center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
@@ -352,11 +356,18 @@ const PointMarker = React.memo(({
             <p className="text-sm font-bold text-slate-900 leading-snug">{adminEnumeratorDisplayName}</p>
           </div>
         ) : null}
-        <p className="text-xs font-bold text-gray-700 mb-2">Landmark Attributes</p>
+        <p className="text-xs font-bold text-gray-700 mb-2">
+          {feature.attributes?.__source === 'geojson_upload' || feature.attributes?.projectId ? 'Feature Attributes' : 'Landmark Attributes'}
+        </p>
         <div className="max-h-48 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
             <tbody>
-              {normalizeLandmarkAttributesForDisplay(feature.attributes || {}, feature.type).map(([k, v]) => (
+              {(feature.attributes?.__source === 'geojson_upload' || feature.attributes?.projectId
+                ? Object.entries(feature.attributes || {})
+                    .filter(([k]) => !k.startsWith('_') && !k.startsWith('__'))
+                    .slice(0, 15)
+                : normalizeLandmarkAttributesForDisplay(feature.attributes || {}, feature.type)
+              ).map(([k, v]) => (
                 <tr key={k} className="border-b border-gray-100 last:border-b-0">
                   <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                   <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -375,6 +386,18 @@ const PointMarker = React.memo(({
             }}
           >
             Edit Attributes
+          </button>
+        )}
+        {!isMoveTarget && onFillQuestionnaire && (
+          <button
+            type="button"
+            className="mt-1.5 w-full bg-emerald-600 text-white text-xs font-medium py-1.5 rounded hover:bg-emerald-700 flex items-center justify-center gap-1.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              onFillQuestionnaire(feature);
+            }}
+          >
+            Fill Questionnaire Survey
           </button>
         )}
         <button
@@ -411,12 +434,14 @@ const LineMarker = React.memo(({
   feature,
   isSelected,
   color,
-  onFeatureSelect
+  onFeatureSelect,
+  onFillQuestionnaire,
 }: {
   feature: GeoFeature;
   isSelected: boolean;
   color: string;
   onFeatureSelect: (f: GeoFeature) => void;
+  onFillQuestionnaire?: (f: GeoFeature) => void;
 }) => (
   <Polyline
     positions={feature.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]])}
@@ -427,7 +452,53 @@ const LineMarker = React.memo(({
     eventHandlers={{
       click: () => onFeatureSelect(feature)
     }}
-  />
+  >
+    <Popup autoPan={false}>
+      <div className="min-w-[220px]">
+        <p className="text-xs font-bold text-slate-800 mb-1.5 flex items-center justify-between">
+          <span>Line Feature</span>
+          <span className="text-[10px] text-slate-400 font-mono">#{feature.id.slice(0, 8)}</span>
+        </p>
+        <div className="max-h-40 overflow-auto border border-gray-100 rounded mb-2">
+          <table className="w-full text-[10px]">
+            <tbody>
+              {Object.entries(feature.attributes || {})
+                .filter(([k]) => !k.startsWith('_') && !k.startsWith('__'))
+                .slice(0, 10)
+                .map(([k, v]) => (
+                  <tr key={k} className="border-b border-gray-100 last:border-b-0">
+                    <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
+                    <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          type="button"
+          className="w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
+          onClick={(e) => {
+            e.stopPropagation();
+            onFeatureSelect(feature);
+          }}
+        >
+          Edit Attributes
+        </button>
+        {onFillQuestionnaire && (
+          <button
+            type="button"
+            className="mt-1.5 w-full bg-emerald-600 text-white text-xs font-medium py-1.5 rounded hover:bg-emerald-700 flex items-center justify-center gap-1.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              onFillQuestionnaire(feature);
+            }}
+          >
+            Fill Questionnaire Survey
+          </button>
+        )}
+      </div>
+    </Popup>
+  </Polyline>
 ));
 
 LineMarker.displayName = 'LineMarker';
@@ -437,12 +508,14 @@ const PolygonMarker = React.memo(({
   feature,
   isSelected,
   color,
-  onFeatureSelect
+  onFeatureSelect,
+  onFillQuestionnaire,
 }: {
   feature: GeoFeature;
   isSelected: boolean;
   color: string;
   onFeatureSelect: (f: GeoFeature) => void;
+  onFillQuestionnaire?: (f: GeoFeature) => void;
 }) => (
   <Polygon
     positions={feature.geometry.coordinates[0].map((coord: [number, number]) => [coord[1], coord[0]])}
@@ -455,7 +528,53 @@ const PolygonMarker = React.memo(({
     eventHandlers={{
       click: () => onFeatureSelect(feature)
     }}
-  />
+  >
+    <Popup autoPan={false}>
+      <div className="min-w-[220px]">
+        <p className="text-xs font-bold text-slate-800 mb-1.5 flex items-center justify-between">
+          <span>Polygon Feature</span>
+          <span className="text-[10px] text-slate-400 font-mono">#{feature.id.slice(0, 8)}</span>
+        </p>
+        <div className="max-h-40 overflow-auto border border-gray-100 rounded mb-2">
+          <table className="w-full text-[10px]">
+            <tbody>
+              {Object.entries(feature.attributes || {})
+                .filter(([k]) => !k.startsWith('_') && !k.startsWith('__'))
+                .slice(0, 10)
+                .map(([k, v]) => (
+                  <tr key={k} className="border-b border-gray-100 last:border-b-0">
+                    <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
+                    <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          type="button"
+          className="w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
+          onClick={(e) => {
+            e.stopPropagation();
+            onFeatureSelect(feature);
+          }}
+        >
+          Edit Attributes
+        </button>
+        {onFillQuestionnaire && (
+          <button
+            type="button"
+            className="mt-1.5 w-full bg-emerald-600 text-white text-xs font-medium py-1.5 rounded hover:bg-emerald-700 flex items-center justify-center gap-1.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              onFillQuestionnaire(feature);
+            }}
+          >
+            Fill Questionnaire Survey
+          </button>
+        )}
+      </div>
+    </Popup>
+  </Polygon>
 ));
 
 PolygonMarker.displayName = 'PolygonMarker';
@@ -627,6 +746,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   onRequestMoveFeature,
   onCancelMoveFeature,
   onLandmarkPointSelect,
+  onFillQuestionnaire,
   selectedFeatureId,
   featureFocusRequestKey,
   movingFeatureId,
@@ -947,7 +1067,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const color = getFeatureColor(feature);
 
           if (feature.type === 'point') {
-            if (!showLandmarks) return null;
+            // For legacy CCC landmark points, respect showLandmarks. For generic uploaded / project features, show them on the map.
+            const isLegacyCccLandmark = !feature.attributes?.__source && !feature.attributes?.projectId && !(feature as any).projectId;
+            if (isLegacyCccLandmark && !showLandmarks) return null;
             const adminEnumeratorDisplayName =
               isApprovedAdmin && getAdminLandmarkEnumeratorDisplayName
                 ? getAdminLandmarkEnumeratorDisplayName(feature)
@@ -965,6 +1087,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 onFeatureSelect={handleFeatureSelect}
                 onRequestMoveFeature={handleRequestMoveFeature}
                 onCancelMoveFeature={handleCancelMoveFeature}
+                onFillQuestionnaire={onFillQuestionnaire}
               />
             );
           }
@@ -977,6 +1100,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 isSelected={isSelected}
                 color={color}
                 onFeatureSelect={handleFeatureSelect}
+                onFillQuestionnaire={onFillQuestionnaire}
               />
             );
           }
@@ -989,6 +1113,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 isSelected={isSelected}
                 color={color}
                 onFeatureSelect={handleFeatureSelect}
+                onFillQuestionnaire={onFillQuestionnaire}
               />
             );
           }

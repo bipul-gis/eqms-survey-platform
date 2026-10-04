@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { GeoFeature, FeatureStatus, type FeatureType } from '../types';
-import { X, Save, MapPin, User, Clock, CheckCircle, AlertCircle } from 'lucide-react';
+import { X, Save, MapPin, User, Clock, CheckCircle, AlertCircle, FileText, Plus } from 'lucide-react';
 import {
   isTrivialWardValue,
   landmarkWardFromProperties,
@@ -59,7 +59,11 @@ const HIDDEN_EDITOR_KEYS = new Set([
   'WardName',
   'WARDNAME',
   'ChangeAt',
-  'ChangeBy'
+  'ChangeBy',
+  'projectId',
+  'project_id',
+  '__source',
+  '__taskWard',
 ]);
 
 const isPositiveIntegerString = (value: unknown): boolean => {
@@ -67,11 +71,27 @@ const isPositiveIntegerString = (value: unknown): boolean => {
   return /^[1-9]\d*$/.test(s);
 };
 
+export const isGenericGeoJsonFeature = (feature: GeoFeature): boolean => {
+  if (feature.attributes?.__source === 'geojson_upload') return true;
+  if (feature.attributes?.projectId || (feature as any).projectId) return true;
+  // If it doesn't have standard CCC landmark categories/wards, treat as generic feature
+  const attrs = feature.attributes || {};
+  const hasCccKeys = 'Category' in attrs && ('Type' in attrs || 'Ward_Name' in attrs || 'WARDNAME' in attrs);
+  return !hasCccKeys;
+};
+
 const getOrderedAttributes = (
   attrs: Record<string, any>,
-  featureType: FeatureType
+  featureType: FeatureType,
+  isGeneric: boolean = false
 ): Array<[string, any]> => {
   const a = attrs || {};
+  if (isGeneric) {
+    return Object.entries(a)
+      .filter(([k]) => !k.startsWith('__') && !k.startsWith('_') && !HIDDEN_EDITOR_KEYS.has(k))
+      .sort((a, b) => a[0].localeCompare(b[0])) as Array<[string, any]>;
+  }
+
   const selectedCategory = String(a.Category ?? '').trim();
   const showOwnership = selectedCategory === 'Health Facilities';
   const normalized: Record<string, any> = {
@@ -119,8 +139,10 @@ interface FeatureEditorProps {
   isAdmin: boolean;
   isNewFeature?: boolean;
   onCreateFeature?: (payload: { attributes: Record<string, any>; status: FeatureStatus }) => Promise<void>;
-  /** Called after Firestore persist succeeds (e.g. admin client refetches features — admin mode has no realtime listener). */
+  /** Called after Firestore/Postgres persist succeeds (e.g. admin client refetches features). */
   onPersistSuccess?: () => void;
+  /** Triggered when the user wants to fill/link a questionnaire for this geospatial feature */
+  onFillQuestionnaire?: (feature: GeoFeature) => void;
 }
 
 export const FeatureEditor: React.FC<FeatureEditorProps> = ({
@@ -133,7 +155,8 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   isAdmin,
   isNewFeature = false,
   onCreateFeature,
-  onPersistSuccess
+  onPersistSuccess,
+  onFillQuestionnaire,
 }) => {
   const { user, userProfile } = useAuth();
   const { location } = useGeoLocation();
@@ -222,10 +245,15 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     setIsDirty(true);
   };
 
+  const isGeneric = useMemo(() => isGenericGeoJsonFeature(feature), [feature]);
+  const [newAttrKey, setNewAttrKey] = useState('');
+  const [showAddAttr, setShowAddAttr] = useState(false);
+
   const selectedCategory = String(attributes?.Category ?? '').trim();
   const typeOptions = dynamicTypeOptionsByCategory[selectedCategory] || [];
 
   const validateOtherInputs = () => {
+    if (isGeneric) return true;
     if (!isSlumCategory(attributes) && typeOtherMode && !String(attributes?.Type ?? '').trim()) {
       alert('Please write a custom Type value for "Other".');
       return false;
@@ -238,7 +266,11 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   };
 
   const validateRequiredAttributes = () => {
-    const ordered = getOrderedAttributes(attributes, feature.type);
+    if (isGeneric) {
+      // Generic features don't require CCC landmark fields. Check non-empty or basic validity only.
+      return true;
+    }
+    const ordered = getOrderedAttributes(attributes, feature.type, false);
     const missing: string[] = [];
     const invalidPositiveIntegers: string[] = [];
 
@@ -465,13 +497,55 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
 
         {/* Attributes Section */}
         <section>
-          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Attributes</label>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Attributes</label>
+            {isGeneric && (
+              <button
+                type="button"
+                onClick={() => setShowAddAttr((prev) => !prev)}
+                className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 flex items-center gap-1"
+              >
+                <Plus size={12} /> Add Field
+              </button>
+            )}
+          </div>
+
+          {showAddAttr && (
+            <div className="mb-3 p-2 bg-blue-50/70 border border-blue-100 rounded-lg flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Field name (e.g. status, condition)"
+                value={newAttrKey}
+                onChange={(e) => setNewAttrKey(e.target.value)}
+                className="flex-1 px-2.5 py-1.5 text-xs border border-gray-200 rounded bg-white outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                disabled={!newAttrKey.trim()}
+                onClick={() => {
+                  const k = newAttrKey.trim();
+                  if (!k) return;
+                  if (attributes[k] !== undefined) {
+                    alert('Field already exists.');
+                    return;
+                  }
+                  setAttributeValue(k, '');
+                  setNewAttrKey('');
+                  setShowAddAttr(false);
+                }}
+                className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded disabled:opacity-40"
+              >
+                Add
+              </button>
+            </div>
+          )}
+
           <div className="space-y-3">
-            {getOrderedAttributes(attributes, feature.type).map(([key, value]) => {
+            {getOrderedAttributes(attributes, feature.type, isGeneric).map(([key, value]) => {
               const isReadOnly = READ_ONLY_ATTRIBUTES.has(key);
               const stringValue = String(value ?? '');
 
-              if (key === 'Category') {
+              if (!isGeneric && key === 'Category') {
                 return (
                   <div key={key} className="flex gap-2 items-start">
                     <div className="flex-1 space-y-2">
@@ -504,7 +578,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 );
               }
 
-              if (key === 'Type') {
+              if (!isGeneric && key === 'Type') {
                 if (isSlumCategory(attributes)) return null;
                 const isOther = stringValue && !typeOptions.includes(stringValue);
                 return (
@@ -555,7 +629,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 );
               }
 
-              if (key === 'Ownership') {
+              if (!isGeneric && key === 'Ownership') {
                 if (selectedCategory !== 'Health Facilities') return null;
                 const isOther = stringValue && !dynamicOwnershipOptions.includes(stringValue);
                 return (
@@ -606,7 +680,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 );
               }
 
-              if (key === 'Ward_Name') {
+              if (!isGeneric && key === 'Ward_Name') {
                 return (
                   <div key={key} className="flex gap-2 items-start">
                     <div className="flex-1 space-y-2">
@@ -685,7 +759,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                   <div className="flex-1">
                     <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5 flex items-center gap-1">
                       {key}
-                      {!isReadOnly && !(key === 'Ownership' && selectedCategory !== 'Health Facilities') && (
+                      {!isReadOnly && !isGeneric && !(key === 'Ownership' && selectedCategory !== 'Health Facilities') && (
                         <span className="text-red-500">*</span>
                       )}
                       {isReadOnly && <span className="text-gray-300 text-[8px]">🔒</span>}
@@ -732,6 +806,23 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           </div>
         </section>
       </div>
+
+      {onFillQuestionnaire && !isNewFeature && (
+        <div className="px-4 py-2.5 bg-indigo-50 border-t border-indigo-100 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-indigo-900">
+            <FileText size={16} className="text-indigo-600" />
+            <span className="text-xs font-semibold">Questionnaire Survey</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onFillQuestionnaire(feature)}
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-all flex items-center gap-1.5"
+          >
+            <FileText size={13} />
+            Fill Survey
+          </button>
+        </div>
+      )}
 
       <div className="p-4 border-t border-gray-100 bg-gray-50 flex gap-2">
         {!isAdmin && canDeleteFeature && (

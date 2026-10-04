@@ -24,6 +24,7 @@ function toGeoFeature(raw: Record<string, unknown>): GeoFeature {
 
 export function useOptimizedFeatures(options: {
   mode: FeaturesLoadMode;
+  projectId?: string;
   userUid: string | undefined;
   userEmail: string | undefined;
   assignedWards: string[];
@@ -65,7 +66,7 @@ export function useOptimizedFeatures(options: {
     const load = async () => {
       try {
         setLoading(true);
-        const res = await geosurveyApi.listFeatures();
+        const res = await geosurveyApi.listFeatures({ projectId: options.projectId });
         if (cancelled) return;
         setFeatures(res.items.map((item) => toGeoFeature(item)));
         setSyncState((prev) => ({ ...prev, hasPendingWrites: false, fromCache: false }));
@@ -85,6 +86,7 @@ export function useOptimizedFeatures(options: {
     };
   }, [
     options.mode,
+    options.projectId,
     options.userUid,
     options.userEmail,
     options.assignedWards.join('|'),

@@ -57,6 +57,11 @@ const EnumeratorQuestionnaireList = lazy(() =>
 const ZoneLayerPanel = lazy(() =>
   import('./components/ZoneLayerPanel').then((m) => ({ default: m.ZoneLayerPanel }))
 );
+const GeospatialFeatureImportModal = lazy(() =>
+  import('./components/GeospatialFeatureImportModal').then((m) => ({
+    default: m.GeospatialFeatureImportModal,
+  }))
+);
 
 
 const AppPreloader: React.FC<{ label?: string }> = ({ label = 'Preparing Geosurvey' }) => (
@@ -95,7 +100,8 @@ import {
   ChevronRight,
   Folder,
   Trash2,
-  Loader2
+  Loader2,
+  FileUp
 } from 'lucide-react';
 import {
   bulkUpsertFeatures,
@@ -487,6 +493,10 @@ const AppContent: React.FC = () => {
   }, [currentProject]);
   const [selectedQuestionnaire, setSelectedQuestionnaire] = useState<Questionnaire | null>(null);
   const [questionnaireLocation, setQuestionnaireLocation] = useState<{ lat: number; lng: number; ward?: string } | null>(null);
+  const [linkedSurveyFeature, setLinkedSurveyFeature] = useState<GeoFeature | null>(null);
+  const [showFeatureImportModal, setShowFeatureImportModal] = useState(false);
+  const [projectQuestionnaires, setProjectQuestionnaires] = useState<Questionnaire[]>([]);
+  const [featureQuestionnairePickerOpen, setFeatureQuestionnairePickerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'map' | 'list'>('map');
   const [movingFeature, setMovingFeature] = useState<GeoFeature | null>(null);
   const movingFeatureRef = useRef<GeoFeature | null>(null);
@@ -769,20 +779,8 @@ const AppContent: React.FC = () => {
 
   const featuresMode = useMemo<FeaturesLoadMode>(() => {
     if (authLoading || !user) return 'idle';
-    // Geospatial zone-SHP projects don't use the global CCC landmark feature store —
-    // skip the download so the map can paint zone polygons sooner.
-    if (
-      userProfile?.role === 'admin' &&
-      userProfile?.status === 'approved' &&
-      currentProject?.segments?.geospatial === true
-    ) {
-      return 'idle';
-    }
     if (userProfile?.role === 'admin' && userProfile?.status === 'approved') return 'admin';
     if (userProfile?.role === 'enumerator' && userProfile?.status === 'approved') {
-      // Questionnaire-only enumerators never see the map, so skip the
-      // potentially-large /features subscription entirely. Reverts to
-      // 'enumerator' the moment they're given any ward/zone assignment.
       const hasWards =
         (Array.isArray(userProfile.assignedWardNames) && userProfile.assignedWardNames.length > 0) ||
         (typeof userProfile.assignedWardName === 'string' && userProfile.assignedWardName.trim().length > 0);
@@ -792,8 +790,6 @@ const AppContent: React.FC = () => {
       const hasQuestionnaires =
         (userProfile.assignedQuestionnaireIds?.length || 0) > 0;
       if (!hasWards && !hasZones && hasQuestionnaires) return 'idle';
-      // Zone-assigned enumerators: map is zone polygons + questionnaire GPS, not CCC landmarks.
-      if (hasZones && !hasWards) return 'idle';
       return 'enumerator';
     }
     return 'idle';
@@ -807,11 +803,11 @@ const AppContent: React.FC = () => {
     userProfile?.assignedZoneValues,
     userProfile?.projectZoneAssignments,
     userProfile?.assignedQuestionnaireIds,
-    currentProject?.segments?.geospatial,
   ]);
 
   const { features, loading: featuresLoading, syncState } = useOptimizedFeatures({
     mode: featuresMode,
+    projectId: currentProject?.id,
     userUid: user?.uid,
     userEmail: user?.email ?? undefined,
     assignedWards: assignedWardsForFilter,
@@ -1035,7 +1031,13 @@ const AppContent: React.FC = () => {
     };
 
     if (geospatialMapMode) {
-      return scoped.filter(isCreatedByMe);
+      // Allow enumerator to see project features (e.g. uploaded GeoJSON features for this project) as well as features they created
+      return scoped.filter((f) => {
+        if (currentProject?.id && (f.attributes?.projectId === currentProject.id || (f as any).projectId === currentProject.id)) {
+          return true;
+        }
+        return isCreatedByMe(f);
+      });
     }
 
     if (assignedWardsForFilter.length === 0) {
@@ -2316,6 +2318,81 @@ const AppContent: React.FC = () => {
     }
   };
 
+  // Load questionnaires for current project so features can link to them
+  useEffect(() => {
+    let cancelled = false;
+    const loadProjectQs = async () => {
+      try {
+        const res = await geosurveyApi.listQuestionnaires();
+        if (cancelled) return;
+        const all = (res.items as unknown as Questionnaire[]) || [];
+        const pid = currentProject?.id || DEFAULT_PROJECT_ID;
+        const filtered = all.filter((q) => (q.projectId || DEFAULT_PROJECT_ID) === pid && q.isActive !== false);
+        setProjectQuestionnaires(filtered);
+      } catch (err) {
+        console.warn('Failed to load project questionnaires:', err);
+      }
+    };
+    void loadProjectQs();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id]);
+
+  /** Launch questionnaire survey directly linked to a geospatial feature */
+  const handleStartQuestionnaireForFeature = useCallback(
+    (feature: GeoFeature) => {
+      setLinkedSurveyFeature(feature);
+
+      // Compute centroid or point coordinates for initial location
+      let lat: number | undefined;
+      let lng: number | undefined;
+      const coords = feature.geometry?.coordinates;
+      if (feature.type === 'point' && Array.isArray(coords)) {
+        lng = Number(coords[0]);
+        lat = Number(coords[1]);
+      } else if (feature.type === 'line' && Array.isArray(coords) && coords.length > 0) {
+        const mid = coords[Math.floor(coords.length / 2)];
+        if (Array.isArray(mid)) {
+          lng = Number(mid[0]);
+          lat = Number(mid[1]);
+        }
+      } else if (feature.type === 'polygon' && Array.isArray(coords) && Array.isArray(coords[0]) && coords[0].length > 0) {
+        const ring = coords[0];
+        let sumLat = 0;
+        let sumLng = 0;
+        let count = 0;
+        for (const pt of ring) {
+          if (Array.isArray(pt)) {
+            sumLng += Number(pt[0]);
+            sumLat += Number(pt[1]);
+            count++;
+          }
+        }
+        if (count > 0) {
+          lat = sumLat / count;
+          lng = sumLng / count;
+        }
+      }
+
+      if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {
+        setQuestionnaireLocation({
+          lat,
+          lng,
+          ward: feature.attributes?.Ward_Name || feature.attributes?.WARDNAME || feature.attributes?.WardName || undefined
+        });
+      }
+
+      // If exactly one questionnaire in project, open directly
+      if (projectQuestionnaires.length === 1) {
+        setSelectedQuestionnaire(projectQuestionnaires[0]);
+      } else {
+        setFeatureQuestionnairePickerOpen(true);
+      }
+    },
+    [projectQuestionnaires]
+  );
+
   if (authLoading) return <AppPreloader label="Starting secure workspace" />;
 
   if (!user) return <LoginScreen />;
@@ -2688,34 +2765,37 @@ const AppContent: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {currentProjectHasGeo && (
-                <div className="relative text-left bg-white rounded-2xl border border-dashed border-slate-300 p-6 shadow-sm overflow-hidden opacity-90">
-                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-slate-100/70 rounded-full blur-2xl" />
+                <button
+                  onClick={() => setAdminMode('geospatial')}
+                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
+                >
+                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-blue-100/60 rounded-full blur-2xl group-hover:bg-blue-200/70 transition-colors" />
                   <div className="relative">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-slate-400 to-slate-600 flex items-center justify-center shadow-lg shadow-slate-200 mb-4">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
                       <MapIcon size={26} className="text-white" />
                     </div>
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <h3 className="text-lg font-bold text-slate-900">Geospatial Survey</h3>
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
-                        Update later
-                      </span>
+                      <ChevronRight
+                        size={18}
+                        className="text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all"
+                      />
                     </div>
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      Field geospatial data capture and map feature updates will be designed here
-                      later. Use Geospatial Assignment for SHP import and zone tasking for now.
+                      Upload and manage geospatial features (Point, Line, Polygon GeoJSON), view them on the map, edit attributes, and link survey questionnaires.
                     </p>
                     <div className="mt-4 flex flex-wrap gap-1.5">
-                      {['Coming soon', 'Data capture', 'Feature update'].map((tag) => (
+                      {['GeoJSON Upload', 'Point, Line & Polygon', 'Attribute Table', 'Linked Questionnaires'].map((tag) => (
                         <span
                           key={tag}
-                          className="text-[10px] font-semibold text-slate-600 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full"
+                          className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
                         >
                           {tag}
                         </span>
                       ))}
                     </div>
                   </div>
-                </div>
+                </button>
               )}
 
               {currentProjectHasGeo && (
@@ -3160,6 +3240,16 @@ const AppContent: React.FC = () => {
                 )}
                 {currentProject && currentProjectHasGeo && (
                   <button
+                    onClick={() => setShowFeatureImportModal(true)}
+                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-100 rounded-lg"
+                    title="Upload geospatial features in GeoJSON format (Point, Line, Polygon)"
+                  >
+                    <FileUp size={13} className="shrink-0" />
+                    Import GeoJSON
+                  </button>
+                )}
+                {currentProject && currentProjectHasGeo && (
+                  <button
                     onClick={() => setShowZoneLayerPanel(true)}
                     className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-100 rounded-lg"
                     title="Import / manage zone boundary SHP"
@@ -3233,6 +3323,7 @@ const AppContent: React.FC = () => {
               onRequestMoveFeature={startMoveFeature}
               onCancelMoveFeature={cancelMoveFeature}
               onLandmarkPointSelect={handleLandmarkPointSelect}
+              onFillQuestionnaire={handleStartQuestionnaireForFeature}
               selectedFeatureId={movingFeature?.id ?? selectedFeature?.id}
               featureFocusRequestKey={featureFocusRequestKey}
               movingFeatureId={movingFeature?.id || null}
@@ -3509,6 +3600,110 @@ const AppContent: React.FC = () => {
           </div>
         )}
 
+        {/* Geospatial Feature Import (GeoJSON: Point, Line, Polygon) */}
+        {isAdmin && showFeatureImportModal && currentProject && (
+          <div className="absolute inset-0 z-[1005] bg-slate-900/60 flex items-center justify-center p-4">
+            <PanelSuspense
+              label="Loading import modal…"
+              onClose={() => setShowFeatureImportModal(false)}
+            >
+              <GeospatialFeatureImportModal
+                projectId={currentProject.id}
+                projectName={currentProject.name}
+                currentUserEmail={user?.email || undefined}
+                currentUserUid={user?.uid}
+                onClose={() => setShowFeatureImportModal(false)}
+                onSuccess={(count) => {
+                  setAdminFeaturesRefreshKey((k) => k + 1);
+                  alert(`Successfully imported ${count} geospatial features to project "${currentProject.name}"!`);
+                }}
+              />
+            </PanelSuspense>
+          </div>
+        )}
+
+        {/* Feature Questionnaire Picker (when project has multiple questionnaires) */}
+        {featureQuestionnairePickerOpen && linkedSurveyFeature && (
+          <div className="fixed inset-0 z-[1006] bg-slate-900/60 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                    <FileText size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900">Select Questionnaire</h3>
+                    <p className="text-[11px] text-slate-500">
+                      Link survey to feature #{linkedSurveyFeature.id.slice(0, 10)}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFeatureQuestionnairePickerOpen(false);
+                    setLinkedSurveyFeature(null);
+                  }}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
+                {projectQuestionnaires.length === 0 ? (
+                  <div className="text-center py-6 text-slate-400 text-xs">
+                    No active questionnaires found for this project.
+                  </div>
+                ) : (
+                  projectQuestionnaires.map((q) => (
+                    <button
+                      key={q.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedQuestionnaire(q);
+                        setFeatureQuestionnairePickerOpen(false);
+                      }}
+                      className="w-full text-left p-3.5 rounded-xl border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/40 transition-all flex items-center justify-between group"
+                    >
+                      <div className="min-w-0 pr-3">
+                        <p className="font-semibold text-xs text-slate-800 group-hover:text-indigo-900 truncate">
+                          {q.title || 'Untitled Questionnaire'}
+                        </p>
+                        {q.description && (
+                          <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                            {q.description}
+                          </p>
+                        )}
+                        <p className="text-[10px] text-slate-400 mt-1 font-mono">
+                          {q.questions?.length || 0} questions
+                        </p>
+                      </div>
+                      <ChevronRight
+                        size={16}
+                        className="text-slate-300 group-hover:text-indigo-600 group-hover:translate-x-0.5 transition-all shrink-0"
+                      />
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/80 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFeatureQuestionnairePickerOpen(false);
+                    setLinkedSurveyFeature(null);
+                  }}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Questionnaire Builder is now reached via the admin home screen
             (see `adminMode === 'questionnaire'` branch above). */}
 
@@ -3517,15 +3712,22 @@ const AppContent: React.FC = () => {
           <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
             <PanelSuspense
               label="Loading form…"
-              onClose={() => setSelectedQuestionnaire(null)}
+              onClose={() => {
+                setSelectedQuestionnaire(null);
+                setLinkedSurveyFeature(null);
+              }}
             >
               <QuestionnaireForm
                 questionnaire={selectedQuestionnaire}
                 projectId={selectedQuestionnaire.projectId}
-                onClose={() => setSelectedQuestionnaire(null)}
+                onClose={() => {
+                  setSelectedQuestionnaire(null);
+                  setLinkedSurveyFeature(null);
+                }}
                 initialLocation={questionnaireLocation || undefined}
                 geofenceZones={zonePolygons}
                 strictGeofence={questionnaireStrictGeofence}
+                linkedFeature={linkedSurveyFeature || undefined}
               />
             </PanelSuspense>
           </div>
@@ -3558,6 +3760,7 @@ const AppContent: React.FC = () => {
                   if (isAdmin) setAdminFeaturesRefreshKey((k) => k + 1);
                   else setEnumeratorFeaturesRefreshKey((k) => k + 1);
                 }}
+                onFillQuestionnaire={handleStartQuestionnaireForFeature}
               />
             </PanelSuspense>
           </div>

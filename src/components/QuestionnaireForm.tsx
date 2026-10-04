@@ -70,6 +70,7 @@ import {
   syncEnumeratorIdentityAnswers
 } from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
+import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer } from '../lib/choiceAnswers';
 import {
   matrixAllRowsAnswered,
@@ -80,7 +81,9 @@ import {
   DescriptionRenderer,
   EnumeratorInfoTable,
   RuntimeQuestion,
+  getLocalizedText,
   SubmissionGpsCaptureWidget,
+  type SurveyLanguage,
   computeAppliedDefaultRules,
   ensureOptionShape,
   evaluateLogic,
@@ -127,6 +130,12 @@ interface QuestionnaireFormProps {
   /** Assigned zone polygons — when strictGeofence, GPS must fall inside one. */
   geofenceZones?: ZonePolygon[];
   strictGeofence?: boolean;
+  /** Optional geospatial feature to link this response to */
+  linkedFeature?: {
+    id: string;
+    type?: string;
+    attributes?: Record<string, any>;
+  };
 }
 
 interface CapturedGps {
@@ -315,6 +324,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   forceNew = false,
   geofenceZones = [],
   strictGeofence = false,
+  linkedFeature,
 }) => {
   const { user, userProfile } = useAuth();
   const { location: deviceLocation, requestLocation } = useGeoLocation();
@@ -415,6 +425,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const [enumeratorErrors, setEnumeratorErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'submitting'>('idle');
+  const [surveyLanguage, setSurveyLanguage] = useState<SurveyLanguage>('en');
   const [currentLocation, setCurrentLocation] = useState(
     existingResponse?.location || initialLocation
   );
@@ -460,8 +471,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
 
   // Drop accidental plain Response ID duplicates (same key, no logic).
   const surveyQuestions = useMemo(
-    () => collapseAccidentalResponseIdQuestions(questionnaire.questions || []),
-    [questionnaire.questions]
+    () => normalizeQuestionnaireSectionQuestions(
+      collapseAccidentalResponseIdQuestions(questionnaire.questions || []),
+      questionnaire.sections || []
+    ),
+    [questionnaire.questions, questionnaire.sections]
   );
 
   // Visible questions respect display logic AND the consent gate.
@@ -1057,6 +1071,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           ? prevSubmitted
           : new Date().toISOString();
     }
+    const resolvedFeatureId = linkedFeature?.id || existingResponse?.linkedFeatureId;
+    if (resolvedFeatureId) {
+      base.linkedFeatureId = resolvedFeatureId;
+      if (linkedFeature?.attributes) {
+        base.linkedFeatureProperties = linkedFeature.attributes;
+      } else if (existingResponse?.linkedFeatureProperties) {
+        base.linkedFeatureProperties = existingResponse.linkedFeatureProperties;
+      }
+    }
     base.updatedAt = new Date().toISOString();
     return stripUndefined(base) as Omit<QuestionnaireResponse, 'id'>;
   };
@@ -1326,7 +1349,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           <FileText size={18} className="text-blue-600 shrink-0" />
           <div className="min-w-0">
             <h2 className="font-bold text-slate-900 truncate flex items-center gap-2">
-              <span className="truncate">{questionnaire.title || 'Untitled Questionnaire'}</span>
+              <span className="truncate">{getLocalizedText(questionnaire.title, surveyLanguage) || 'Untitled Questionnaire'}</span>
               {readOnly ? (
                 <span className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded shrink-0">
                   View only
@@ -1344,14 +1367,28 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="p-1.5 text-slate-500 hover:bg-white/60 rounded-lg shrink-0"
-          title="Close"
-        >
-          <X size={18} />
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
+            <span className="uppercase tracking-wide text-slate-500">Lang</span>
+            <select
+              aria-label="Survey language"
+              value={surveyLanguage}
+              onChange={(e) => setSurveyLanguage(e.target.value as SurveyLanguage)}
+              className="bg-transparent text-slate-700 font-semibold outline-none"
+            >
+              <option value="en">ENG</option>
+              <option value="bn">বাংলা</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-500 hover:bg-white/60 rounded-lg shrink-0"
+            title="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
       </div>
 
       {/* Progress bar */}
@@ -1377,6 +1414,25 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           <span>
             {currentLocation.lat.toFixed(6)}, {currentLocation.lng.toFixed(6)}
             {currentLocation.ward && <> · Ward {currentLocation.ward}</>}
+          </span>
+        </div>
+      )}
+
+      {/* Linked Geospatial Feature banner */}
+      {(linkedFeature || existingResponse?.linkedFeatureId) && (
+        <div className="px-5 py-2 bg-indigo-50/80 border-b border-indigo-100 text-[11px] text-indigo-900 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-1.5 truncate">
+            <FileText size={12} className="text-indigo-600 shrink-0" />
+            <span className="font-semibold">Linked Feature:</span>
+            <span className="font-mono text-[10px] text-indigo-700">
+              #{String(linkedFeature?.id || existingResponse?.linkedFeatureId).slice(0, 12)}
+            </span>
+            {linkedFeature?.attributes?.name && (
+              <span className="text-indigo-800">· {linkedFeature.attributes.name}</span>
+            )}
+          </div>
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-indigo-100 text-indigo-700">
+            Geospatial Linked
           </span>
         </div>
       )}
@@ -1419,11 +1475,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         {/* Rich description (falls back to plain `description` if no blocks) */}
         {descriptionBlocks.length > 0 ? (
           <div className="border-b border-slate-100 pb-4">
-            <DescriptionRenderer blocks={descriptionBlocks} />
+            <DescriptionRenderer blocks={descriptionBlocks} language={surveyLanguage} />
           </div>
         ) : questionnaire.description ? (
           <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap border-b border-slate-100 pb-4">
-            {questionnaire.description}
+            {getLocalizedText(questionnaire.description, surveyLanguage)}
           </p>
         ) : null}
 
@@ -1437,6 +1493,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
               onChange={handleEnumeratorChange}
               lockedFieldIds={lockedEnumeratorFieldIds}
               lockReasons={enumeratorLockReasons}
+              language={surveyLanguage}
             />
             {primaryAssignedSlum && (
               <p className="text-[11px] text-slate-500 mt-2">
@@ -1471,6 +1528,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
             granted={consentGranted}
             onChange={handleConsentChange}
             enumeratorDisplayName={enumeratorResolvedDisplayName(userProfile, user)}
+            language={surveyLanguage}
           />
         )}
 
@@ -1528,6 +1586,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                         onChange={(v) => handleAnswer(q.id, v)}
                         allAnswers={answersForOptionLogic}
                         allQuestions={visibleQuestions}
+                        language={surveyLanguage}
                       />
                       {locked && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
@@ -1553,10 +1612,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                     Conclusion
                   </div>
                   {conclusionBlocks.length > 0 ? (
-                    <DescriptionRenderer blocks={conclusionBlocks} />
+                    <DescriptionRenderer blocks={conclusionBlocks} language={surveyLanguage} />
                   ) : (
                     <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-                      {questionnaire.conclusion}
+                      {getLocalizedText(questionnaire.conclusion, surveyLanguage)}
                     </p>
                   )}
                 </div>

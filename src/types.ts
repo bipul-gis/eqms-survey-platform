@@ -649,6 +649,10 @@ export interface QuestionnaireResponse {
   zoneId?: string;
   /** Assignment-field value of the containing zone (e.g. ZONE_ID). */
   zoneAssignValue?: string;
+  /** Linked geospatial feature ID if survey was initiated from a map feature */
+  linkedFeatureId?: string;
+  /** Snapshot of linked feature attributes */
+  linkedFeatureProperties?: Record<string, any>;
   status: 'draft' | 'submitted' | 'reviewed' | 'queued';
   submittedAt?: unknown;
   /**

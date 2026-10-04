@@ -513,8 +513,10 @@ app.delete('/api/responses/:id', requireApproved, async (req: GeosurveyAuthentic
 app.get('/api/features', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
   const session = req.geosurveySession!;
   const assignedWards = session.user.assignedWardNames || [];
+  const projectId = req.query.projectId ? String(req.query.projectId).trim() : undefined;
   const items = await listFeatures({
     role: session.user.role,
+    projectId,
     userUid: session.user.id,
     userEmail: session.user.email,
     assignedWards,

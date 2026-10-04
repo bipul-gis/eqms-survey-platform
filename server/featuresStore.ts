@@ -3,11 +3,20 @@ import { pool } from './db';
 
 function extractFeatureIndexFields(payload: Record<string, unknown>) {
   const attrs = (payload.attributes as Record<string, unknown>) || {};
+  const projectId =
+    payload.projectId != null
+      ? String(payload.projectId).trim()
+      : payload.project_id != null
+        ? String(payload.project_id).trim()
+        : attrs.projectId != null
+          ? String(attrs.projectId).trim()
+          : null;
   return {
     type: String(payload.type || 'point'),
     status: String(payload.status || 'pending'),
     createdByUid: (payload.createdByUid as string) || null,
     createdBy: (payload.createdBy as string) || null,
+    projectId: projectId || null,
     taskWard: attrs.__taskWard != null ? String(attrs.__taskWard) : null,
     wardName:
       attrs.Ward_Name != null
@@ -20,16 +29,51 @@ function extractFeatureIndexFields(payload: Record<string, unknown>) {
 
 export async function listFeatures(filters: {
   role: 'admin' | 'enumerator';
+  projectId?: string;
   userUid?: string;
   userEmail?: string;
   assignedWards?: string[];
 }): Promise<Record<string, unknown>[]> {
+  const pId = filters.projectId ? String(filters.projectId).trim() : null;
+
   if (filters.role === 'admin') {
+    if (pId) {
+      const { rows } = await pool.query(
+        'SELECT payload FROM features WHERE project_id = $1 ORDER BY updated_at DESC',
+        [pId]
+      );
+      return rows.map((r) => r.payload as Record<string, unknown>);
+    }
     const { rows } = await pool.query('SELECT payload FROM features ORDER BY updated_at DESC');
     return rows.map((r) => r.payload as Record<string, unknown>);
   }
 
+  // Enumerator:
   const wards = filters.assignedWards || [];
+  if (pId) {
+    if (wards.length > 0) {
+      const wardValues = [...new Set(wards.map((w) => String(w).trim()).filter(Boolean))];
+      const { rows } = await pool.query(
+        `SELECT payload FROM features
+         WHERE project_id = $1
+           AND (task_ward = ANY($2::text[]) OR ward_name = ANY($2::text[])
+                OR created_by_uid = $3 OR created_by = $4)
+         ORDER BY updated_at DESC`,
+        [pId, wardValues, filters.userUid ?? null, filters.userEmail ?? null]
+      );
+      return rows.map((r) => r.payload as Record<string, unknown>);
+    }
+
+    // No ward restriction for this project (e.g. project-wide geospatial task)
+    const { rows } = await pool.query(
+      `SELECT payload FROM features
+       WHERE project_id = $1
+       ORDER BY updated_at DESC`,
+      [pId]
+    );
+    return rows.map((r) => r.payload as Record<string, unknown>);
+  }
+
   if (wards.length > 0) {
     const wardValues = [...new Set(wards.map((w) => String(w).trim()).filter(Boolean))];
     const { rows } = await pool.query(
@@ -59,14 +103,15 @@ export async function upsertFeature(
   const full = { ...payload, id: featureId, updatedAt: new Date().toISOString() };
   const idx = extractFeatureIndexFields(full);
   await pool.query(
-    `INSERT INTO features (id, payload, type, status, created_by_uid, created_by, task_ward, ward_name, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    `INSERT INTO features (id, payload, type, status, created_by_uid, created_by, project_id, task_ward, ward_name, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
      ON CONFLICT (id) DO UPDATE SET
        payload = EXCLUDED.payload,
        type = EXCLUDED.type,
        status = EXCLUDED.status,
        created_by_uid = EXCLUDED.created_by_uid,
        created_by = EXCLUDED.created_by,
+       project_id = EXCLUDED.project_id,
        task_ward = EXCLUDED.task_ward,
        ward_name = EXCLUDED.ward_name,
        updated_at = NOW()`,
@@ -77,6 +122,7 @@ export async function upsertFeature(
       idx.status,
       idx.createdByUid,
       idx.createdBy,
+      idx.projectId,
       idx.taskWard,
       idx.wardName,
     ]

@@ -5,6 +5,24 @@ import {
   OTHER_OPTION_VALUE
 } from '../lib/choiceAnswers';
 
+type SurveyLanguage = 'en' | 'bn';
+
+const getLocalizedOptionText = (value: string | undefined | null, language: string = 'en'): string => {
+  const raw = (value ?? '').trim();
+  if (!raw) return '';
+  const parts = raw.split(/\s*\/\s*/);
+  if (parts.length >= 2) {
+    const hasBangla = parts.some((part) => /[\u0980-\u09FF]/.test(part));
+    if (language === 'bn' && hasBangla) {
+      const bnText = parts.find((part) => /[\u0980-\u09FF]/.test(part));
+      return (bnText ?? parts[parts.length - 1]).trim();
+    }
+    const enText = parts.find((part) => !/[\u0980-\u09FF]/.test(part));
+    if (enText) return enText.trim();
+  }
+  return raw;
+};
+
 export interface ChoiceWithOtherFieldsProps {
   mode: 'select' | 'radio';
   /** `name` attribute for radio inputs (group id). */
@@ -30,6 +48,7 @@ export interface ChoiceWithOtherFieldsProps {
   otherDisabled?: boolean;
   /** Hide the synthetic Other option entirely. */
   otherHidden?: boolean;
+  language?: SurveyLanguage;
 }
 
 /**
@@ -49,7 +68,8 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
   getOptionDisabled,
   getOptionHidden,
   otherDisabled = false,
-  otherHidden = false
+  otherHidden = false,
+  language = 'en'
 }) => {
   const isOther = isOtherSpecifyAnswer(value);
   const selectedValue = isOther ? OTHER_OPTION_VALUE : ((value as string) || '');
@@ -98,7 +118,9 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
         className={className}
         value={otherText}
         placeholder={
-          otherRequired ? 'Please specify… (required)' : 'Please specify…'
+          otherRequired
+            ? getLocalizedOptionText('Please specify… (required) / অনুগ্রহ করে উল্লেখ করুন… (আবশ্যক)', language)
+            : getLocalizedOptionText('Please specify… / অনুগ্রহ করে উল্লেখ করুন…', language)
         }
         required={!!otherRequired}
         aria-required={otherRequired ? true : undefined}
@@ -122,7 +144,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
           }}
           className={className}
         >
-          <option value="">— select —</option>
+          <option value="">{getLocalizedOptionText('— select — / — নির্বাচন করুন —', language)}</option>
           {visibleOptions.map((o) => (
             <option
               key={o.id}
@@ -134,12 +156,12 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
                   : undefined
               }
             >
-              {o.label}
+              {getLocalizedOptionText(o.label, language as SurveyLanguage)}
             </option>
           ))}
           {showOther && (
             <option value={OTHER_OPTION_VALUE} disabled={otherDisabled}>
-              Other (please specify)
+              {getLocalizedOptionText('Other (please specify) / অন্যান্য (উল্লেখ করুন)', language)}
               {otherRequired ? ' *' : ''}
             </option>
           )}
@@ -170,7 +192,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
                 checked={!isOther && value === o.value}
                 onChange={() => onChange(o.value)}
               />
-              {o.label}
+              {getLocalizedOptionText(o.label, language as SurveyLanguage)}
             </label>
           );
         })}
@@ -191,7 +213,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
                 onChange({ other: true, text: otherText });
               }}
             />
-            Other (please specify)
+            {getLocalizedOptionText('Other (please specify) / অন্যান্য (উল্লেখ করুন)', language)}
             {otherRequired ? (
               <span className="text-red-500 font-semibold" title="Specify text required">
                 *

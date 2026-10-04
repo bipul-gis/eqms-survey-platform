@@ -412,7 +412,10 @@ export const geosurveyApi = {
   deleteResponse: (id: string) =>
     apiFetch<{ ok: boolean }>(`/api/responses/${id}`, { method: 'DELETE' }),
 
-  listFeatures: () => apiFetch<{ items: Record<string, unknown>[] }>('/api/features'),
+  listFeatures: (params?: { projectId?: string }) => {
+    const q = params?.projectId ? `?projectId=${encodeURIComponent(params.projectId)}` : '';
+    return apiFetch<{ items: Record<string, unknown>[] }>(`/api/features${q}`);
+  },
 
   saveFeature: (payload: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>(

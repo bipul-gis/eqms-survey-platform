@@ -65,6 +65,27 @@ import { looksLikeEnumeratorIdField } from '../lib/enumeratorIdentityFields';
 export type { PhotoAnswer };
 export { isPhotoAnswerFilled, formatPhotoAnswerLabel, buildPhotoFileName };
 
+export type SurveyLanguage = 'en' | 'bn';
+
+export const getLocalizedText = (value: string | undefined | null, language: string = 'en'): string => {
+  const raw = (value ?? '').trim();
+  if (!raw) return '';
+  const parts = raw.split(/\s*\/\s*/);
+  if (parts.length >= 2) {
+    const hasBangla = parts.some((part) => /[\u0980-\u09FF]/.test(part));
+    if (language === 'bn' && hasBangla) {
+      const bnText = parts.find((part) => /[\u0980-\u09FF]/.test(part));
+      return (bnText ?? parts[parts.length - 1]).trim();
+    }
+    const enText = parts.find((part) => !/[\u0980-\u09FF]/.test(part));
+    if (enText) return enText.trim();
+  }
+  return raw;
+};
+
+export const getLocalizedOptionText = (value: string | undefined | null, language: string = 'en'): string =>
+  getLocalizedText(value, language);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -352,7 +373,7 @@ export const ruleValueMatchesCurrent = (current: unknown, target: unknown): bool
 // DescriptionRenderer — rich description blocks (headings/paragraphs/tables)
 // ---------------------------------------------------------------------------
 
-export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[] }> = ({ blocks }) => {
+export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[]; language?: SurveyLanguage }> = ({ blocks, language = 'en' }) => {
   if (!blocks || blocks.length === 0) return null;
   return (
     <div className="space-y-3">
@@ -366,14 +387,14 @@ export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[] }> = ({
                 : 'text-base font-bold text-slate-800';
           return (
             <div key={b.id} className={sizeClass}>
-              {b.text || <span className="text-slate-300 italic">(empty title)</span>}
+              {getLocalizedText(b.text, language as SurveyLanguage) || <span className="text-slate-300 italic">(empty title)</span>}
             </div>
           );
         }
         if (b.type === 'paragraph') {
           return (
             <p key={b.id} className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-              {b.text}
+              {getLocalizedText(b.text, language as SurveyLanguage)}
             </p>
           );
         }
@@ -389,7 +410,7 @@ export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[] }> = ({
                         key={ci}
                         className="border border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-700"
                       >
-                        {cell}
+                        {getLocalizedText(cell, language as SurveyLanguage)}
                       </th>
                     ))}
                   </tr>
@@ -400,7 +421,7 @@ export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[] }> = ({
                   <tr key={ri} className="odd:bg-white even:bg-slate-50/40">
                     {row.map((cell, ci) => (
                       <td key={ci} className="border border-slate-200 px-3 py-2 text-slate-700">
-                        {cell}
+                        {getLocalizedText(cell, language as SurveyLanguage)}
                       </td>
                     ))}
                   </tr>
@@ -421,6 +442,7 @@ export const DescriptionRenderer: React.FC<{ blocks?: DescriptionBlock[] }> = ({
 export const EnumeratorInfoTable: React.FC<{
   info: EnumeratorInfo;
   answers: Record<string, unknown>;
+  language?: SurveyLanguage;
   /**
    * Answer map used to evaluate per-option `disabledWhen` rules. Defaults
    * to `answers` when omitted. Pass a merge of enumerator + survey answers so
@@ -432,7 +454,7 @@ export const EnumeratorInfoTable: React.FC<{
   lockedFieldIds?: Set<string>;
   /** Optional per-field badge text when locked. */
   lockReasons?: Record<string, string>;
-}> = ({ info, answers, logicAnswers, onChange, lockedFieldIds, lockReasons }) => {
+}> = ({ info, answers, logicAnswers, onChange, lockedFieldIds, lockReasons, language = 'en' }) => {
   const cls =
     'w-full text-sm border border-slate-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500';
   const logicCtx = logicAnswers ?? answers;
@@ -457,7 +479,7 @@ export const EnumeratorInfoTable: React.FC<{
             type="text"
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={f.placeholder}
+            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
             className={cls}
           />
         );
@@ -466,7 +488,7 @@ export const EnumeratorInfoTable: React.FC<{
           <textarea
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={f.placeholder}
+            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
             rows={2}
             className={`${cls} resize-none`}
           />
@@ -482,7 +504,7 @@ export const EnumeratorInfoTable: React.FC<{
               type="text"
               value={(v as string) || ''}
               onChange={(e) => onChange(f.id, e.target.value)}
-              placeholder={f.placeholder}
+              placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
               className={cls}
             />
           );
@@ -528,11 +550,11 @@ export const EnumeratorInfoTable: React.FC<{
                 inputMode="numeric"
                 value={yrs}
                 onChange={(e) => commit(e.target.value, mos)}
-                placeholder="Enter years"
+                placeholder={getLocalizedText('Enter years / বছর লিখুন', language)}
                 className={`${cls} pr-12`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                Years
+                {getLocalizedText('Years / বছর', language)}
               </span>
             </div>
             <div className="flex-1 min-w-0 relative">
@@ -541,11 +563,11 @@ export const EnumeratorInfoTable: React.FC<{
                 inputMode="numeric"
                 value={mos}
                 onChange={(e) => commit(yrs, e.target.value)}
-                placeholder="Enter months"
+                placeholder={getLocalizedText('Enter months / মাস লিখুন', language)}
                 className={`${cls} pr-14`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                Months
+                {getLocalizedText('Months / মাস', language)}
               </span>
             </div>
           </div>
@@ -593,6 +615,7 @@ export const EnumeratorInfoTable: React.FC<{
             getOptionHidden={getOptionHidden}
             otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
             otherHidden={isOtherChoiceHidden(f, logicCtx)}
+            language={language}
           />
         );
       case 'radio':
@@ -610,6 +633,7 @@ export const EnumeratorInfoTable: React.FC<{
             getOptionHidden={getOptionHidden}
             otherDisabled={isOtherChoiceDisabled(f, logicCtx)}
             otherHidden={isOtherChoiceHidden(f, logicCtx)}
+            language={language}
           />
         );
       case 'checkbox': {
@@ -636,7 +660,7 @@ export const EnumeratorInfoTable: React.FC<{
                       )
                     }
                   />
-                  {o.label}
+                  {getLocalizedOptionText(o.label, language as SurveyLanguage)}
                 </label>
               ))}
           </div>
@@ -670,7 +694,7 @@ export const EnumeratorInfoTable: React.FC<{
                   value={o.value}
                   disabled={isChoiceOptionDisabled(o, logicCtx)}
                 >
-                  {o.label}
+                  {getLocalizedOptionText(o.label, language as SurveyLanguage)}
                 </option>
               ))}
           </select>
@@ -685,9 +709,9 @@ export const EnumeratorInfoTable: React.FC<{
       <div className="px-4 py-2.5 bg-indigo-600 text-white flex items-center gap-2">
         <IdCard size={16} />
         <div>
-          <div className="text-sm font-bold">{info.title || 'Enumerator Information'}</div>
+          <div className="text-sm font-bold">{getLocalizedText(info.title || '', language as SurveyLanguage) || 'Enumerator Information'}</div>
           {info.description && (
-            <div className="text-[11px] text-indigo-100/90">{info.description}</div>
+            <div className="text-[11px] text-indigo-100/90">{getLocalizedText(info.description, language as SurveyLanguage)}</div>
           )}
         </div>
       </div>
@@ -696,7 +720,7 @@ export const EnumeratorInfoTable: React.FC<{
           {info.fields.map((f) => (
             <tr key={f.id} className="border-t border-indigo-100/80 first:border-t-0">
               <th className="text-left text-xs font-semibold text-slate-700 align-middle bg-indigo-50/70 px-4 py-2 w-1/3 border-r border-indigo-100/80">
-                {f.question || 'Untitled field'}
+                {getLocalizedText(f.question, language as SurveyLanguage) || 'Untitled field'}
                 {f.required && <span className="text-red-500 ml-1">*</span>}
               </th>
               <td className="px-4 py-2 align-middle bg-white">
@@ -732,12 +756,13 @@ export const ConsentGateForm: React.FC<{
   gate: ConsentGate;
   granted: boolean;
   onChange: (granted: boolean) => void;
+  language?: SurveyLanguage;
   /**
    * Display name (or email fallback) for `{{enumeratorName}}` in `gate.text`
    * and `gate.checkboxLabel` when substitution is enabled.
    */
   enumeratorDisplayName?: string | null;
-}> = ({ gate, granted, onChange, enumeratorDisplayName }) => {
+}> = ({ gate, granted, onChange, enumeratorDisplayName, language = 'en' }) => {
   const substitute = gate.substituteEnumeratorName !== false;
   const displayText = useMemo(
     () => formatConsentGateTemplate(gate.text, enumeratorDisplayName, substitute),
@@ -760,10 +785,10 @@ export const ConsentGateForm: React.FC<{
         }`}
       >
         {granted ? <ShieldCheck size={16} /> : <Lock size={16} />}
-        <div className="text-sm font-bold">{gate.title || 'Permission Grant'}</div>
+        <div className="text-sm font-bold">{getLocalizedText(gate.title, language as SurveyLanguage) || 'Permission Grant'}</div>
       </div>
       <div className="p-4 space-y-3">
-        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{displayText}</p>
+        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{getLocalizedText(displayText, language as SurveyLanguage)}</p>
         <label className="flex items-start gap-2 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -772,7 +797,7 @@ export const ConsentGateForm: React.FC<{
             className="mt-0.5 w-4 h-4 accent-emerald-600"
           />
           <span className="text-sm font-semibold text-slate-800">
-            {displayCheckboxLabel}
+            {getLocalizedText(displayCheckboxLabel, language as SurveyLanguage)}
             <span className="text-red-500 ml-1">*</span>
           </span>
         </label>
@@ -1516,7 +1541,8 @@ export const RuntimeQuestion: React.FC<{
   allAnswers?: Record<string, unknown>;
   /** Sibling questions, used by `computed` to resolve operand keys. */
   allQuestions?: Question[];
-}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions }) => {
+  language?: SurveyLanguage;
+}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions, language = 'en' }) => {
   const opts =
     question.type === 'section' ? [] : ensureOptionShape(question.options);
   const cls = 'w-full text-sm border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500';
@@ -1553,8 +1579,8 @@ export const RuntimeQuestion: React.FC<{
     return (
       <div className="border-t-2 border-indigo-200 pt-3">
         <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Section</div>
-        <h4 className="text-base font-bold text-slate-900">{question.question}</h4>
-        {question.description && <p className="text-xs text-slate-500 mt-1">{question.description}</p>}
+        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language as SurveyLanguage)}</h4>
+        {question.description && <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>}
       </div>
     );
   }
@@ -1586,14 +1612,17 @@ export const RuntimeQuestion: React.FC<{
                 : e.target.value
             )
           }
-          placeholder={
+          placeholder={getLocalizedText(
+            (
             question.placeholder ||
             (question.type === 'email'
               ? 'name@example.com'
               : question.type === 'phone'
                 ? '০১৭১২৩৪৫৬৭৮ / 01712345678'
                 : undefined)
-          }
+            ),
+            language
+          )}
           className={cls}
         />
       );
@@ -1603,7 +1632,7 @@ export const RuntimeQuestion: React.FC<{
         <textarea
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={question.placeholder}
+          placeholder={getLocalizedText(question.placeholder, language)}
           rows={3}
           className={`${cls} resize-none`}
         />
@@ -1616,7 +1645,7 @@ export const RuntimeQuestion: React.FC<{
           inputMode="decimal"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(sanitizeDecimalInput(e.target.value))}
-          placeholder={question.placeholder || 'Enter number'}
+          placeholder={getLocalizedText(question.placeholder || 'Enter number / সংখ্যা লিখুন', language)}
           className={cls}
         />
       );
@@ -1658,11 +1687,11 @@ export const RuntimeQuestion: React.FC<{
                 inputMode="numeric"
                 value={yrs}
                 onChange={(e) => commit(e.target.value, mos)}
-                placeholder="Enter years"
+                placeholder={getLocalizedText('Enter years / বছর লিখুন', language)}
                 className={`${cls} pr-12`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                Years
+                {getLocalizedText('Years / বছর', language)}
               </span>
             </div>
           </div>
@@ -1673,11 +1702,11 @@ export const RuntimeQuestion: React.FC<{
                 inputMode="numeric"
                 value={mos}
                 onChange={(e) => commit(yrs, e.target.value)}
-                placeholder="Enter months"
+                placeholder={getLocalizedText('Enter months / মাস লিখুন', language)}
                 className={`${cls} pr-14`}
               />
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                Months
+                {getLocalizedText('Months / মাস', language)}
               </span>
             </div>
           </div>
@@ -1737,6 +1766,7 @@ export const RuntimeQuestion: React.FC<{
           getOptionHidden={getOptionHidden}
           otherDisabled={isOtherChoiceDisabled(question, answersMap)}
           otherHidden={isOtherChoiceHidden(question, answersMap)}
+          language={language}
         />
       );
       break;
@@ -1765,7 +1795,7 @@ export const RuntimeQuestion: React.FC<{
                 value={o.value}
                 disabled={isChoiceOptionDisabled(o, answersMap)}
               >
-                {o.label}
+                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
               </option>
             ))}
         </select>
@@ -1786,6 +1816,7 @@ export const RuntimeQuestion: React.FC<{
           getOptionHidden={getOptionHidden}
           otherDisabled={isOtherChoiceDisabled(question, answersMap)}
           otherHidden={isOtherChoiceHidden(question, answersMap)}
+          language={language}
         />
       );
       break;
@@ -1815,7 +1846,7 @@ export const RuntimeQuestion: React.FC<{
                       )
                     }
                   />
-                  {o.label}
+                  {getLocalizedOptionText(o.label, language as SurveyLanguage)}
                 </label>
               );
             })}
@@ -1950,10 +1981,10 @@ export const RuntimeQuestion: React.FC<{
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-slate-800">
         {prefix !== '' && `${prefix}. `}
-        {question.question || 'Untitled question'}
+        {getLocalizedText(question.question, language as SurveyLanguage) || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
-      {question.description && <p className="text-xs text-slate-500 -mt-1">{question.description}</p>}
+      {question.description && <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>}
       {body}
     </div>
   );

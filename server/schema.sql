@@ -82,8 +82,12 @@ CREATE TABLE IF NOT EXISTS features (
   created_by TEXT,
   task_ward TEXT,
   ward_name TEXT,
+  project_id TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE features ADD COLUMN IF NOT EXISTS project_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_features_project_id ON features(project_id);
 
 CREATE INDEX IF NOT EXISTS idx_features_created_by_uid ON features(created_by_uid);
 CREATE INDEX IF NOT EXISTS idx_features_created_by ON features(created_by);
