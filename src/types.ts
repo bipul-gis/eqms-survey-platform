@@ -275,11 +275,17 @@ export interface AgeValue {
   totalMonths?: number;
 }
 
+export interface LocalizedText {
+  en?: string;
+  bn?: string;
+}
+
 /** Option for choice questions. `value` is the stored answer; `label` is shown to enumerators. */
 export interface QuestionOption {
   id: string;
   value: string;
   label: string;
+  labelTranslations?: LocalizedText;
   /**
    * When set with `enabled` and at least one condition, this option cannot
    * be selected while the rule matches current answers (same evaluation as
@@ -394,10 +400,12 @@ export interface Question {
   type: QuestionType;
   /** The question prompt shown to the respondent. */
   question: string;
+  questionTranslations?: LocalizedText;
   /** Internal short key used as the response field id (e.g. `head_name`). Falls back to `id`. */
   key?: string;
   /** Help / description text rendered below the question prompt. */
   description?: string;
+  descriptionTranslations?: LocalizedText;
   required: boolean;
   /**
    * Plain string options (legacy) OR rich `QuestionOption[]`. The builder
@@ -421,6 +429,7 @@ export interface Question {
    */
   otherAvailableWhen?: LogicRule;
   placeholder?: string;
+  placeholderTranslations?: LocalizedText;
   /** Default pre-filled value (string, number, or array depending on type). */
   defaultValue?: unknown;
   validation?: QuestionValidation;
@@ -471,6 +480,7 @@ export interface Question {
 export interface QuestionnaireSection {
   id: string;
   title: string;
+  titleTranslations?: LocalizedText;
   description?: string;
   /** Display logic for the whole section. */
   logic?: LogicRule;
@@ -581,6 +591,7 @@ export interface Questionnaire {
    */
   projectId?: string;
   title: string;
+  titleTranslations?: LocalizedText;
   /** Plain-text fallback / summary derived from `descriptionBlocks` when present. */
   description: string;
   /** Rich-content description: headings, paragraphs, tables. Authoritative when set. */

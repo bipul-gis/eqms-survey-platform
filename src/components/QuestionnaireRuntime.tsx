@@ -36,6 +36,7 @@ import {
   EnumeratorInfo,
   GpsCaptureSettings,
   LogicRule,
+  LocalizedText,
   Question,
   QuestionOption,
   ValueRuleMode
@@ -67,7 +68,13 @@ export { isPhotoAnswerFilled, formatPhotoAnswerLabel, buildPhotoFileName };
 
 export type SurveyLanguage = 'en' | 'bn';
 
-export const getLocalizedText = (value: string | undefined | null, language: string = 'en'): string => {
+export const getLocalizedText = (
+  value: string | undefined | null,
+  language: string = 'en',
+  translations?: LocalizedText
+): string => {
+  const translated = language === 'bn' ? translations?.bn : translations?.en;
+  if (translated?.trim()) return translated.trim();
   const raw = (value ?? '').trim();
   if (!raw) return '';
   const parts = raw.split(/\s*\/\s*/);
@@ -83,8 +90,11 @@ export const getLocalizedText = (value: string | undefined | null, language: str
   return raw;
 };
 
-export const getLocalizedOptionText = (value: string | undefined | null, language: string = 'en'): string =>
-  getLocalizedText(value, language);
+export const getLocalizedOptionText = (
+  value: string | undefined | null,
+  language: string = 'en',
+  translations?: LocalizedText
+): string => getLocalizedText(value, language, translations);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -479,7 +489,7 @@ export const EnumeratorInfoTable: React.FC<{
             type="text"
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
+            placeholder={getLocalizedText(f.placeholder, language, f.placeholderTranslations)}
             className={cls}
           />
         );
@@ -488,7 +498,7 @@ export const EnumeratorInfoTable: React.FC<{
           <textarea
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
+            placeholder={getLocalizedText(f.placeholder, language, f.placeholderTranslations)}
             rows={2}
             className={`${cls} resize-none`}
           />
@@ -504,7 +514,7 @@ export const EnumeratorInfoTable: React.FC<{
               type="text"
               value={(v as string) || ''}
               onChange={(e) => onChange(f.id, e.target.value)}
-              placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
+              placeholder={getLocalizedText(f.placeholder, language, f.placeholderTranslations)}
               className={cls}
             />
           );
@@ -660,7 +670,7 @@ export const EnumeratorInfoTable: React.FC<{
                       )
                     }
                   />
-                  {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                  {getLocalizedOptionText(o.label, language, o.labelTranslations)}
                 </label>
               ))}
           </div>
@@ -694,7 +704,7 @@ export const EnumeratorInfoTable: React.FC<{
                   value={o.value}
                   disabled={isChoiceOptionDisabled(o, logicCtx)}
                 >
-                  {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                  {getLocalizedOptionText(o.label, language, o.labelTranslations)}
                 </option>
               ))}
           </select>
@@ -720,7 +730,7 @@ export const EnumeratorInfoTable: React.FC<{
           {info.fields.map((f) => (
             <tr key={f.id} className="border-t border-indigo-100/80 first:border-t-0">
               <th className="text-left text-xs font-semibold text-slate-700 align-middle bg-indigo-50/70 px-4 py-2 w-1/3 border-r border-indigo-100/80">
-                {getLocalizedText(f.question, language as SurveyLanguage) || 'Untitled field'}
+                {getLocalizedText(f.question, language, f.questionTranslations) || 'Untitled field'}
                 {f.required && <span className="text-red-500 ml-1">*</span>}
               </th>
               <td className="px-4 py-2 align-middle bg-white">
@@ -1579,8 +1589,8 @@ export const RuntimeQuestion: React.FC<{
     return (
       <div className="border-t-2 border-indigo-200 pt-3">
         <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Section</div>
-        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language as SurveyLanguage)}</h4>
-        {question.description && <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>}
+        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language, question.questionTranslations)}</h4>
+        {question.description && <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>}
       </div>
     );
   }
@@ -1795,7 +1805,7 @@ export const RuntimeQuestion: React.FC<{
                 value={o.value}
                 disabled={isChoiceOptionDisabled(o, answersMap)}
               >
-                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                {getLocalizedOptionText(o.label, language, o.labelTranslations)}
               </option>
             ))}
         </select>
@@ -1846,7 +1856,7 @@ export const RuntimeQuestion: React.FC<{
                       )
                     }
                   />
-                  {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                  {getLocalizedOptionText(o.label, language, o.labelTranslations)}
                 </label>
               );
             })}
@@ -1981,10 +1991,10 @@ export const RuntimeQuestion: React.FC<{
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-slate-800">
         {prefix !== '' && `${prefix}. `}
-        {getLocalizedText(question.question, language as SurveyLanguage) || 'Untitled question'}
+        {getLocalizedText(question.question, language, question.questionTranslations) || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
-      {question.description && <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>}
+      {question.description && <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>}
       {body}
     </div>
   );

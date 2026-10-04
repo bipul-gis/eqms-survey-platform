@@ -21,7 +21,8 @@ import {
   readCachedZoneBundle,
   writeCachedZoneBundle,
 } from './lib/zoneCache';
-import { deleteProjectDatabase } from './lib/projects';
+import { DEFAULT_PROJECT_ID, deleteProjectDatabase } from './lib/projects';
+import { geosurveyApi } from './lib/geosurveyApi';
 
 initOfflineSupport();
 
@@ -101,7 +102,8 @@ import {
   Folder,
   Trash2,
   Loader2,
-  FileUp
+  FileUp,
+  X
 } from 'lucide-react';
 import {
   bulkUpsertFeatures,

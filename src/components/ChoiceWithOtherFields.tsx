@@ -1,5 +1,5 @@
 import React from 'react';
-import { QuestionOption } from '../types';
+import { LocalizedText, QuestionOption } from '../types';
 import {
   isOtherSpecifyAnswer,
   OTHER_OPTION_VALUE
@@ -7,7 +7,13 @@ import {
 
 type SurveyLanguage = 'en' | 'bn';
 
-const getLocalizedOptionText = (value: string | undefined | null, language: string = 'en'): string => {
+const getLocalizedOptionText = (
+  value: string | undefined | null,
+  language: string = 'en',
+  translations?: LocalizedText
+): string => {
+  const translated = language === 'bn' ? translations?.bn : translations?.en;
+  if (translated?.trim()) return translated.trim();
   const raw = (value ?? '').trim();
   if (!raw) return '';
   const parts = raw.split(/\s*\/\s*/);
@@ -156,7 +162,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
                   : undefined
               }
             >
-              {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+              {getLocalizedOptionText(o.label, language, o.labelTranslations)}
             </option>
           ))}
           {showOther && (
@@ -192,7 +198,7 @@ export const ChoiceWithOtherFields: React.FC<ChoiceWithOtherFieldsProps> = ({
                 checked={!isOther && value === o.value}
                 onChange={() => onChange(o.value)}
               />
-              {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+              {getLocalizedOptionText(o.label, language, o.labelTranslations)}
             </label>
           );
         })}

@@ -13,6 +13,7 @@ import {
   LogicCondition,
   LogicOperator,
   LogicRule,
+  LocalizedText,
   Project,
   Question,
   QuestionOption,
@@ -125,7 +126,7 @@ import { geosurveyApi } from '../lib/geosurveyApi';
 import {
   shouldSeedUddQuestionnaireForProject,
   uddSocioEconomicQuestionnaireTemplate,
-} from '../data/uddSurveyQuestionnaire';
+} from '../data/uddSurveyQuestionnaireFromExcel';
 
 // Lazy: QuestionnaireResponsesView pulls in the CSV export helpers and a
 // fairly large response table. Keep it out of the initial chunk so admins
@@ -194,6 +195,37 @@ const slugify = (s: string) =>
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 48);
+
+const getAdminLocalizedParts = (
+  text: string | undefined,
+  translations?: LocalizedText
+): LocalizedText => {
+  if (translations?.en !== undefined || translations?.bn !== undefined) {
+    return { en: translations.en || '', bn: translations.bn || '' };
+  }
+  const raw = text || '';
+  const separator = raw.search(/\s+\/\s+(?=[\u0980-\u09FF])/);
+  if (separator >= 0) {
+    const delimiter = raw.slice(separator).match(/^\s+\/\s+/)?.[0] || ' / ';
+    return {
+      en: raw.slice(0, separator).trim(),
+      bn: raw.slice(separator + delimiter.length).trim()
+    };
+  }
+  return {
+    en: /[\u0980-\u09FF]/.test(raw) ? '' : raw,
+    bn: /[\u0980-\u09FF]/.test(raw) ? raw : ''
+  };
+};
+
+const formatAdminLocalizedText = (
+  text: string | undefined,
+  translations?: LocalizedText
+): string => {
+  const parts = getAdminLocalizedParts(text, translations);
+  if (parts.en && parts.bn) return `${parts.en} / ${parts.bn}`;
+  return parts.en || parts.bn || text || '';
+};
 
 /** True for plain JSON-like objects; false for Date, Firestore FieldValue, Timestamp, etc. */
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
@@ -632,7 +664,91 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
           })
         : list;
 
-      if (filtered.length === 0 && scopeProjectId && project?.name && shouldSeedUddQuestionnaireForProject(scopeProjectId, project.name)) {
+      const isUddProject =
+        scopeProjectId &&
+        project?.name &&
+        shouldSeedUddQuestionnaireForProject(scopeProjectId, project.name);
+      const oldSystemSeed = filtered.find((item) => {
+        if (item.id === 'udd_12_upazila_socioeconomic_survey') return true;
+        const title = String(item.title || '');
+        const questionIds = new Set(
+          Array.isArray(item.questions)
+            ? item.questions
+                .map((question) =>
+                  question && typeof question === 'object'
+                    ? String((question as Question).id || '')
+                    : ''
+                )
+                .filter(Boolean)
+            : []
+        );
+        const hasLegacyUddFields =
+          questionIds.has('hh_id') &&
+          questionIds.has('respondent_name') &&
+          questionIds.has('household_size');
+        return (
+          (/comprehensive development plan for twelve upazilas/i.test(title) &&
+            (item.createdBy === 'system' || hasLegacyUddFields)) ||
+          (isUddProject && hasLegacyUddFields)
+        );
+      });
+
+      if (oldSystemSeed) {
+        const migrationProjectId =
+          scopeProjectId || oldSystemSeed.projectId || DEFAULT_PROJECT_ID;
+        const seeded = uddSocioEconomicQuestionnaireTemplate(
+          migrationProjectId,
+          project?.name
+        );
+        const currentQuestions = Array.isArray(oldSystemSeed.questions)
+          ? oldSystemSeed.questions
+          : [];
+        const alreadyCurrent =
+          oldSystemSeed.version === seeded.version &&
+          currentQuestions.length === seeded.questions.length &&
+          currentQuestions.every((question, index) => {
+            if (!question || typeof question !== 'object') return false;
+            const current = question as Question;
+            const expected = seeded.questions[index];
+            if (
+              String(current.id || '') !== expected?.id ||
+              current.type !== expected?.type ||
+              current.questionTranslations?.en !== expected?.questionTranslations?.en ||
+              current.questionTranslations?.bn !== expected?.questionTranslations?.bn
+            ) return false;
+            const currentOptions = ensureOptionShape(current.options);
+            const expectedOptions = ensureOptionShape(expected.options);
+            return (
+              currentOptions.length === expectedOptions.length &&
+              currentOptions.every((option, optionIndex) => {
+                const expectedOption = expectedOptions[optionIndex];
+                return (
+                  option.value === expectedOption.value &&
+                  option.labelTranslations?.en === expectedOption.labelTranslations?.en &&
+                  option.labelTranslations?.bn === expectedOption.labelTranslations?.bn
+                );
+              })
+            );
+          });
+        if (alreadyCurrent) {
+          setQuestionnaires(filtered);
+          return;
+        }
+        const nowIso = new Date().toISOString();
+        const updated = {
+          ...seeded,
+          id: oldSystemSeed.id,
+          createdAt: oldSystemSeed.createdAt || nowIso,
+          updatedAt: nowIso,
+          isActive: oldSystemSeed.isActive,
+          projectId: migrationProjectId,
+        };
+        await geosurveyApi.saveQuestionnaire(updated as unknown as Record<string, unknown>);
+        setQuestionnaires(filtered.map((item) => item.id === oldSystemSeed.id ? updated : item));
+        return;
+      }
+
+      if (filtered.length === 0 && isUddProject && scopeProjectId && project?.name) {
         const seeded = uddSocioEconomicQuestionnaireTemplate(scopeProjectId, project.name);
         const nowIso = new Date().toISOString();
         const payload = {
@@ -2066,14 +2182,10 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
       </div>
 
       <div className="p-4 space-y-2">
-          <input
-            type="text"
-          value={question.question}
-          onChange={(e) => onUpdate({ question: e.target.value })}
-          onClick={(e) => e.stopPropagation()}
-          className="w-full text-sm font-semibold text-slate-900 border-0 border-b border-transparent hover:border-slate-200 focus:border-blue-500 focus:outline-none px-0 py-1 bg-transparent"
-          placeholder={isSection ? 'Section title…' : 'Type your question…'}
-        />
+        <div className="text-sm font-semibold text-slate-900 py-1 whitespace-pre-wrap">
+          {formatAdminLocalizedText(question.question, question.questionTranslations) ||
+            (isSection ? 'Untitled section' : 'Untitled question')}
+        </div>
         {question.description !== undefined && (
           <input
             type="text"
@@ -2169,7 +2281,11 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
     case 'select':
       return (
         <select disabled className={inputClass}>
-          <option>{opts[0]?.label || '— select —'}</option>
+          <option>
+            {opts[0]
+              ? formatAdminLocalizedText(opts[0].label, opts[0].labelTranslations)
+              : '— select —'}
+          </option>
         </select>
       );
     case 'multiselect':
@@ -2177,7 +2293,7 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
         <div className={`${inputClass} flex flex-wrap gap-1`}>
           {opts.slice(0, 3).map((o) => (
             <span key={o.id} className="text-[10px] bg-white border border-slate-200 rounded px-1.5 py-0.5">
-              {o.label}
+              {formatAdminLocalizedText(o.label, o.labelTranslations)}
             </span>
           ))}
           {opts.length > 3 && <span className="text-[10px]">+{opts.length - 3}</span>}
@@ -2189,7 +2305,7 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
           {opts.slice(0, 4).map((o) => (
             <label key={o.id} className="flex items-center gap-2 text-xs text-slate-500">
               <input type="radio" disabled />
-              {o.label}
+              {formatAdminLocalizedText(o.label, o.labelTranslations)}
             </label>
           ))}
         </div>
@@ -2200,7 +2316,7 @@ const QuestionPreviewMini: React.FC<{ question: Question }> = ({ question }) => 
           {opts.slice(0, 4).map((o) => (
             <label key={o.id} className="flex items-center gap-2 text-xs text-slate-500">
               <input type="checkbox" disabled />
-              {o.label}
+              {formatAdminLocalizedText(o.label, o.labelTranslations)}
             </label>
           ))}
         </div>
@@ -2332,13 +2448,33 @@ const PropertiesPanel: React.FC<{
       </Field>
 
       <Field label="Question Prompt">
-          <textarea
-          value={question.question}
-          onChange={(e) => onUpdate({ question: e.target.value })}
-          rows={2}
-          className={`${inputCls} resize-none`}
-          placeholder="What do you want to ask?"
-        />
+        {(['en', 'bn'] as const).map((language) => {
+          const parts = getAdminLocalizedParts(question.question, question.questionTranslations);
+          const languageLabel = language === 'en' ? 'English' : 'Bangla';
+          return (
+            <label key={language} className="block mb-2 last:mb-0">
+              <span className="block text-[10px] font-semibold text-slate-500 mb-1">
+                {languageLabel}
+              </span>
+              <textarea
+                value={parts[language] || ''}
+                onChange={(e) => {
+                  const nextTranslations = {
+                    ...parts,
+                    [language]: e.target.value
+                  };
+                  onUpdate({
+                    question: nextTranslations.en || nextTranslations.bn || '',
+                    questionTranslations: nextTranslations
+                  });
+                }}
+                rows={2}
+                className={`${inputCls} resize-none`}
+                placeholder={language === 'en' ? 'Question in English' : 'Question in Bangla'}
+              />
+            </label>
+          );
+        })}
       </Field>
 
       <Field label="Help / Description" hint="Optional explanation shown below the prompt.">
@@ -3193,7 +3329,8 @@ const OptionsEditor: React.FC<{
       {
         id: uid('o'),
         value: `option_${options.length + 1}`,
-        label: `Option ${options.length + 1}`
+        label: `Option ${options.length + 1}`,
+        labelTranslations: { en: `Option ${options.length + 1}`, bn: '' }
       }
     ];
     onChange({ options: next });
@@ -3213,16 +3350,44 @@ const OptionsEditor: React.FC<{
     <div className="mb-4">
       <label className="block text-xs font-semibold text-slate-700 mb-1">Answer Options</label>
       <div className="space-y-1.5">
-        {options.map((o, i) => (
+        {options.map((o, i) => {
+          const parts = getAdminLocalizedParts(o.label, o.labelTranslations);
+          return (
           <div key={o.id} className="space-y-0.5">
-            <div className="flex items-center gap-1">
-            <input
-              type="text"
-              value={o.label}
-              onChange={(e) => update(i, { label: e.target.value, value: slugify(e.target.value) || e.target.value })}
-              className="flex-1 text-sm px-2 py-1 border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder={`Option ${i + 1}`}
-            />
+            <div className="flex items-start gap-1">
+              <div className="flex-1 space-y-1">
+                <label className="block text-[10px] font-semibold text-slate-500">
+                  English
+                  <input
+                    type="text"
+                    value={parts.en || ''}
+                    onChange={(e) =>
+                      update(i, {
+                        label: e.target.value,
+                        labelTranslations: { ...parts, en: e.target.value },
+                        value: slugify(e.target.value) || o.value
+                      })
+                    }
+                    className="mt-0.5 w-full text-sm px-2 py-1 border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder={`Option ${i + 1} in English`}
+                  />
+                </label>
+                <label className="block text-[10px] font-semibold text-slate-500">
+                  Bangla
+                  <input
+                    type="text"
+                    value={parts.bn || ''}
+                    onChange={(e) =>
+                      update(i, {
+                        label: parts.en || o.label,
+                        labelTranslations: { ...parts, bn: e.target.value }
+                      })
+                    }
+                    className="mt-0.5 w-full text-sm px-2 py-1 border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder={`Option ${i + 1} in Bangla`}
+                  />
+                </label>
+              </div>
             <button
               onClick={() => move(i, -1)}
               disabled={i === 0}
@@ -3264,7 +3429,8 @@ const OptionsEditor: React.FC<{
               accentClass="border-violet-300/90"
             />
           </div>
-        ))}
+        );
+        })}
       </div>
       <button
         onClick={add}
@@ -4976,9 +5142,9 @@ const PreviewQuestion: React.FC<{
     return (
       <div className="border-t-2 border-indigo-200 pt-3">
         <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Section</div>
-        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language as SurveyLanguage)}</h4>
+        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language, question.questionTranslations)}</h4>
         {question.description && (
-          <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>
+          <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>
         )}
       </div>
     );
@@ -5006,7 +5172,8 @@ const PreviewQuestion: React.FC<{
                 ? '০১৭১২৩৪৫৬৭৮ / 01712345678'
                 : undefined)
             ),
-            language as SurveyLanguage
+            language as SurveyLanguage,
+            question.placeholderTranslations
           )}
           className={cls}
         />
@@ -5017,7 +5184,7 @@ const PreviewQuestion: React.FC<{
                       <textarea
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={getLocalizedText(question.placeholder, language as SurveyLanguage)}
+          placeholder={getLocalizedText(question.placeholder, language, question.placeholderTranslations)}
                         rows={3}
           className={`${cls} resize-none`}
         />
@@ -5029,7 +5196,7 @@ const PreviewQuestion: React.FC<{
           type="number"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={getLocalizedText(question.placeholder, language as SurveyLanguage)}
+          placeholder={getLocalizedText(question.placeholder, language, question.placeholderTranslations)}
           min={question.validation?.min}
           max={question.validation?.max}
           step={question.validation?.step}
@@ -5181,7 +5348,7 @@ const PreviewQuestion: React.FC<{
                 value={o.value}
                 disabled={isChoiceOptionDisabled(o, answersMap)}
               >
-                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                {getLocalizedOptionText(o.label, language, o.labelTranslations)}
               </option>
             ))}
         </select>
@@ -5230,7 +5397,7 @@ const PreviewQuestion: React.FC<{
                     );
                   }}
                 />
-                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                {getLocalizedOptionText(o.label, language, o.labelTranslations)}
               </label>
             );
           })}
@@ -5362,11 +5529,11 @@ const PreviewQuestion: React.FC<{
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-slate-800">
         {prefix !== '' && `${prefix}. `}
-        {getLocalizedText(question.question, language as SurveyLanguage) || 'Untitled question'}
+        {getLocalizedText(question.question, language, question.questionTranslations) || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
       {question.description && (
-        <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language as SurveyLanguage)}</p>
+        <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>
       )}
       {body}
                 </div>
@@ -5801,7 +5968,7 @@ const EnumeratorInfoTable: React.FC<{
             type="text"
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
+            placeholder={getLocalizedText(f.placeholder, language, f.placeholderTranslations)}
             className={cls}
           />
         );
@@ -5810,7 +5977,7 @@ const EnumeratorInfoTable: React.FC<{
                       <textarea
             value={(v as string) || ''}
             onChange={(e) => onChange(f.id, e.target.value)}
-            placeholder={getLocalizedText(f.placeholder, language as SurveyLanguage)}
+            placeholder={getLocalizedText(f.placeholder, language, f.placeholderTranslations)}
             rows={2}
             className={`${cls} resize-none`}
           />
@@ -5967,7 +6134,7 @@ const EnumeratorInfoTable: React.FC<{
                     )
                   }
                 />
-                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                {getLocalizedOptionText(o.label, language, o.labelTranslations)}
               </label>
             ))}
     </div>
@@ -5997,7 +6164,7 @@ const EnumeratorInfoTable: React.FC<{
               .filter((o) => !isChoiceOptionHidden(o, logicCtx))
               .map((o) => (
               <option key={o.id} value={o.value} disabled={isChoiceOptionDisabled(o, logicCtx)}>
-                {getLocalizedOptionText(o.label, language as SurveyLanguage)}
+                {getLocalizedOptionText(o.label, language, o.labelTranslations)}
               </option>
             ))}
           </select>
@@ -6023,7 +6190,7 @@ const EnumeratorInfoTable: React.FC<{
           {info.fields.map((f) => (
             <tr key={f.id} className="border-t border-indigo-100/80 first:border-t-0">
               <th className="text-left text-xs font-semibold text-slate-700 align-middle bg-indigo-50/70 px-4 py-2 w-1/3 border-r border-indigo-100/80">
-                {getLocalizedText(f.question, language as SurveyLanguage) || 'Untitled field'}
+                {getLocalizedText(f.question, language, f.questionTranslations) || 'Untitled field'}
                 {f.required && <span className="text-red-500 ml-1">*</span>}
               </th>
               <td className="px-4 py-2 align-middle bg-white">{renderInput(f)}</td>
