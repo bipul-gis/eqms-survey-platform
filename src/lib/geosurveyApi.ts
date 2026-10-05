@@ -140,7 +140,7 @@ export const geosurveyApi = {
     apiFetch<{ items: import('../types').Project[] }>('/api/mis-projects'),
 
   listGeosurveyProjects: () =>
-    apiFetch<{ items: import('../types').Project[] }>('/api/geosurvey-projects'),
+    apiFetch<{ items: import('../types').Project[] }>('/api/geosurvey-projects', { cache: 'no-store' }),
 
   activateGeosurveyProject: (project: import('../types').Project) =>
     apiFetch<{ item: import('../types').Project }>(`/api/geosurvey-projects/${project.id}/activate`, {
@@ -183,6 +183,17 @@ export const geosurveyApi = {
         body: JSON.stringify(segments),
       }
     ),
+
+  updateGeosurveyProjectSurveyLayers: (projectId: string, activeSurveyLayerKeys: string[], surveyLayerActions: Record<string, 'edit' | 'questionnaire' | 'both'>, surveyLayerQuestionFields: Record<string, string[]>) =>
+    apiFetch<{ item: import('../types').Project }>(
+      `/api/geosurvey-projects/${projectId}/survey-layers`,
+      { method: 'PATCH', body: JSON.stringify({ activeSurveyLayerKeys, surveyLayerActions, surveyLayerQuestionFields }) }
+    ),
+
+  updateGeosurveyProjectMapLayerStyles: (projectId: string, mapLayerStyles: Record<string, import('../lib/mapLayerSettings').MapLayerStyle>, geospatialAssignmentLayerId?: string | null, geospatialAssignmentField?: string | null) =>
+    apiFetch<{ item: import('../types').Project }>(`/api/geosurvey-projects/${projectId}/map-layer-styles`, {
+      method: 'PATCH', body: JSON.stringify({ mapLayerStyles, ...(geospatialAssignmentLayerId !== undefined ? { geospatialAssignmentLayerId } : {}), ...(geospatialAssignmentField !== undefined ? { geospatialAssignmentField } : {}) }),
+    }),
 
   listUsers: () =>
     apiFetch<{ items: import('../types').UserProfile[] }>('/api/users'),

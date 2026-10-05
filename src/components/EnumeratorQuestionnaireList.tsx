@@ -6,7 +6,7 @@
  * "Questionnaire Survey" tile when they have tasks in both segments.
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ClipboardList,
   FileText,
@@ -38,6 +38,7 @@ import { ResponseIdCell } from './ResponseIdCell';
 import { readResponseIdSerial } from '../lib/responseIdSequence';
 import { EnumeratorAssignedZoneMap } from './EnumeratorAssignedZoneMap';
 import { useQuestionnaireSurveyLocations } from '../hooks/useQuestionnaireSurveyLocations';
+import type { MapLayerStyle } from '../lib/mapLayerSettings';
 
 interface EnumeratorQuestionnaireListProps {
   userProfile: UserProfile;
@@ -49,7 +50,11 @@ interface EnumeratorQuestionnaireListProps {
   initialLocation?: { lat: number; lng: number; ward?: string };
   /** Assigned zone polygons for strict survey geofencing (optional). */
   geofenceZones?: ZonePolygon[];
+  projectMapLayerStyles?: Record<string, MapLayerStyle>;
+  projectMapLayerStylesByProject?: Record<string, Record<string, MapLayerStyle>>;
   strictGeofence?: boolean;
+  /** Open the sole assigned questionnaire immediately from the map CTA. */
+  startImmediately?: boolean;
 }
 
 /**
@@ -88,12 +93,17 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   onLogout,
   initialLocation,
   geofenceZones,
+  projectMapLayerStyles = {},
+  projectMapLayerStylesByProject = {},
   strictGeofence = false,
+  startImmediately = false,
 }) => {
   const { user } = useAuth();
   const [questionnaires, setQuestionnaires] = useState<Questionnaire[]>([]);
   const [projects, setProjects] = useState<Record<string, Project>>({});
   const [responseStats, setResponseStats] = useState<Record<string, QuestionnaireStats>>({});
+  const [responseStatsLoaded, setResponseStatsLoaded] = useState(false);
+  const autoStartConsumed = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -226,6 +236,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     if (!user?.uid) return;
     let cancelled = false;
     const run = async () => {
+      setResponseStatsLoaded(false);
       try {
         // Bucket by questionnaireId.
         const result = await geosurveyApi.listResponses({ respondentId: user.uid });
@@ -259,6 +270,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
         if (!cancelled) setResponseStats(next);
       } catch (e) {
         console.warn('Failed to fetch response stats:', e);
+      } finally {
+        if (!cancelled) setResponseStatsLoaded(true);
       }
     };
     void run();
@@ -266,6 +279,18 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       cancelled = true;
     };
   }, [user?.uid, questionnaires.length, refreshTick]);
+
+  useEffect(() => {
+    if (!startImmediately || autoStartConsumed.current || loading || !responseStatsLoaded) return;
+    const available = questionnaires.filter((questionnaire) => questionnaire.isActive !== false);
+    if (available.length !== 1) return;
+    autoStartConsumed.current = true;
+    const questionnaire = available[0];
+    const draft = responseStats[questionnaire.id]?.latestDraft;
+    setOpening(draft
+      ? { questionnaire, existingResponse: draft }
+      : { questionnaire, forceNew: true });
+  }, [startImmediately, loading, responseStatsLoaded, questionnaires, responseStats]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -415,6 +440,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           (showAssignedZoneMap ? (
             <EnumeratorAssignedZoneMap
               zones={geofenceZones || []}
+              projectMapLayerStyles={projectMapLayerStyles}
+              projectMapLayerStylesByProject={projectMapLayerStylesByProject}
               onHide={() => setShowAssignedZoneMap(false)}
               surveyLocations={assignedZoneSurveyLocations}
               surveyLocationsLoading={assignedZoneSurveyLocationsLoading}

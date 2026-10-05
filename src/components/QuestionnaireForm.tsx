@@ -135,6 +135,7 @@ interface QuestionnaireFormProps {
     id: string;
     type?: string;
     attributes?: Record<string, any>;
+    surveyLayerKey?: string;
   };
 }
 
@@ -154,6 +155,49 @@ const stripUndefined = <T extends Record<string, any>>(obj: T): T => {
     if (v !== undefined) out[k] = v;
   }
   return out as T;
+};
+
+const isSurveyDateQuestion = (question: Question) => question.type === 'date' && [question.key, question.question]
+  .filter(Boolean)
+  .some((value) => String(value).normalize('NFKC').toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').includes('survey date'));
+
+const todayAsLocalDate = () => {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+};
+
+const linkedAttributeAnswers = (questionnaire: Questionnaire, attributes?: Record<string, any>, surveyLayerKey?: string) => {
+  if (!attributes) return {} as Record<string, any>;
+  const answers: Record<string, any> = Object.fromEntries(Object.entries(attributes).map(([key, value]) => [`linked_attribute:${key}`, value]));
+  const values = new Map(Object.entries(attributes).map(([key, value]) => [key.trim().normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' '), value]));
+  for (const question of questionnaire.questions || []) {
+    if (isSurveyDateQuestion(question)) {
+      answers[question.id] = todayAsLocalDate();
+      continue;
+    }
+    const link = question.featureAttributeLink;
+    const linkedValue = link && surveyLayerKey && link.layerKey.trim().normalize('NFKC').toLocaleLowerCase() === surveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase()
+      ? attributes[link.field]
+      : undefined;
+    if (linkedValue !== undefined && linkedValue !== null && linkedValue !== '') {
+      answers[question.id] = linkedValue;
+      continue;
+    }
+    const candidates = [question.key, question.id, question.question].filter((value): value is string => Boolean(value));
+    const match = candidates.map((candidate) => values.get(candidate.trim().normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' '))).find((value) => value !== undefined && value !== null && value !== '');
+    if (match === undefined) continue;
+    if (['select', 'radio', 'multiselect', 'checkbox'].includes(question.type) && Array.isArray(question.options)) {
+      const option = question.options.find((item) => typeof item === 'string'
+        ? item.trim().toLocaleLowerCase() === String(match).trim().toLocaleLowerCase()
+        : item.value.trim().toLocaleLowerCase() === String(match).trim().toLocaleLowerCase() || item.label.trim().toLocaleLowerCase() === String(match).trim().toLocaleLowerCase());
+      if (!option) continue;
+      const optionValue = typeof option === 'string' ? option : option.value;
+      answers[question.id] = question.type === 'multiselect' || question.type === 'checkbox' ? [optionValue] : optionValue;
+    } else {
+      answers[question.id] = match;
+    }
+  }
+  return answers;
 };
 
 /**
@@ -379,7 +423,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const isResumingDraft = !!(existingResponse || savedResponseId || draftDocIdRef.current);
 
   const [responses, setResponses] = useState<Record<string, any>>(
-    () => existingResponse?.responses || {}
+    () => ({ ...linkedAttributeAnswers(questionnaire, linkedFeature?.attributes, linkedFeature?.surveyLayerKey), ...(existingResponse?.responses || {}) })
   );
   // Lazy init so the "now" snapshot is taken when the form first mounts.
   // Identity fields (name / id / phone / email) always come from the signed-in
@@ -439,7 +483,20 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const descriptionBlocks = questionnaire.descriptionBlocks || [];
   const conclusionBlocks = questionnaire.conclusionBlocks || [];
   const enumeratorInfoConfig = questionnaire.enumeratorInfo;
-  const consentGate = questionnaire.consentGate;
+  const consentGate = questionnaire.consentGate || {
+    enabled: true,
+    title: 'Permission Grant',
+    text: 'Before starting this survey, the enumerator must obtain verbal consent from the respondent. Please explain the purpose of the survey, that participation is voluntary, that the respondent may decline or stop at any time, and that their responses will be kept confidential and used only for the stated research purposes.',
+    checkboxLabel: 'I confirm that I have obtained verbal consent from the respondent to conduct this survey.',
+    substituteEnumeratorName: true,
+  };
+  const linkedFeatureAttributes = useMemo(() => {
+    const attributes = linkedFeature?.attributes || {};
+    const embeddedFields = new Set((questionnaire.questions || [])
+      .filter((question) => question.featureAttributeLink && linkedFeature?.surveyLayerKey && question.featureAttributeLink.layerKey.trim().normalize('NFKC').toLocaleLowerCase() === linkedFeature.surveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase())
+      .map((question) => question.featureAttributeLink!.field));
+    return Object.fromEntries(Object.entries(attributes).filter(([field]) => !embeddedFields.has(field)));
+  }, [questionnaire.questions, linkedFeature?.attributes, linkedFeature?.surveyLayerKey]);
   const submissionGpsConfig: SubmissionGpsCapture | undefined = questionnaire.submissionGps;
   const settings = questionnaire.settings || {};
 
@@ -1532,6 +1589,23 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           />
         )}
 
+        {questionsUnlocked && Object.keys(linkedFeatureAttributes).length > 0 && (
+          <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 space-y-3">
+            <div>
+              <h3 className="text-sm font-bold text-indigo-950">Linked feature information</h3>
+              <p className="mt-0.5 text-[11px] text-indigo-700">Selected layer attributes are attached to this questionnaire response.</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {Object.entries(linkedFeatureAttributes).map(([field, value], index) => (
+                <div key={field} className="rounded-lg border border-indigo-100 bg-white px-3 py-2.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{index + 1}. {field}</p>
+                  <p className="mt-1 text-sm font-medium text-slate-900 break-words">{value == null || value === '' ? '—' : String(value)}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Questions (only after gate accepted) */}
         {!questionsUnlocked ? (
           <div className="flex items-center justify-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
@@ -1564,7 +1638,8 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                 });
               }
               return slots.map(({ q, label, depth }) => {
-                const locked = lockedQuestionIds.has(q.id);
+                const linkedQuestionLocked = Boolean(q.featureAttributeLink) && !isSurveyDateQuestion(q);
+                const locked = lockedQuestionIds.has(q.id) || linkedQuestionLocked;
                 return (
                   <div
                     key={q.id}
@@ -1590,7 +1665,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                       />
                       {locked && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
-                          Auto-filled (locked by rule)
+                          {linkedQuestionLocked ? 'Auto-filled from map layer' : 'Auto-filled (locked by rule)'}
                         </span>
                       )}
                     </fieldset>

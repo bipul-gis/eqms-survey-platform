@@ -2,6 +2,7 @@ import type { ZoneLayer, ZonePolygon } from '../types';
 
 type ZoneBundle = {
   layer: ZoneLayer | null;
+  layers?: ZoneLayer[];
   polygons: ZonePolygon[];
   savedAt: number;
 };
@@ -33,9 +34,10 @@ export function readCachedZoneBundle(projectId: string): ZoneBundle | null {
 export function writeCachedZoneBundle(
   projectId: string,
   layer: ZoneLayer | null,
-  polygons: ZonePolygon[]
+  polygons: ZonePolygon[],
+  layers: ZoneLayer[] = layer ? [layer] : []
 ): void {
-  const bundle: ZoneBundle = { layer, polygons, savedAt: Date.now() };
+  const bundle: ZoneBundle = { layer, layers, polygons, savedAt: Date.now() };
   memory.set(projectId, bundle);
   try {
     sessionStorage.setItem(storageKey(projectId), JSON.stringify(bundle));

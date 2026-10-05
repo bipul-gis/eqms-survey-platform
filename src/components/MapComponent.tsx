@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Polygon, useMapEvents, Circle, CircleMarker, GeoJSON, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { GeoFeature, type FeatureType } from '../types';
+import { GeoFeature, type FeatureType, type SurveyLayerAction } from '../types';
 import {
   shouldShowSlumNumericFields,
   SLUM_DEMOGRAPHIC_KEYS,
@@ -10,13 +10,17 @@ import {
 import { useGeoLocation } from './GeoLocationProvider';
 import { useAuth } from './AuthProvider';
 import { geosurveyApi } from '../lib/geosurveyApi';
-import { MapPin, Navigation, Info, Layers, Plus, Minus } from 'lucide-react';
+import { MapPin, Navigation, Info, Layers, Plus, Minus, LocateFixed } from 'lucide-react';
 import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../lib/wardGeometry';
 import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
 import { useLandmarkGeoJsonPoints } from '../hooks/useLandmarkGeoJsonPoints';
 import { NEW_POINT_ADD_PROXIMITY_METERS } from '../lib/newPointProximity';
+import { DEFAULT_MAP_LAYER_STYLE, mapLayerStyleKey, readMapLayerSettings, subscribeMapLayerSettings } from '../lib/mapLayerSettings';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
+const MAP_LAYER_VISIBILITY_PREFIX = 'eqms.mapLayerVisibility:';
+const MAP_ZONE_VISIBILITY_PREFIX = 'eqms.mapZoneVisibility:';
+const MAP_ZONE_LAYER_VISIBILITY_PREFIX = 'eqms.mapZoneLayerVisibility:';
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
 const HIDDEN_LANDMARK_POPUP_KEYS = new Set([
   'FID',
@@ -40,6 +44,181 @@ const readStoredLandmarkIconScale = (): number => {
   } catch {
     return 1;
   }
+};
+
+const readStoredMapLayerVisibility = (projectId?: string): Record<string, boolean> => {
+  if (!projectId || typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(`${MAP_LAYER_VISIBILITY_PREFIX}${projectId}`);
+    const value = raw ? JSON.parse(raw) : {};
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+};
+
+const readStoredZoneVisibility = (projectId?: string, fallback = true): boolean => {
+  if (!projectId || typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(`${MAP_ZONE_VISIBILITY_PREFIX}${projectId}`);
+    return raw === null ? fallback : raw === 'true';
+  } catch {
+    return fallback;
+  }
+};
+
+const readStoredZoneLayerVisibility = (projectId?: string): Record<string, boolean> => {
+  if (!projectId || typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(`${MAP_ZONE_LAYER_VISIBILITY_PREFIX}${projectId}`);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const importedLayerName = (feature: GeoFeature): string => {
+  const attrs = feature.attributes || {};
+  const name = String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
+  if (name) return name;
+  const isImported =
+    attrs.__source === 'geojson_upload' ||
+    attrs.__source === 'shapefile_upload' ||
+    Boolean(attrs.projectId || (feature as any).projectId);
+  return isImported ? 'Unassigned layer' : '';
+};
+
+const polygonGeometryKey = (geometry: any): string => {
+  if (!geometry || typeof geometry.type !== 'string' || !Array.isArray(geometry.coordinates)) return '';
+  const rounded = (value: any): any => Array.isArray(value)
+    ? value.map(rounded)
+    : typeof value === 'number'
+      ? Math.round(value * 1_000_000) / 1_000_000
+      : value;
+  return `${geometry.type}:${JSON.stringify(rounded(geometry.coordinates))}`;
+};
+
+const surveyLayerKeyMatches = (keys: string[], key: string) => {
+  const normalize = (value: string) => value.trim().normalize('NFKC').toLocaleLowerCase();
+  const expected = normalize(key);
+  return keys.some((candidate) => normalize(candidate) === expected);
+};
+
+const featureLabelZoomCache = new WeakMap<object, number>();
+const labelHaloShadow = (color: string) => [
+  `-1.5px -1.5px 0 ${color}`, `0 -1.5px 0 ${color}`, `1.5px -1.5px 0 ${color}`,
+  `-1.5px 0 0 ${color}`, `1.5px 0 0 ${color}`,
+  `-1.5px 1.5px 0 ${color}`, `0 1.5px 0 ${color}`, `1.5px 1.5px 0 ${color}`,
+].join(', ');
+const safeLabelColor = (color: string, fallback: string) => /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+const escapeTooltipText = (text: string) => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
+const featureLabelMinZoom = (feature: { type?: string; geometry?: { coordinates?: unknown } }): number => {
+  const cached = featureLabelZoomCache.get(feature as object);
+  if (cached !== undefined) return cached;
+  if (feature.type === 'point') return 16;
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  const visit = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
+      minLng = Math.min(minLng, value[0]); maxLng = Math.max(maxLng, value[0]);
+      minLat = Math.min(minLat, value[1]); maxLat = Math.max(maxLat, value[1]);
+      return;
+    }
+    value.forEach(visit);
+  };
+  visit(feature.geometry?.coordinates);
+  if (!Number.isFinite(minLng) || !Number.isFinite(minLat)) return 16;
+  const midLat = (minLat + maxLat) / 2;
+  const widthKm = Math.abs(maxLng - minLng) * 111.32 * Math.cos((midLat * Math.PI) / 180);
+  const heightKm = Math.abs(maxLat - minLat) * 111.32;
+  const dimensionKm = Math.max(widthKm, heightKm);
+  const zoom = feature.type === 'line'
+    ? dimensionKm >= 20 ? 8 : dimensionKm >= 5 ? 10 : dimensionKm >= 1 ? 12 : dimensionKm >= 0.25 ? 14 : 16
+    : dimensionKm >= 100 ? 4 : dimensionKm >= 50 ? 5 : dimensionKm >= 20 ? 7 : dimensionKm >= 10 ? 8 : dimensionKm >= 5 ? 9 : dimensionKm >= 2 ? 10 : dimensionKm >= 1 ? 11 : dimensionKm >= 0.5 ? 12 : dimensionKm >= 0.2 ? 13 : dimensionKm >= 0.1 ? 14 : 15;
+  featureLabelZoomCache.set(feature as object, zoom);
+  return zoom;
+};
+
+const MapZoomListener: React.FC<{ onZoomChange: (zoom: number) => void }> = ({ onZoomChange }) => {
+  const map = useMap();
+  useEffect(() => {
+    const update = () => onZoomChange(map.getZoom());
+    update();
+    map.on('zoomend', update);
+    return () => { map.off('zoomend', update); };
+  }, [map, onZoomChange]);
+  return null;
+};
+
+const ScaleAwareZoneLayer: React.FC<{
+  data: GeoJSON.FeatureCollection;
+  color: string;
+  fillColor: string;
+  opacity: number;
+  labelsVisible: boolean;
+  labelField: string;
+  labelColor: string;
+  haloColor: string;
+  fontSize: number;
+  layerName: string;
+  surveyLayerKey: string;
+  projectId?: string;
+  interactive: boolean;
+  onFeatureSelect?: (feature: GeoFeature) => void;
+}> = ({ data, color, fillColor, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, layerName, surveyLayerKey, projectId, interactive, onFeatureSelect }) => {
+  const map = useMap();
+  const geoJsonRef = useRef<L.GeoJSON | null>(null);
+  useEffect(() => {
+    const updateLabels = () => {
+      const zoom = map.getZoom();
+      geoJsonRef.current?.eachLayer((layer: any) => {
+        const feature = layer.feature as GeoJSON.Feature | undefined;
+        if (!feature) return;
+        layer.options.interactive = interactive;
+        if (typeof layer.setStyle === 'function') {
+          layer.setStyle({ color, weight: 2, fillColor, fillOpacity: opacity, interactive });
+        }
+        const pathElement = layer.getElement?.() as SVGElement | undefined;
+        if (pathElement) pathElement.style.pointerEvents = interactive ? 'auto' : 'none';
+        const properties = feature.properties || {};
+        const value = labelField ? properties[labelField] : properties.__label || properties.__assignValue || properties.NAME || properties.Name;
+        const text = value == null ? '' : String(value);
+        const textColor = safeLabelColor(labelColor, '#0f172a');
+        const outlineColor = safeLabelColor(haloColor, '#ffffff');
+        const safeSize = Math.min(24, Math.max(8, Number(fontSize) || 11));
+        const content = `<span style="color:${textColor};font-size:${safeSize}px;text-shadow:${labelHaloShadow(outlineColor)}">${escapeTooltipText(text)}</span>`;
+        if (!layer.getTooltip()) layer.bindTooltip(content, { permanent: true, direction: 'center', className: 'zone-label', opacity: 1 });
+        else layer.setTooltipContent(content);
+        const visible = labelsVisible && !!text && zoom >= featureLabelMinZoom({ type: 'polygon', geometry: feature.geometry as any });
+        if (visible) layer.openTooltip();
+        else layer.closeTooltip();
+        layer.off('click');
+        if (interactive && onFeatureSelect) {
+          layer.on('click', (event: L.LeafletMouseEvent) => {
+            L.DomEvent.stopPropagation(event);
+            onFeatureSelect({
+              id: String(feature.id || properties.__zoneId || ''),
+              type: 'polygon',
+              geometry: feature.geometry as any,
+              attributes: { ...properties, __layerName: layerName, layerName, __source: 'zone_layer', __surveyLayerKey: surveyLayerKey, projectId },
+              status: 'pending',
+              createdBy: '',
+              updatedBy: '',
+              updatedAt: '',
+            } as GeoFeature);
+          });
+        }
+      });
+    };
+    updateLabels();
+    map.on('zoomend', updateLabels);
+    return () => { map.off('zoomend', updateLabels); };
+  }, [map, data, color, fillColor, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, interactive, onFeatureSelect, layerName, surveyLayerKey, projectId]);
+
+  return <GeoJSON key={`${layerName}:${interactive ? 'active' : 'inactive'}:${color}:${fillColor}:${opacity}:${labelField}:${labelsVisible}:${labelColor}:${haloColor}:${fontSize}`} ref={geoJsonRef as any} data={data} style={() => ({ color, weight: 2, fillColor, fillOpacity: opacity, interactive })} onEachFeature={(_feature, layer) => {
+    if (!layer.getTooltip()) layer.bindTooltip('', { permanent: true, direction: 'center', className: 'zone-label', opacity: 1 });
+  }} />;
 };
 
 const normalizeLandmarkAttributesForDisplay = (
@@ -94,6 +273,8 @@ L.Icon.Default.mergeOptions({
 
 interface MapComponentProps {
   features: GeoFeature[];
+  /** Project scope used to persist map layer visibility preferences. */
+  projectId?: string;
   /** Optional reference ward polygons (legacy CCC). Omit/null when using project zone SHP. */
   wards?: any | null;
   /** Approved admin only: show enumerator display name on landmark point popups (ward-based; falls back to `updatedBy`). */
@@ -101,11 +282,18 @@ interface MapComponentProps {
   /** When set (e.g. ward-tasked enumerators), GeoJSON-only landmark dots must match one of these wards; ward polygons stay full layer via `wards`. */
   enumeratorLandmarkWardFilter?: string[];
   onFeatureSelect: (feature: GeoFeature) => void;
+  activeSurveyLayerKeys?: string[];
+  projectMapLayerStyles?: Record<string, import('../lib/mapLayerSettings').MapLayerStyle>;
+  projectMapLayerStylesByProject?: Record<string, Record<string, import('../lib/mapLayerSettings').MapLayerStyle>>;
+  focusSelectedFeatures?: boolean;
   onRequestMoveFeature?: (feature: GeoFeature) => void;
   onCancelMoveFeature?: () => void;
   onLandmarkPointSelect?: (point: { lat: number; lng: number; properties: Record<string, any> }) => void;
   /** Direct action to launch questionnaire survey linked to this geospatial feature */
   onFillQuestionnaire?: (feature: GeoFeature) => void;
+  surveyLayerActions?: Record<string, SurveyLayerAction>;
+  /** Ask enumerators which action to take on an active survey boundary. */
+  onSurveyActionRequest?: (feature: GeoFeature) => void;
   selectedFeatureId?: string;
   featureFocusRequestKey?: number;
   movingFeatureId?: string | null;
@@ -125,7 +313,7 @@ interface MapComponentProps {
   /** Initial visibility for optional ward polygons. Defaults to true when wards provided. */
   defaultShowWards?: boolean;
   /**
-   * Optional "HH Survey Location" layer — one point per questionnaire
+   * Optional "HH Survey Location" layer â€” one point per questionnaire
    * response with a captured GPS. Toggleable from the layer panel. When
    * omitted (`undefined`), the layer + its toggle don't render at all,
    * so call sites that don't care about questionnaire responses (e.g.
@@ -139,12 +327,22 @@ interface MapComponentProps {
   onSurveyLocationsVisibilityChange?: (visible: boolean) => void;
   /** Optional zone boundary FeatureCollection (imported SHP polygons). */
   zoneBoundaries?: GeoJSON.FeatureCollection | null;
+  importedZoneLayers?: Array<{ id: string; projectId?: string; name: string; featureCount: number; data: GeoJSON.FeatureCollection }>;
   /** Force fit-to-zones when this changes (project / layer id). */
   zoneFitKey?: string;
+  /** Uploaded polygon layer and attribute values that define the enumerator's assigned area. */
+  assignedBoundaryLayerKey?: string | null;
+  assignedBoundaryField?: string | null;
+  assignedBoundaryValues?: string[];
   /** Initial basemap. Enumerators with zones default to satellite. */
   defaultBaseMap?: 'osm' | 'satellite' | 'hybrid';
   /** Show assigned zone outlines (default true when zoneBoundaries provided). */
   defaultShowZones?: boolean;
+  /** One-shot request to fit the viewport to a successfully imported feature batch. */
+  importedExtentRequest?: {
+    key: number;
+    extent: { south: number; west: number; north: number; east: number };
+  } | null;
 }
 
 export interface SurveyLocationMarker {
@@ -155,7 +353,7 @@ export interface SurveyLocationMarker {
   respondentName?: string;
   respondentEmail?: string;
   questionnaireId?: string;
-  /** Optional questionnaire display name — populated by the caller when known. */
+  /** Optional questionnaire display name â€” populated by the caller when known. */
   questionnaireTitle?: string;
   status?: 'draft' | 'submitted' | 'reviewed' | 'queued';
   submittedAt?: unknown;
@@ -211,7 +409,9 @@ const FocusOnEnumeratorLocation = ({
   const lastFocusRequestKeyRef = useRef<number>(-1);
 
   useEffect(() => {
-    if (!enabled || !location) return;
+    // Show the live location marker by default without replacing the initial
+    // project-data extent. Only recenter after the enumerator requests it.
+    if (!enabled || !location || focusRequestKey <= 0) return;
     if (lastFocusRequestKeyRef.current === focusRequestKey) return;
     map.flyTo([location.lat, location.lng], Math.max(map.getZoom(), 18), { duration: 0.6 });
     lastFocusRequestKeyRef.current = focusRequestKey;
@@ -246,6 +446,74 @@ const FitToZoneBoundaries = ({
       /* ignore bad geometry */
     }
   }, [data, fitKey, map]);
+  return null;
+};
+
+const FitToImportedExtent = ({
+  request
+}: {
+  request?: {
+    key: number;
+    extent: { south: number; west: number; north: number; east: number };
+  } | null;
+}) => {
+  const map = useMap();
+  const lastFitKeyRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!request || lastFitKeyRef.current === request.key) return;
+    const { south, west, north, east } = request.extent;
+    if (![south, west, north, east].every(Number.isFinite)) return;
+    const bounds = L.latLngBounds([south, west], [north, east]);
+    if (!bounds.isValid()) return;
+    map.invalidateSize();
+    map.fitBounds(bounds, { padding: [48, 48], maxZoom: 18, animate: true, duration: 0.6 });
+    lastFitKeyRef.current = request.key;
+  }, [request, map]);
+
+  return null;
+};
+
+const FitToImportedFeatures = ({ features, projectId, assignedLayerKey, assignedField, assignedValues = [] }: { features: GeoFeature[]; projectId?: string; assignedLayerKey?: string | null; assignedField?: string | null; assignedValues?: string[] }) => {
+  const map = useMap();
+  const fittedProjectRef = useRef<string>('');
+
+  useEffect(() => {
+    const fitKey = `${projectId || 'assigned-imported-features'}:${assignedLayerKey || ''}:${assignedValues.join('|')}`;
+    if (fittedProjectRef.current === fitKey) return;
+    const imported = features.filter((feature) => importedLayerName(feature));
+    if (!imported.length) return;
+    const layerName = assignedLayerKey?.startsWith('feature:') ? assignedLayerKey.slice('feature:'.length) : '';
+    const assignedValueKeys = new Set(assignedValues.map((value) => String(value).trim().toLowerCase()));
+    const assignedPolygons = layerName && assignedField && assignedValueKeys.size
+      ? imported.filter((feature) => {
+          const featureLayerName = String(feature.attributes?.__layerName || feature.attributes?.layerName || (feature as any).layerName || '');
+          const value = String(feature.attributes?.[assignedField] ?? '').trim().toLowerCase();
+          return featureLayerName === layerName && ['Polygon', 'MultiPolygon'].includes(String(feature.geometry?.type)) && assignedValueKeys.has(value);
+        })
+      : [];
+    if (layerName && assignedValueKeys.size && !assignedPolygons.length) return;
+    const fitFeatures = assignedPolygons.length ? assignedPolygons : imported;
+    try {
+      const collection: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: fitFeatures.map((feature) => ({
+          type: 'Feature' as const,
+          id: feature.id,
+          geometry: feature.geometry as GeoJSON.Geometry,
+          properties: feature.attributes || {},
+        })),
+      };
+      const bounds = L.geoJSON(collection).getBounds();
+      if (!bounds.isValid()) return;
+      map.invalidateSize();
+      map.fitBounds(bounds, { padding: [48, 48], maxZoom: 17, animate: false });
+      fittedProjectRef.current = fitKey;
+    } catch {
+      // Ignore invalid uploaded geometries and let the map keep its current view.
+    }
+  }, [features, map, projectId, assignedLayerKey, assignedField, assignedValues]);
+
   return null;
 };
 
@@ -317,19 +585,35 @@ const PointMarker = React.memo(({
   isSelected,
   isMoveTarget,
   isPulsing,
+  interactive = true,
   color,
+  boundaryColor,
+  opacity,
+  labelText,
+  labelColor,
+  haloColor,
+  fontSize,
   radius,
   adminEnumeratorDisplayName,
   onFeatureSelect,
   onRequestMoveFeature,
   onCancelMoveFeature,
-  onFillQuestionnaire
+  onFillQuestionnaire,
+  allowAttributeEdit = true,
+  allowMoveActions = true
 }: {
   feature: GeoFeature;
   isSelected: boolean;
   isMoveTarget: boolean;
   isPulsing: boolean;
+  interactive?: boolean;
   color: string;
+  boundaryColor?: string;
+  opacity?: number;
+  labelText?: string;
+  labelColor: string;
+  haloColor: string;
+  fontSize: number;
   radius: number;
   /** Approved admin only: enumerator full name for landmark popup header. */
   adminEnumeratorDisplayName?: string;
@@ -337,18 +621,23 @@ const PointMarker = React.memo(({
   onRequestMoveFeature?: (f: GeoFeature) => void;
   onCancelMoveFeature?: () => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
+  allowAttributeEdit?: boolean;
+  allowMoveActions?: boolean;
 }) => (
   <CircleMarker
+    interactive={interactive}
     center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
     radius={radius}
     pathOptions={{ 
-      color: isMoveTarget ? '#2563eb' : color,
-      fillColor: isMoveTarget ? '#3b82f6' : color, 
-      fillOpacity: 0.9,
+      className: interactive ? undefined : 'survey-layer-inactive',
+      color: isMoveTarget ? '#2563eb' : boundaryColor || color,
+      fillColor: isMoveTarget ? '#3b82f6' : color,
+      fillOpacity: opacity ?? 0.9,
       weight: isMoveTarget ? 4 : isSelected ? (isPulsing ? 4 : 3) : 2
     }}
   >
-    <Popup autoPan={false}>
+    {labelText && <Tooltip permanent direction="top" offset={[0, -6]} className="map-feature-label"><span style={{ color: labelColor, fontSize, textShadow: labelHaloShadow(haloColor) }}>{labelText}</span></Tooltip>}
+    {interactive && <Popup autoPan={false}>
       <div className="min-w-[240px]">
         {adminEnumeratorDisplayName ? (
           <div className="mb-2 pb-2 border-b border-amber-100">
@@ -383,7 +672,7 @@ const PointMarker = React.memo(({
             </tbody>
           </table>
         </div>
-        {!isMoveTarget && (
+        {!isMoveTarget && allowAttributeEdit && (
           <button
             type="button"
             className="mt-2 w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
@@ -407,7 +696,7 @@ const PointMarker = React.memo(({
             Fill Questionnaire Survey
           </button>
         )}
-        <button
+        {allowMoveActions && <button
           type="button"
           className="mt-2 w-full bg-indigo-600 text-white text-xs font-medium py-1.5 rounded hover:bg-indigo-700"
           onClick={(e) => {
@@ -416,7 +705,7 @@ const PointMarker = React.memo(({
           }}
         >
           {isMoveTarget ? 'Move Mode Active' : 'Move Point'}
-        </button>
+        </button>}
         {isMoveTarget && (
           <button
             type="button"
@@ -430,7 +719,7 @@ const PointMarker = React.memo(({
           </button>
         )}
       </div>
-    </Popup>
+    </Popup>}
   </CircleMarker>
 ));
 
@@ -441,26 +730,44 @@ const LineMarker = React.memo(({
   feature,
   isSelected,
   color,
+  boundaryColor,
+  opacity,
+  labelText,
+  interactive = true,
+  labelColor,
+  haloColor,
+  fontSize,
   onFeatureSelect,
   onFillQuestionnaire,
+  allowAttributeEdit = true,
 }: {
   feature: GeoFeature;
   isSelected: boolean;
   color: string;
+  boundaryColor?: string;
+  opacity?: number;
+  labelText?: string;
+  interactive?: boolean;
+  labelColor: string;
+  haloColor: string;
+  fontSize: number;
   onFeatureSelect: (f: GeoFeature) => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
+  allowAttributeEdit?: boolean;
 }) => (
   <Polyline
+    interactive={interactive}
     positions={feature.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]])}
     pathOptions={{ 
-      color: isSelected ? '#3b82f6' : color, 
-      weight: isSelected ? 6 : 4 
+      className: interactive ? undefined : 'survey-layer-inactive',
+      color: isSelected ? '#3b82f6' : boundaryColor || color,
+      opacity: opacity ?? 1,
+      weight: isSelected ? 6 : 4
     }}
-    eventHandlers={{
-      click: () => onFeatureSelect(feature)
-    }}
+    eventHandlers={{}}
   >
-    <Popup autoPan={false}>
+    {labelText && <Tooltip permanent direction="center" className="map-feature-label"><span style={{ color: labelColor, fontSize, textShadow: labelHaloShadow(haloColor) }}>{labelText}</span></Tooltip>}
+    {interactive && <Popup autoPan={false}>
       <div className="min-w-[220px]">
         <div className="flex items-center justify-between mb-1.5">
           <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
@@ -488,7 +795,7 @@ const LineMarker = React.memo(({
             </tbody>
           </table>
         </div>
-        <button
+        {allowAttributeEdit && <button
           type="button"
           className="w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
           onClick={(e) => {
@@ -497,7 +804,7 @@ const LineMarker = React.memo(({
           }}
         >
           Edit Attributes
-        </button>
+        </button>}
         {onFillQuestionnaire && (
           <button
             type="button"
@@ -511,7 +818,7 @@ const LineMarker = React.memo(({
           </button>
         )}
       </div>
-    </Popup>
+    </Popup>}
   </Polyline>
 ));
 
@@ -522,28 +829,47 @@ const PolygonMarker = React.memo(({
   feature,
   isSelected,
   color,
+  fillColor,
+  boundaryColor,
+  opacity,
+  labelText,
+  interactive = true,
+  labelColor,
+  haloColor,
+  fontSize,
   onFeatureSelect,
   onFillQuestionnaire,
+  allowAttributeEdit = true,
 }: {
   feature: GeoFeature;
   isSelected: boolean;
   color: string;
+  fillColor?: string;
+  boundaryColor?: string;
+  opacity?: number;
+  labelText?: string;
+  interactive?: boolean;
+  labelColor: string;
+  haloColor: string;
+  fontSize: number;
   onFeatureSelect: (f: GeoFeature) => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
+  allowAttributeEdit?: boolean;
 }) => (
   <Polygon
+    interactive={interactive}
     positions={feature.geometry.coordinates[0].map((coord: [number, number]) => [coord[1], coord[0]])}
     pathOptions={{ 
-      color: isSelected ? '#3b82f6' : color, 
-      fillColor: color, 
-      fillOpacity: 0.4,
+      className: interactive ? undefined : 'survey-layer-inactive',
+      color: isSelected ? '#3b82f6' : boundaryColor || color,
+      fillColor: fillColor || color,
+      fillOpacity: opacity ?? 0.4,
       weight: isSelected ? 3 : 1
     }}
-    eventHandlers={{
-      click: () => onFeatureSelect(feature)
-    }}
+    eventHandlers={{}}
   >
-    <Popup autoPan={false}>
+    {labelText && <Tooltip permanent direction="center" className="map-feature-label"><span style={{ color: labelColor, fontSize, textShadow: labelHaloShadow(haloColor) }}>{labelText}</span></Tooltip>}
+    {interactive && <Popup autoPan={false}>
       <div className="min-w-[220px]">
         <div className="flex items-center justify-between mb-1.5">
           <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
@@ -571,7 +897,7 @@ const PolygonMarker = React.memo(({
             </tbody>
           </table>
         </div>
-        <button
+        {allowAttributeEdit && <button
           type="button"
           className="w-full bg-blue-600 text-white text-xs font-medium py-1.5 rounded hover:bg-blue-700"
           onClick={(e) => {
@@ -580,7 +906,7 @@ const PolygonMarker = React.memo(({
           }}
         >
           Edit Attributes
-        </button>
+        </button>}
         {onFillQuestionnaire && (
           <button
             type="button"
@@ -594,7 +920,7 @@ const PolygonMarker = React.memo(({
           </button>
         )}
       </div>
-    </Popup>
+    </Popup>}
   </Polygon>
 ));
 
@@ -658,19 +984,19 @@ const LandmarkGeoJsonPoint = React.memo(({
 
 LandmarkGeoJsonPoint.displayName = 'LandmarkGeoJsonPoint';
 
-// SurveyLocationCircle — renders a single HH-Survey GPS marker (one per
+// SurveyLocationCircle â€” renders a single HH-Survey GPS marker (one per
 // questionnaire response). Dark-ash fill is distinct from existing layers
 // (amber landmarks, status-coloured features) so the layer reads
 // instantly. Outline encodes status so reviewers can tell drafts apart
 // from submitted/reviewed at a glance.
-const SURVEY_LOCATION_FILL = '#374151'; // gray-700 — dark ash
+const SURVEY_LOCATION_FILL = '#374151'; // gray-700 â€” dark ash
 const SURVEY_LOCATION_OUTLINE_BY_STATUS: Record<string, string> = {
-  draft: '#9ca3af',     // gray-400 — provisional / still in progress (pale ash)
-  submitted: '#111827', // gray-900 — accepted, awaiting review (near-black ring)
-  reviewed: '#16a34a'   // green-600 — fully processed (kept green for "done")
+  draft: '#9ca3af',     // gray-400 â€” provisional / still in progress (pale ash)
+  submitted: '#111827', // gray-900 â€” accepted, awaiting review (near-black ring)
+  reviewed: '#16a34a'   // green-600 â€” fully processed (kept green for "done")
 };
 function formatSurveyTimestamp(value: unknown): string {
-  if (!value) return '—';
+  if (!value) return 'â€”';
   try {
     // Firestore Timestamps expose `.toDate()`; ISO strings are also accepted.
     if (typeof value === 'object' && value && typeof (value as any).toDate === 'function') {
@@ -683,7 +1009,7 @@ function formatSurveyTimestamp(value: unknown): string {
   } catch {
     /* fall through to placeholder */
   }
-  return '—';
+  return 'â€”';
 }
 const SurveyLocationCircle: React.FC<{ point: SurveyLocationMarker }> = React.memo(({ point }) => {
   const status = point.status ?? 'submitted';
@@ -742,7 +1068,7 @@ const SurveyLocationCircle: React.FC<{ point: SurveyLocationMarker }> = React.me
               {typeof point.accuracy === 'number' ? (
                 <tr className="border-b border-gray-100">
                   <td className="py-1 pr-2 font-semibold text-gray-600">Accuracy</td>
-                  <td className="py-1 text-gray-800">±{Math.round(point.accuracy)} m</td>
+                  <td className="py-1 text-gray-800">Â±{Math.round(point.accuracy)} m</td>
                 </tr>
               ) : null}
               <tr>
@@ -760,14 +1086,21 @@ SurveyLocationCircle.displayName = 'SurveyLocationCircle';
 
 export const MapComponent: React.FC<MapComponentProps> = ({ 
   features, 
+  projectId,
   wards = null,
   getAdminLandmarkEnumeratorDisplayName,
   enumeratorLandmarkWardFilter,
   onFeatureSelect, 
+  activeSurveyLayerKeys = [],
+  projectMapLayerStyles = {},
+  projectMapLayerStylesByProject = {},
+  surveyLayerActions = {},
+  focusSelectedFeatures = true,
   onRequestMoveFeature,
   onCancelMoveFeature,
   onLandmarkPointSelect,
   onFillQuestionnaire,
+  onSurveyActionRequest,
   selectedFeatureId,
   featureFocusRequestKey,
   movingFeatureId,
@@ -781,9 +1114,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   defaultShowSurveyLocations = true,
   onSurveyLocationsVisibilityChange,
   zoneBoundaries = null,
+  importedZoneLayers,
   zoneFitKey = '',
+  assignedBoundaryLayerKey = null,
+  assignedBoundaryField = null,
+  assignedBoundaryValues = [],
   defaultBaseMap = 'osm',
   defaultShowZones = true,
+  importedExtentRequest = null,
 }) => {
   const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
@@ -795,19 +1133,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showWards, setShowWards] = useState(
     defaultShowWards ?? hasWardLayer
   );
-  const [showZones, setShowZones] = useState(defaultShowZones);
+  const [showZones, setShowZones] = useState(() => readStoredZoneVisibility(projectId, defaultShowZones));
+  const [zoneLayerVisibility, setZoneLayerVisibility] = useState<Record<string, boolean>>(() => readStoredZoneLayerVisibility(projectId));
+  const [mapLayerSettings, setMapLayerSettings] = useState(() => ({ ...readMapLayerSettings(projectId), ...projectMapLayerStyles }));
   const [showLandmarks, setShowLandmarks] = useState(defaultShowLandmarks);
   const [showSurveyLocations, setShowSurveyLocations] = useState(defaultShowSurveyLocations);
   // Multi-layer support: track visibility of user-imported layers (default: all visible)
-  const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
+  const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>(
+    () => readStoredMapLayerVisibility(projectId)
+  );
 
   useEffect(() => {
     onSurveyLocationsVisibilityChange?.(showSurveyLocations);
   }, [showSurveyLocations, onSurveyLocationsVisibilityChange]);
-  const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(false);
+  const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(true);
   const [enumeratorLocationFocusKey, setEnumeratorLocationFocusKey] = useState(0);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>(defaultBaseMap);
+  const [mapZoom, setMapZoom] = useState(0);
   useEffect(() => {
     setBaseMap(defaultBaseMap);
   }, [defaultBaseMap]);
@@ -818,8 +1161,33 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     setShowWards(defaultShowWards ?? hasWardLayer);
   }, [defaultShowWards, hasWardLayer]);
   useEffect(() => {
-    setShowZones(defaultShowZones);
-  }, [defaultShowZones]);
+    if (!projectId) return;
+    try {
+      window.localStorage.setItem(`${MAP_LAYER_VISIBILITY_PREFIX}${projectId}`, JSON.stringify(layerVisibility));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [projectId, layerVisibility]);
+  useEffect(() => {
+    if (!projectId) return;
+    try {
+      window.localStorage.setItem(`${MAP_ZONE_VISIBILITY_PREFIX}${projectId}`, String(showZones));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [projectId, showZones]);
+  useEffect(() => {
+    if (!projectId) return;
+    try {
+      window.localStorage.setItem(`${MAP_ZONE_LAYER_VISIBILITY_PREFIX}${projectId}`, JSON.stringify(zoneLayerVisibility));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [projectId, zoneLayerVisibility]);
+  useEffect(() => {
+    setMapLayerSettings({ ...readMapLayerSettings(projectId), ...projectMapLayerStyles });
+    return subscribeMapLayerSettings(() => setMapLayerSettings({ ...readMapLayerSettings(projectId), ...projectMapLayerStyles }));
+  }, [projectId, projectMapLayerStyles]);
   const landmarksLayerEnabled = defaultShowLandmarks;
   const [landmarkIconScale, setLandmarkIconScale] = useState(readStoredLandmarkIconScale);
   const landmarkPoints = useLandmarkGeoJsonPoints(
@@ -834,7 +1202,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const distinctImportedLayers = useMemo(() => {
     const layerMap = new Map<string, { count: number; types: Set<string> }>();
     for (const f of features) {
-      const name = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || '').trim();
+      const name = importedLayerName(f);
       if (!name) continue;
       const existing = layerMap.get(name) || { count: 0, types: new Set<string>() };
       existing.count++;
@@ -848,11 +1216,51 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     }));
   }, [features]);
 
+  const getLayerStyle = (kind: 'feature' | 'zone', id: string, layerProjectId?: string) => {
+    const key = mapLayerStyleKey(kind, id);
+    const projectStyles = layerProjectId ? projectMapLayerStylesByProject[layerProjectId] : undefined;
+    const savedStyle = projectStyles
+      ? projectStyles[key]
+      : mapLayerSettings[key];
+    return {
+      ...DEFAULT_MAP_LAYER_STYLE,
+      ...(kind === 'zone' ? { labelsVisible: true } : {}),
+      ...savedStyle,
+    };
+  };
+
+  const duplicateZonePolygonFeatureIds = useMemo(() => {
+    if (!isEnumeratorUser) return new Set<string>();
+    const zoneGeometryKeys = new Set<string>();
+    const addZoneFeatures = (collection?: GeoJSON.FeatureCollection | null) => {
+      for (const feature of collection?.features || []) {
+        const geometryKey = polygonGeometryKey(feature.geometry);
+        if (!geometryKey) continue;
+        const projectKey = String(feature.properties?.__projectId || '');
+        zoneGeometryKeys.add(`${projectKey}:${geometryKey}`);
+      }
+    };
+    addZoneFeatures(zoneBoundaries);
+    importedZoneLayers?.forEach((layer) => addZoneFeatures(layer.data));
+
+    return new Set(
+      features
+        .filter((feature) => {
+          if (feature.type !== 'polygon') return false;
+          const projectKey = String(feature.attributes?.projectId || (feature as any).projectId || '');
+          const geometryKey = polygonGeometryKey(feature.geometry);
+          return !!geometryKey && zoneGeometryKeys.has(`${projectKey}:${geometryKey}`);
+        })
+        .map((feature) => feature.id)
+    );
+  }, [isEnumeratorUser, features, zoneBoundaries, importedZoneLayers]);
+
   const isFeatureLayerVisible = useCallback((f: GeoFeature) => {
-    const name = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || '').trim();
+    if (duplicateZonePolygonFeatureIds.has(f.id)) return false;
+    const name = importedLayerName(f);
     if (!name) return true; // Default features without layer name are visible
     return layerVisibility[name] !== false; // Visible unless explicitly unchecked
-  }, [layerVisibility]);
+  }, [duplicateZonePolygonFeatureIds, layerVisibility]);
 
   const selectedFeature = selectedFeatureId
     ? features.find((f) => f.id === selectedFeatureId) || null
@@ -990,17 +1398,43 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     []
   );
 
+  const combinedImportedZoneData = useMemo<GeoJSON.FeatureCollection | null>(() => {
+    if (!importedZoneLayers?.length) return null;
+    const visibleLayers = importedZoneLayers.filter(
+      (layer) => zoneLayerVisibility[layer.id] !== false && layer.data?.features?.length > 0
+    );
+    if (!visibleLayers.length) return null;
+    const allFeatures = visibleLayers.flatMap((layer) => layer.data.features);
+    if (!allFeatures.length) return null;
+    return {
+      type: 'FeatureCollection',
+      features: allFeatures,
+    };
+  }, [importedZoneLayers, zoneLayerVisibility]);
+
+  const fallbackZoneStyle = useMemo(() => {
+    const layerId = String(zoneBoundaries?.features?.[0]?.properties?.__layerId || '');
+    const layerProjectId = String(zoneBoundaries?.features?.[0]?.properties?.__projectId || projectId || '');
+    return getLayerStyle('zone', layerId, layerProjectId);
+  }, [zoneBoundaries, mapLayerSettings, projectMapLayerStylesByProject, projectId]);
+
   return (
     <div className="relative w-full h-full">
       <MapContainer 
-        center={[22.3569, 91.7832]} // Chattogram, Bangladesh
-        zoom={13}
+        center={[23.7, 90.4]}
+        zoom={7}
         zoomControl={false}
         attributionControl={false}
         maxZoom={22}
         className="w-full h-full"
       >
-        <FocusOnSelectedFeature feature={selectedFeature} focusRequestKey={featureFocusRequestKey} />
+        <MapZoomListener onZoomChange={setMapZoom} />
+        <FocusOnSelectedFeature feature={focusSelectedFeatures ? selectedFeature : null} focusRequestKey={featureFocusRequestKey} />
+        <FitToImportedExtent request={importedExtentRequest} />
+        <FitToImportedFeatures features={features} projectId={projectId} assignedLayerKey={assignedBoundaryLayerKey} assignedField={assignedBoundaryField} assignedValues={assignedBoundaryValues} />
+        {combinedImportedZoneData && (
+          <FitToZoneBoundaries data={combinedImportedZoneData} fitKey={zoneFitKey} />
+        )}
         {baseMap === 'osm' && (
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -1045,64 +1479,48 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
 
         {/* Assigned / project zone boundaries from SHP import */}
-        {showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
+        {importedZoneLayers?.map((zoneLayer) => {
+          if (zoneLayerVisibility[zoneLayer.id] === false) return null;
+          const style = getLayerStyle('zone', zoneLayer.id, zoneLayer.projectId);
+          return (
+          <React.Fragment key={`zone-layer-${zoneLayer.id}`}>
+            <ScaleAwareZoneLayer
+              data={zoneLayer.data}
+              color={style.boundaryColor}
+              fillColor={style.fillColor}
+              opacity={style.opacity}
+              labelsVisible={style.labelsVisible}
+              labelField={style.labelField}
+              labelColor={style.labelColor}
+              haloColor={style.haloColor}
+              fontSize={style.fontSize}
+              layerName={zoneLayer.name}
+              surveyLayerKey={`zone:${zoneLayer.id}`}
+              projectId={projectId}
+              interactive={surveyLayerKeyMatches(activeSurveyLayerKeys, `zone:${zoneLayer.id}`)}
+              onFeatureSelect={onSurveyActionRequest}
+            />
+          </React.Fragment>
+          );
+        })}
+        {(!importedZoneLayers?.length) && showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
           <>
             <FitToZoneBoundaries data={zoneBoundaries} fitKey={zoneFitKey} />
-            <GeoJSON
-              key={`zones-${zoneFitKey}-${zoneBoundaries.features.length}-${String(
-                zoneBoundaries.features[0]?.properties?.__labelField || ''
-              )}`}
+            <ScaleAwareZoneLayer
               data={zoneBoundaries}
-              style={() => ({
-                color: '#0284c7',
-                weight: 2,
-                fillColor: '#0ea5e9',
-                fillOpacity: 0.08,
-              })}
-              onEachFeature={(feature, layer) => {
-                const label =
-                  feature.properties?.__label ||
-                  feature.properties?.__assignValue ||
-                  feature.properties?.ZONE_ID ||
-                  feature.properties?.Ward_Name ||
-                  feature.properties?.NAME ||
-                  feature.properties?.Name;
-                if (label) {
-                  layer.bindTooltip(String(label), {
-                    permanent: true,
-                    direction: 'center',
-                    className: 'zone-label',
-                    opacity: 1,
-                  });
-                }
-                const baseStyle: L.PathOptions = {
-                  color: '#0284c7',
-                  weight: 2,
-                  fillColor: '#0ea5e9',
-                  fillOpacity: 0.08,
-                };
-                const hoverStyle: L.PathOptions = {
-                  color: '#38bdf8',
-                  weight: 4,
-                  fillColor: '#7dd3fc',
-                  fillOpacity: 0.22,
-                };
-                layer.on({
-                  mouseover: (e) => {
-                    const target = e.target as L.Path;
-                    target.setStyle(hoverStyle);
-                    if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
-                      target.bringToFront();
-                    }
-                  },
-                  mouseout: (e) => {
-                    (e.target as L.Path).setStyle(baseStyle);
-                  },
-                  click: (e) => {
-                    L.DomEvent.stopPropagation(e);
-                  },
-                });
-              }}
+              color={fallbackZoneStyle.boundaryColor}
+              fillColor={fallbackZoneStyle.fillColor}
+              opacity={fallbackZoneStyle.opacity}
+              labelsVisible={fallbackZoneStyle.labelsVisible}
+              labelField={fallbackZoneStyle.labelField}
+              labelColor={fallbackZoneStyle.labelColor}
+              haloColor={fallbackZoneStyle.haloColor}
+              fontSize={fallbackZoneStyle.fontSize}
+              layerName={String(zoneBoundaries.features[0]?.properties?.__label || 'Zones')}
+              surveyLayerKey={`zone:${String(zoneBoundaries.features[0]?.properties?.__layerId || '')}`}
+              projectId={projectId}
+              interactive={surveyLayerKeyMatches(activeSurveyLayerKeys, `zone:${String(zoneBoundaries.features[0]?.properties?.__layerId || '')}`)}
+              onFeatureSelect={onSurveyActionRequest}
             />
           </>
         )}
@@ -1113,6 +1531,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const isMoveTarget = feature.id === movingFeatureId;
           const isPulsing = feature.id === pulseFeatureId;
           const color = getFeatureColor(feature);
+          const layerName = importedLayerName(feature);
+          const isImportedLayerFeature = Boolean(layerName);
+          const surveySelectable = isImportedLayerFeature && surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${layerName}`);
+          const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === `feature:${layerName}`.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
+          const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || projectId || '');
+          const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
+          const fillColor = layerStyle?.fillColor || color;
+          const boundaryColor = layerStyle?.boundaryColor || color;
+          const opacity = layerStyle?.opacity;
+          const labelField = layerStyle?.labelField;
+          const labelText = layerStyle?.labelsVisible && mapZoom >= featureLabelMinZoom(feature)
+            ? String((labelField ? feature.attributes?.[labelField] : undefined) ?? feature.attributes?.name ?? feature.attributes?.Name ?? feature.attributes?.label ?? '')
+            : '';
 
           if (feature.type === 'point') {
             // For legacy CCC landmark points, respect showLandmarks. For generic uploaded / project features, show them on the map.
@@ -1124,18 +1555,27 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 : undefined;
             return (
               <PointMarker
-                key={`${feature.id}:${feature.status ?? 'pending'}`}
+                key={`${feature.id}:${feature.status ?? 'pending'}:${surveySelectable ? 'active' : 'inactive'}`}
                 feature={feature}
                 isSelected={isSelected}
                 isMoveTarget={isMoveTarget}
                 isPulsing={isPulsing}
-                color={color}
+                color={fillColor}
+                boundaryColor={boundaryColor}
+                opacity={opacity}
+                labelText={labelText}
+                interactive={surveySelectable}
+                labelColor={layerStyle?.labelColor || DEFAULT_MAP_LAYER_STYLE.labelColor}
+                haloColor={layerStyle?.haloColor || DEFAULT_MAP_LAYER_STYLE.haloColor}
+                fontSize={layerStyle?.fontSize ?? DEFAULT_MAP_LAYER_STYLE.fontSize}
                 radius={radiusForLandmark(7, isSelected, isPulsing)}
                 adminEnumeratorDisplayName={adminEnumeratorDisplayName}
                 onFeatureSelect={handleFeatureSelect}
                 onRequestMoveFeature={handleRequestMoveFeature}
                 onCancelMoveFeature={handleCancelMoveFeature}
-                onFillQuestionnaire={onFillQuestionnaire}
+                onFillQuestionnaire={surveySelectable && surveyAction !== 'edit' ? onFillQuestionnaire : undefined}
+                allowAttributeEdit={surveyAction !== 'questionnaire'}
+                allowMoveActions={!isImportedLayerFeature}
               />
             );
           }
@@ -1143,12 +1583,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (feature.type === 'line') {
             return (
               <LineMarker
-                key={`${feature.id}:${feature.status ?? 'pending'}`}
+                key={`${feature.id}:${feature.status ?? 'pending'}:${surveySelectable ? 'active' : 'inactive'}`}
                 feature={feature}
                 isSelected={isSelected}
-                color={color}
+                color={fillColor}
+                boundaryColor={boundaryColor}
+                opacity={opacity}
+                labelText={labelText}
+                interactive={surveySelectable}
+                labelColor={layerStyle?.labelColor || DEFAULT_MAP_LAYER_STYLE.labelColor}
+                haloColor={layerStyle?.haloColor || DEFAULT_MAP_LAYER_STYLE.haloColor}
+                fontSize={layerStyle?.fontSize ?? DEFAULT_MAP_LAYER_STYLE.fontSize}
                 onFeatureSelect={handleFeatureSelect}
-                onFillQuestionnaire={onFillQuestionnaire}
+                onFillQuestionnaire={surveySelectable && surveyAction !== 'edit' ? onFillQuestionnaire : undefined}
+                allowAttributeEdit={surveyAction !== 'questionnaire'}
               />
             );
           }
@@ -1156,12 +1604,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           if (feature.type === 'polygon') {
             return (
               <PolygonMarker
-                key={`${feature.id}:${feature.status ?? 'pending'}`}
+                key={`${feature.id}:${feature.status ?? 'pending'}:${surveySelectable ? 'active' : 'inactive'}`}
                 feature={feature}
                 isSelected={isSelected}
-                color={color}
+                color={fillColor}
+                fillColor={fillColor}
+                boundaryColor={boundaryColor}
+                opacity={opacity}
+                labelText={labelText}
+                interactive={surveySelectable}
+                labelColor={layerStyle?.labelColor || DEFAULT_MAP_LAYER_STYLE.labelColor}
+                haloColor={layerStyle?.haloColor || DEFAULT_MAP_LAYER_STYLE.haloColor}
+                fontSize={layerStyle?.fontSize ?? DEFAULT_MAP_LAYER_STYLE.fontSize}
                 onFeatureSelect={handleFeatureSelect}
-                onFillQuestionnaire={onFillQuestionnaire}
+                onFillQuestionnaire={surveySelectable && surveyAction !== 'edit' ? onFillQuestionnaire : undefined}
+                allowAttributeEdit={surveyAction !== 'questionnaire'}
               />
             );
           }
@@ -1204,7 +1661,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             );
           })}
 
-        {/* HH Survey Location layer — one CircleMarker per questionnaire
+        {/* HH Survey Location layer â€” one CircleMarker per questionnaire
             response GPS. Distinct violet fill keeps it readable against
             both green/red feature markers and amber landmark dots. Status
             tints the outline so reviewers can tell drafts apart from
@@ -1341,7 +1798,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   <span>Ward Boundaries</span>
                 </label>
               )}
-              {zoneBoundaries && zoneBoundaries.features?.length > 0 && (
+              {importedZoneLayers && importedZoneLayers.length > 0 ? (
+                <div className="mt-2 border-t border-slate-100 pt-2">
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Uploaded SHP layers</p>
+                  <div className="max-h-36 space-y-1 overflow-y-auto">
+                    {importedZoneLayers.map((item) => (
+                      <label key={item.id} className="flex items-center justify-between gap-2 cursor-pointer font-medium text-slate-700">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={zoneLayerVisibility[item.id] !== false}
+                            onChange={(event) => setZoneLayerVisibility((previous) => ({ ...previous, [item.id]: event.target.checked }))}
+                          />
+                          <span className="truncate">{item.name}</span>
+                        </span>
+                        <span className="shrink-0 text-[11px] font-normal text-slate-500">({item.data.features.length})</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : zoneBoundaries && zoneBoundaries.features?.length > 0 ? (
                 <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
                   <input
                     type="checkbox"
@@ -1356,7 +1832,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     </span>
                   </span>
                 </label>
-              )}
+              ) : null}
               {/* Only render the HH Survey Location toggle when the parent
                   actually supplies the layer data. Hiding the control when
                   there's nothing to show keeps the panel uncluttered for
@@ -1395,7 +1871,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                       }
                     }}
                   />
-                  <span>My Current Location</span>
+                  <span className="flex items-center gap-1.5">
+                    <LocateFixed className="h-4 w-4 text-blue-600" aria-hidden="true" />
+                    My Current Location
+                  </span>
                 </label>
               )}
             </div>
@@ -1413,11 +1892,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   {distinctImportedLayers.map((lyr) => {
                     const isVisible = layerVisibility[lyr.name] !== false;
                     return (
-                      <label
-                        key={lyr.name}
-                        className="flex items-center justify-between gap-2 p-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-xs"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
+                      <div key={lyr.name} className="rounded-lg hover:bg-slate-50">
+                      <div className="flex items-center justify-between gap-2 p-1.5 text-xs">
+                        <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
                           <input
                             type="checkbox"
                             checked={isVisible}
@@ -1433,7 +1910,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                           <span className={`truncate font-medium ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
                             {lyr.name}
                           </span>
-                        </div>
+                        </label>
                         <div className="flex items-center gap-1 shrink-0">
                           {lyr.types.map((t) => (
                             <span
@@ -1451,7 +1928,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                           ))}
                           <span className="text-[10px] text-slate-400">({lyr.count})</span>
                         </div>
-                      </label>
+                      </div>
+                      </div>
                     );
                   })}
                 </div>

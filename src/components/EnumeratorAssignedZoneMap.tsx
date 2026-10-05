@@ -10,6 +10,7 @@ import {
 } from '../lib/pointInPolygon';
 import { useGeoLocation } from './GeoLocationProvider';
 import type { SurveyLocationPoint } from '../hooks/useQuestionnaireSurveyLocations';
+import { DEFAULT_MAP_LAYER_STYLE, mapLayerStyleKey, type MapLayerStyle } from '../lib/mapLayerSettings';
 
 const FitAssignedZones: React.FC<{ zones: ZonePolygon[] }> = ({ zones }) => {
   const map = useMap();
@@ -124,11 +125,28 @@ export const EnumeratorAssignedZoneMap: React.FC<{
   surveyLocations?: SurveyLocationPoint[];
   surveyLocationsLoading?: boolean;
   surveyLocationsError?: Error | null;
-}> = ({ zones, onHide, surveyLocations, surveyLocationsLoading = false, surveyLocationsError }) => {
+  projectMapLayerStyles?: Record<string, MapLayerStyle>;
+  projectMapLayerStylesByProject?: Record<string, Record<string, MapLayerStyle>>;
+}> = ({ zones, onHide, surveyLocations, surveyLocationsLoading = false, surveyLocationsError, projectMapLayerStyles = {}, projectMapLayerStylesByProject = {} }) => {
   const { location, error, requestLocation } = useGeoLocation();
   const [focusRequestKey, setFocusRequestKey] = useState(0);
   const [showSurveyLocations, setShowSurveyLocations] = useState(true);
   const zoneGeoJson = useMemo(() => zonesToGeoJson(zones), [zones]);
+  const zoneStyleFor = (projectId: string, layerId: string) => {
+    const projectStyles = projectMapLayerStylesByProject[projectId];
+    const savedStyle = projectStyles?.[mapLayerStyleKey('zone', layerId)]
+      ?? projectMapLayerStyles[mapLayerStyleKey('zone', layerId)];
+    const style = { ...DEFAULT_MAP_LAYER_STYLE, labelsVisible: true, ...savedStyle };
+    return {
+      base: { color: style.boundaryColor, weight: 2, opacity: 1, fillColor: style.fillColor, fillOpacity: style.opacity } as L.PathOptions,
+      hover: { color: style.boundaryColor, weight: 4, opacity: 1, fillColor: style.fillColor, fillOpacity: Math.min(1, style.opacity + 0.18) } as L.PathOptions,
+      labelsVisible: style.labelsVisible,
+      labelField: style.labelField,
+      labelColor: style.labelColor,
+      haloColor: style.haloColor,
+      fontSize: style.fontSize,
+    };
+  };
   const scopedSurveyLocations = useMemo(
     () =>
       (surveyLocations || []).filter((point) =>
@@ -220,47 +238,44 @@ export const EnumeratorAssignedZoneMap: React.FC<{
                 url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
               />
               <GeoJSON
-                key={zones.map((zone) => zone.id).join(':')}
+                key={`${zones.map((zone) => zone.id).join(':')}:${JSON.stringify(projectMapLayerStylesByProject)}:${JSON.stringify(projectMapLayerStyles)}`}
                 data={zoneGeoJson}
-                style={{
-                  color: '#0284c7',
-                  weight: 2,
-                  opacity: 1,
-                  fillColor: '#0ea5e9',
-                  fillOpacity: 0.08,
+                style={(feature) => {
+                  const properties = feature?.properties || {};
+                  return zoneStyleFor(String(properties.__projectId || ''), String(properties.__layerId || '')).base;
                 }}
                 onEachFeature={(feature, layer) => {
-                  const label = String(feature.properties?.__label || '').trim();
-                  if (label) {
-                    layer.bindTooltip(label, {
+                  const properties = feature.properties || {};
+                  const layerStyle = zoneStyleFor(String(properties.__projectId || ''), String(properties.__layerId || ''));
+                  const rawLabel = String((layerStyle.labelField && properties[layerStyle.labelField]) || properties.__label || '').trim();
+                  if (layerStyle.labelsVisible && rawLabel) {
+                    const textColor = /^#[0-9a-f]{6}$/i.test(layerStyle.labelColor) ? layerStyle.labelColor : '#0f172a';
+                    const outlineColor = /^#[0-9a-f]{6}$/i.test(layerStyle.haloColor) ? layerStyle.haloColor : '#ffffff';
+                    const safeSize = Math.min(24, Math.max(8, Number(layerStyle.fontSize) || 11));
+                    const haloShadow = [
+                      `-1.5px -1.5px 0 ${outlineColor}`, `0 -1.5px 0 ${outlineColor}`, `1.5px -1.5px 0 ${outlineColor}`,
+                      `-1.5px 0 0 ${outlineColor}`, `1.5px 0 0 ${outlineColor}`,
+                      `-1.5px 1.5px 0 ${outlineColor}`, `0 1.5px 0 ${outlineColor}`, `1.5px 1.5px 0 ${outlineColor}`,
+                    ].join(', ');
+                    const escaped = rawLabel.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
+                    const content = `<span style="color:${textColor};font-size:${safeSize}px;text-shadow:${haloShadow}">${escaped}</span>`;
+                    layer.bindTooltip(content, {
                       permanent: true,
                       direction: 'center',
                       className: 'zone-label',
                       opacity: 1,
                     });
                   }
-                  const baseStyle: L.PathOptions = {
-                    color: '#0284c7',
-                    weight: 2,
-                    fillColor: '#0ea5e9',
-                    fillOpacity: 0.08,
-                  };
-                  const hoverStyle: L.PathOptions = {
-                    color: '#38bdf8',
-                    weight: 4,
-                    fillColor: '#7dd3fc',
-                    fillOpacity: 0.22,
-                  };
                   layer.on({
                     mouseover: (e) => {
                       const target = e.target as L.Path;
-                      target.setStyle(hoverStyle);
+                      target.setStyle(layerStyle.hover);
                       if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
                         target.bringToFront();
                       }
                     },
                     mouseout: (e) => {
-                      (e.target as L.Path).setStyle(baseStyle);
+                      (e.target as L.Path).setStyle(layerStyle.base);
                     },
                     click: (e) => {
                       L.DomEvent.stopPropagation(e);

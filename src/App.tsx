@@ -21,8 +21,10 @@ import {
   readCachedZoneBundle,
   writeCachedZoneBundle,
 } from './lib/zoneCache';
-import { DEFAULT_PROJECT_ID, deleteProjectDatabase } from './lib/projects';
+import { DEFAULT_PROJECT_ID, deleteProjectDatabase, getCachedGeosurveyProjects, listProjects } from './lib/projects';
 import { geosurveyApi } from './lib/geosurveyApi';
+import { GeospatialUploadStatus, useGeospatialUpload } from './lib/geospatialUploadManager';
+import type { MapLayerStyle } from './lib/mapLayerSettings';
 
 initOfflineSupport();
 
@@ -57,6 +59,9 @@ const EnumeratorQuestionnaireList = lazy(() =>
 );
 const ZoneLayerPanel = lazy(() =>
   import('./components/ZoneLayerPanel').then((m) => ({ default: m.ZoneLayerPanel }))
+);
+const GeospatialLayerManager = lazy(() =>
+  import('./components/GeospatialLayerManager').then((m) => ({ default: m.GeospatialLayerManager }))
 );
 const GeospatialFeatureImportModal = lazy(() =>
   import('./components/GeospatialFeatureImportModal').then((m) => ({
@@ -417,6 +422,7 @@ const AppContent: React.FC = () => {
   const { location, error: gpsError, requestLocation } = useGeoLocation();
 
   const [selectedFeature, setSelectedFeature] = useState<GeoFeature | null>(null);
+  const [pendingSurveyFeature, setPendingSurveyFeature] = useState<GeoFeature | null>(null);
   const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
@@ -424,6 +430,8 @@ const AppContent: React.FC = () => {
     'pending' | 'boundary' | 'geospatial' | 'questionnaire' | 'create'
   >('pending');
   const [showZoneLayerPanel, setShowZoneLayerPanel] = useState(false);
+  const [showLayerManager, setShowLayerManager] = useState(false);
+  const [showGeospatialLayerMenu, setShowGeospatialLayerMenu] = useState(false);
   const [zoneLayer, setZoneLayer] = useState<ZoneLayer | null>(() => {
     if (typeof window === 'undefined') return null;
     try {
@@ -433,6 +441,18 @@ const AppContent: React.FC = () => {
       return readCachedZoneBundle(project.id)?.layer ?? null;
     } catch {
       return null;
+    }
+  });
+  const [zoneLayers, setZoneLayers] = useState<ZoneLayer[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('eqms.currentProject');
+      const project = raw ? (JSON.parse(raw) as Project) : null;
+      if (!project?.id) return [];
+      const cached = readCachedZoneBundle(project.id);
+      return cached?.layers || (cached?.layer ? [cached.layer] : []);
+    } catch {
+      return [];
     }
   });
   const [zonePolygons, setZonePolygons] = useState<ZonePolygon[]>(() => {
@@ -482,6 +502,103 @@ const AppContent: React.FC = () => {
       return null;
     }
   });
+  const [enumeratorMapProjects, setEnumeratorMapProjects] = useState<Project[]>(() => {
+    if (userProfile?.role !== 'enumerator') return [];
+    const allowed = new Set([...(userProfile.assignedGeospatialProjectIds || []), ...Object.keys(userProfile.projectZoneAssignments || {})]);
+    return getCachedGeosurveyProjects().filter((project) => allowed.has(project.id));
+  });
+  const [enumeratorMapProjectsLoading, setEnumeratorMapProjectsLoading] = useState(false);
+  const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
+  const assignedGeoProjectIds = userProfile?.assignedGeospatialProjectIds || [];
+  useEffect(() => {
+    let cancelled = false;
+    let initialProjectTimeout: number | null = null;
+    if (
+      userProfile?.role !== 'enumerator' ||
+      (assignedGeoProjectIds.length === 0 &&
+        !Object.keys(userProfile?.projectZoneAssignments || {}).length)
+    ) {
+      setEnumeratorMapProjects([]);
+      setEnumeratorMapProjectsLoading(false);
+      return;
+    }
+    const cachedProjects = getCachedGeosurveyProjects().filter((project) =>
+      [...assignedGeoProjectIds, ...Object.keys(userProfile.projectZoneAssignments || {})].includes(project.id)
+    );
+    const refreshEnumeratorProjects = async (initial = false) => {
+      if (initial && cachedProjects.length === 0) {
+        setEnumeratorMapProjectsLoading(true);
+        initialProjectTimeout = window.setTimeout(() => {
+          if (!cancelled) setEnumeratorMapProjectsLoading(false);
+        }, 2200);
+      }
+      try {
+        const projects = await listProjects();
+        const allowedProjectIds = new Set([
+          ...assignedGeoProjectIds,
+          ...Object.keys(userProfile.projectZoneAssignments || {}),
+        ]);
+        const assignedProjects = projects.filter((project) => allowedProjectIds.has(project.id));
+        if (!cancelled) {
+          setEnumeratorMapProjects((previous) =>
+            JSON.stringify(previous) === JSON.stringify(assignedProjects) ? previous : assignedProjects
+          );
+        }
+      } catch (error) {
+        console.warn('Could not load assigned geospatial project settings:', error);
+        if (!cancelled && initial) setEnumeratorMapProjects([]);
+      } finally {
+        if (!cancelled && initial) {
+          if (initialProjectTimeout !== null) window.clearTimeout(initialProjectTimeout);
+          setEnumeratorMapProjectsLoading(false);
+        }
+      }
+    };
+    if (enumeratorMapProjects.length === 0 && cachedProjects.length > 0) {
+      setEnumeratorMapProjects(cachedProjects);
+      setEnumeratorMapProjectsLoading(false);
+    }
+    void refreshEnumeratorProjects(true);
+    const refreshOnFocus = () => { void refreshEnumeratorProjects(); };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshEnumeratorProjects();
+    }, 30_000);
+    window.addEventListener('focus', refreshOnFocus);
+    return () => {
+      cancelled = true;
+      if (initialProjectTimeout !== null) window.clearTimeout(initialProjectTimeout);
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshOnFocus);
+    };
+  }, [userProfile?.role, assignedGeoProjectIds.join('|'), Object.keys(userProfile?.projectZoneAssignments || {}).join('|')]);
+  // Enumerators must always use their assigned project's styles and map state;
+  // currentProject is admin-only persisted browser state and can be stale here.
+  const mapProject = isAdmin ? currentProject : enumeratorMapProjects[0] || null;
+  const mapProjectId = mapProject?.id || assignedGeoProjectIds[0];
+  const mapProjectLayerStyles = useMemo<Record<string, MapLayerStyle>>(
+    () => isAdmin
+      ? currentProject?.mapLayerStyles || {}
+      : Object.assign({}, ...enumeratorMapProjects.map((project) => project.mapLayerStyles || {})),
+    [isAdmin, enumeratorMapProjects, currentProject?.mapLayerStyles]
+  );
+  const mapProjectLayerStylesByProject = useMemo(
+    () => isAdmin ? {} : Object.fromEntries(
+      enumeratorMapProjects.map((project) => [project.id, project.mapLayerStyles || {}])
+    ),
+    [isAdmin, enumeratorMapProjects]
+  );
+  const mapActiveSurveyLayerKeys = useMemo(
+    () => isAdmin
+      ? [...new Set(currentProject?.activeSurveyLayerKeys || [])]
+      : [...new Set(enumeratorMapProjects.flatMap((project) => project.activeSurveyLayerKeys || []))],
+    [isAdmin, enumeratorMapProjects, currentProject?.activeSurveyLayerKeys]
+  );
+  const mapSurveyLayerActions = useMemo(
+    () => isAdmin
+      ? currentProject?.surveyLayerActions || {}
+      : Object.assign({}, ...enumeratorMapProjects.map((project) => project.surveyLayerActions || {})),
+    [isAdmin, enumeratorMapProjects, currentProject?.surveyLayerActions]
+  );
   const [dismissedZonePromptProjectId, setDismissedZonePromptProjectId] = useState<string | null>(null);
   useEffect(() => {
     try {
@@ -498,7 +615,14 @@ const AppContent: React.FC = () => {
   const [questionnaireLocation, setQuestionnaireLocation] = useState<{ lat: number; lng: number; ward?: string } | null>(null);
   const [linkedSurveyFeature, setLinkedSurveyFeature] = useState<GeoFeature | null>(null);
   const [showFeatureImportModal, setShowFeatureImportModal] = useState(false);
+  const geospatialUpload = useGeospatialUpload();
+  const handledGeospatialUploadRef = useRef<number | null>(null);
+  const [importedExtentRequest, setImportedExtentRequest] = useState<{
+    key: number;
+    extent: { south: number; west: number; north: number; east: number };
+  } | null>(null);
   const [projectQuestionnaires, setProjectQuestionnaires] = useState<Questionnaire[]>([]);
+  const [featureProjectQuestionnaires, setFeatureProjectQuestionnaires] = useState<Questionnaire[]>([]);
   const [featureQuestionnairePickerOpen, setFeatureQuestionnairePickerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'map' | 'list'>('map');
   const [movingFeature, setMovingFeature] = useState<GeoFeature | null>(null);
@@ -533,13 +657,28 @@ const AppContent: React.FC = () => {
   const [selfMergedAssignedWards, setSelfMergedAssignedWards] = useState<string[]>([]);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const [adminFeaturesRefreshKey, setAdminFeaturesRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (
+      !geospatialUpload ||
+      geospatialUpload.status !== 'success' ||
+      geospatialUpload.projectId !== currentProject?.id ||
+      handledGeospatialUploadRef.current === geospatialUpload.id
+    ) return;
+
+    handledGeospatialUploadRef.current = geospatialUpload.id;
+    setAdminFeaturesRefreshKey((key) => key + 1);
+    setImportedExtentRequest((previous) => ({
+      key: (previous?.key || 0) + 1,
+      extent: geospatialUpload.extent
+    }));
+  }, [geospatialUpload, currentProject?.id]);
   const [enumeratorFeaturesRefreshKey, setEnumeratorFeaturesRefreshKey] = useState(0);
   const backPressArmedUntilRef = useRef(0);
   const [showBackExitWarning, setShowBackExitWarning] = useState(false);
   const backWarningTimerRef = useRef<number | null>(null);
   const allowNextPopToLeaveRef = useRef(false);
 
-  const isAdmin = userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isApprovedEnumerator = userProfile?.role === 'enumerator' && userProfile?.status === 'approved';
   const currentProjectHasGeo = currentProject?.segments?.geospatial === true;
   const currentProjectHasQuestionnaire = currentProject?.segments?.questionnaire !== false;
@@ -755,15 +894,17 @@ const AppContent: React.FC = () => {
     () => (userProfile?.assignedQuestionnaireIds || []).length > 0,
     [userProfile?.assignedQuestionnaireIds]
   );
+  const enumeratorCombinedTasks = isApprovedEnumerator && enumeratorHasGeoTasks && enumeratorHasQTasks;
+  const [enumeratorMapCollapsed, setEnumeratorMapCollapsed] = useState(false);
 
   const [enumeratorMode, setEnumeratorMode] = useState<
     'home' | 'geospatial' | 'questionnaire'
-  >('home');
+  >('geospatial');
 
   // The routing effect below preserves the enumerator's pick, so the chooser
   // has to be reset explicitly when the signed-in account changes.
   useEffect(() => {
-    setEnumeratorMode('home');
+    setEnumeratorMode('geospatial');
   }, [user?.uid]);
 
   // Auto-route enumerators to the only segment they're assigned to. Assignment
@@ -790,9 +931,10 @@ const AppContent: React.FC = () => {
       const hasZones =
         (Array.isArray(userProfile.assignedZoneValues) && userProfile.assignedZoneValues.length > 0) ||
         Object.values(userProfile.projectZoneAssignments || {}).some((v) => Array.isArray(v) && v.length > 0);
+      const hasGeospatialProjects = (userProfile.assignedGeospatialProjectIds?.length || 0) > 0;
       const hasQuestionnaires =
         (userProfile.assignedQuestionnaireIds?.length || 0) > 0;
-      if (!hasWards && !hasZones && hasQuestionnaires) return 'idle';
+      if (!hasWards && !hasZones && !hasGeospatialProjects && hasQuestionnaires) return 'idle';
       return 'enumerator';
     }
     return 'idle';
@@ -805,12 +947,14 @@ const AppContent: React.FC = () => {
     userProfile?.assignedWardNames,
     userProfile?.assignedZoneValues,
     userProfile?.projectZoneAssignments,
+    userProfile?.assignedGeospatialProjectIds,
     userProfile?.assignedQuestionnaireIds,
   ]);
 
-  const { features, loading: featuresLoading, syncState } = useOptimizedFeatures({
+  const { features, loading: featuresLoading, initialLoading: featuresInitialLoading, syncState } = useOptimizedFeatures({
     mode: featuresMode,
-    projectId: currentProject?.id,
+    projectId: isAdmin ? currentProject?.id : undefined,
+    projectIds: !isAdmin ? [...new Set([...assignedGeoProjectIds, ...enumeratorMapProjects.map((project) => project.id)])] : undefined,
     userUid: user?.uid,
     userEmail: user?.email ?? undefined,
     assignedWards: assignedWardsForFilter,
@@ -828,6 +972,7 @@ const AppContent: React.FC = () => {
       if (!isApproved) {
         if (!cancelled) {
           setZoneLayer(null);
+          setZoneLayers([]);
           setZonePolygons([]);
           setZonesLoading(false);
         }
@@ -836,9 +981,33 @@ const AppContent: React.FC = () => {
 
       try {
         if (userProfile?.role === 'enumerator') {
+          const assignedProjectIds: string[] = Array.from(new Set<string>(assignedGeoProjectIds.map((id) => String(id).trim()).filter(Boolean)));
+          if (assignedProjectIds.length > 0) {
+            const cachedProjectId = assignedProjectIds.length === 1 ? assignedProjectIds[0] : '';
+            const cached = cachedProjectId ? readCachedZoneBundle(cachedProjectId) : null;
+            if (cached?.polygons?.length && !cancelled) {
+              setZoneLayer(cached.layer);
+              setZoneLayers(cached.layers || (cached.layer ? [cached.layer] : []));
+              setZonePolygons(cached.polygons);
+              setZonesLoading(false);
+            } else if (!cancelled) {
+              setZonesLoading(true);
+            }
+            const bundles = await Promise.all(assignedProjectIds.map((projectId) => zoneLayersApi.listLayersWithPolygons(projectId)));
+            if (cancelled) return;
+            const layers = bundles.flatMap((bundle) => bundle.items);
+            const polygons = bundles.flatMap((bundle) => bundle.polygons || []);
+            const layer = layers[0] || null;
+            setZoneLayer(layer);
+            setZoneLayers(layers);
+            setZonePolygons(polygons);
+            if (cachedProjectId) writeCachedZoneBundle(cachedProjectId, layer, polygons, layers);
+            return;
+          }
           if (assignedZoneValuesForFilter.length === 0) {
             if (!cancelled) {
               setZoneLayer(null);
+              setZoneLayers([]);
               setZonePolygons([]);
               setZonesLoading(false);
             }
@@ -851,6 +1020,7 @@ const AppContent: React.FC = () => {
           if (cached?.polygons?.length) {
             if (!cancelled) {
               setZoneLayer(cached.layer);
+              setZoneLayers(cached.layers || (cached.layer ? [cached.layer] : []));
               setZonePolygons(cached.polygons);
               setZonesLoading(false);
             }
@@ -872,8 +1042,9 @@ const AppContent: React.FC = () => {
           });
           if (cancelled) return;
           setZoneLayer(layer);
+          setZoneLayers(layer ? [layer] : []);
           setZonePolygons(items);
-          writeCachedZoneBundle(cacheKey, layer, items);
+          writeCachedZoneBundle(cacheKey, layer, items, layer ? [layer] : []);
           return;
         }
 
@@ -882,6 +1053,7 @@ const AppContent: React.FC = () => {
         if (!projectId) {
           if (!cancelled) {
             setZoneLayer(null);
+            setZoneLayers([]);
             setZonePolygons([]);
             setZonesLoading(false);
           }
@@ -893,6 +1065,7 @@ const AppContent: React.FC = () => {
         if (cached) {
           if (!cancelled) {
             setZoneLayer(cached.layer);
+            setZoneLayers(cached.layers || (cached.layer ? [cached.layer] : []));
             setZonePolygons(cached.polygons);
             setZonesLoading(false);
           }
@@ -905,8 +1078,9 @@ const AppContent: React.FC = () => {
         const layer = layers[0] || null;
         const polys = polygons || [];
         setZoneLayer(layer);
+        setZoneLayers(layers);
         setZonePolygons(polys);
-        writeCachedZoneBundle(projectId, layer, polys);
+        writeCachedZoneBundle(projectId, layer, polys, layers);
       } catch (e) {
         console.warn('Failed to load zone polygons', e);
         if (!cancelled) {
@@ -927,6 +1101,8 @@ const AppContent: React.FC = () => {
     userProfile?.role,
     userProfile?.status,
     userProfile?.assignedZoneLayerId,
+    assignedGeoProjectIds.join('|'),
+    Object.keys(userProfile?.projectZoneAssignments || {}).join('|'),
     assignedZoneValuesForFilter,
     zoneRefreshKey,
   ]);
@@ -944,16 +1120,35 @@ const AppContent: React.FC = () => {
     });
   }, [zonePolygons, zoneLayer?.labelField, zoneLayer?.assignmentField]);
 
+  const zoneBoundaryLayers = useMemo(() => zoneLayers.map((item) => ({
+    id: item.id,
+    projectId: item.projectId,
+    name: item.name,
+    featureCount: item.featureCount,
+    data: zonesToGeoJson(
+      zonePolygons.filter((polygon) => polygon.layerId === item.id),
+      { labelField: item.labelField || item.assignmentField || null }
+    ),
+  })).filter((item) => item.data.features.length > 0), [zoneLayers, zonePolygons]);
+
   /** Zone-SHP mode: project has an imported boundary layer (generic geospatial). */
   const useZoneMode = !!zoneLayer;
 
   /**
    * Geospatial project map mode — true as soon as the opened project has geospatial
-   * enabled (even before the SHP finishes loading). Hides legacy CCC wards/landmarks
-   * so opening a project never flashes Chattogram CCC data.
+   * enabled, or while enumerator assigned projects are loading, or when any project is active.
+   * Completely hides legacy CCC wards/landmarks so opening any project never flashes Chattogram CCC data.
    */
   const geospatialMapMode = Boolean(
-    (isAdmin && currentProjectHasGeo) || useZoneMode || (!isAdmin && assignedZoneValuesForFilter.length > 0)
+    (isAdmin && (currentProjectHasGeo || !!currentProject)) ||
+    useZoneMode ||
+    (!isAdmin && (
+      assignedZoneValuesForFilter.length > 0 ||
+      enumeratorMapProjects.length > 0 ||
+      enumeratorMapProjectsLoading ||
+      assignedGeoProjectIds.length > 0 ||
+      Object.keys(userProfile?.projectZoneAssignments || {}).length > 0
+    ))
   );
 
   // Geospatial Assignment has no Map View / Table List — stay on the map canvas.
@@ -992,7 +1187,10 @@ const AppContent: React.FC = () => {
     currentProject?.segments?.questionnaireGeofence,
   ]);
 
-  const zoneFitKey = `${currentProject?.id || userProfile?.assignedZoneLayerId || 'zones'}:${zoneLayer?.id || ''}:${zonePolygons.length}`;
+  const zoneFitKey = `${mapProjectId || currentProject?.id || userProfile?.assignedZoneLayerId || 'zones'}:${zoneLayer?.id || ''}:${zonePolygons.length}`;
+  const mapAssignmentValues = !isAdmin && mapProjectId
+    ? (userProfile?.projectZoneAssignments?.[mapProjectId] || (mapProjectId === currentProject?.id ? userProfile?.assignedZoneValues : []) || [])
+    : [];
 
   // HH Survey Locations layer — reuse the same role gating as features so
   // approved admins see every response's GPS pin and approved enumerators
@@ -1033,12 +1231,30 @@ const AppContent: React.FC = () => {
       return (myEmail && byEmail === myEmail) || (myUid && byUid === myUid);
     };
 
+    const matchesAssignedPolygonLayer = (feature: GeoFeature) => {
+      const layerName = String(feature.attributes?.__layerName || feature.attributes?.layerName || (feature as any).layerName || '');
+      const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || mapProjectId || '');
+      const project = enumeratorMapProjects.find((item) => item.id === featureProjectId);
+      const assignmentKey = project?.geospatialAssignmentLayerId || '';
+      if (!assignmentKey.startsWith('feature:') || assignmentKey.slice('feature:'.length) !== layerName) return true;
+      const values = userProfile?.projectZoneAssignments?.[featureProjectId] ||
+        (featureProjectId === currentProject?.id ? userProfile?.assignedZoneValues || [] : []);
+      if (!values.length) return true;
+      const field = project?.geospatialAssignmentField || '';
+      const targetValue = String(feature.attributes?.[field] ?? '').trim().toLowerCase();
+      return new Set(values.map((value) => String(value).trim().toLowerCase())).has(targetValue);
+    };
+
     if (geospatialMapMode) {
       // Allow enumerator to see project features (e.g. uploaded GeoJSON features for this project) as well as features they created
       return scoped.filter((f) => {
-        if (currentProject?.id && (f.attributes?.projectId === currentProject.id || (f as any).projectId === currentProject.id)) {
-          return true;
-        }
+        if (!matchesAssignedPolygonLayer(f)) return false;
+        const featureProjectId = String(f.attributes?.projectId || (f as any).projectId || '');
+        if (featureProjectId && [...assignedGeoProjectIds, ...enumeratorMapProjects.map((project) => project.id)].includes(featureProjectId)) return true;
+        // Project-scoped API requests already enforce assignment access. Some older
+        // imported feature payloads lack projectId even though their database row is
+        // indexed to the assigned project, so keep those returned records visible.
+        if (!featureProjectId && (assignedGeoProjectIds.length > 0 || enumeratorMapProjects.length > 0)) return true;
         return isCreatedByMe(f);
       });
     }
@@ -1051,7 +1267,7 @@ const AppContent: React.FC = () => {
     return scoped.filter((f) =>
       featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
-  }, [isAdmin, features, assignedWardsForFilter, wardsData, user?.email, user?.uid, geospatialMapMode]);
+  }, [isAdmin, features, assignedWardsForFilter, enumeratorMapProjects, assignedGeoProjectIds.join('|'), wardsData, user?.email, user?.uid, geospatialMapMode, userProfile?.projectZoneAssignments, userProfile?.assignedZoneValues, currentProject?.id, mapProjectId]);
 
   const enumeratorSyncUi = useMemo(() => {
     if (isAdmin) {
@@ -2329,8 +2545,10 @@ const AppContent: React.FC = () => {
         const res = await geosurveyApi.listQuestionnaires();
         if (cancelled) return;
         const all = (res.items as unknown as Questionnaire[]) || [];
-        const pid = currentProject?.id || DEFAULT_PROJECT_ID;
-        const filtered = all.filter((q) => (q.projectId || DEFAULT_PROJECT_ID) === pid && q.isActive !== false);
+        const allowedProjectIds = isApprovedEnumerator && assignedGeoProjectIds.length
+          ? new Set(assignedGeoProjectIds)
+          : new Set([currentProject?.id || DEFAULT_PROJECT_ID]);
+        const filtered = all.filter((q) => allowedProjectIds.has(q.projectId || DEFAULT_PROJECT_ID) && q.isActive !== false);
         setProjectQuestionnaires(filtered);
       } catch (err) {
         console.warn('Failed to load project questionnaires:', err);
@@ -2340,12 +2558,19 @@ const AppContent: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [currentProject?.id]);
+  }, [currentProject?.id, isApprovedEnumerator, assignedGeoProjectIds.join('|')]);
 
   /** Launch questionnaire survey directly linked to a geospatial feature */
   const handleStartQuestionnaireForFeature = useCallback(
     (feature: GeoFeature) => {
-      setLinkedSurveyFeature(feature);
+      const attributes = feature.attributes || {};
+      const layerName = String(attributes.__layerName || attributes.layerName || (feature as any).layerName || (attributes.projectId || (feature as any).projectId ? 'Unassigned layer' : '')).trim();
+      const layerKey = String(attributes.__surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
+      const featureProjectId = String(attributes.projectId || (feature as any).projectId || currentProject?.id || '');
+      const featureProject = enumeratorMapProjects.find((project) => project.id === featureProjectId) || currentProject;
+      const selectedFields = layerKey ? featureProject?.surveyLayerQuestionFields?.[layerKey] || [] : [];
+      const linkedAttributes = Object.fromEntries(selectedFields.filter((field) => Object.prototype.hasOwnProperty.call(attributes, field)).map((field) => [field, attributes[field]]));
+      setLinkedSurveyFeature({ ...feature, surveyLayerKey: layerKey, attributes: linkedAttributes });
 
       // Compute centroid or point coordinates for initial location
       let lat: number | undefined;
@@ -2387,13 +2612,17 @@ const AppContent: React.FC = () => {
       }
 
       // If exactly one questionnaire in project, open directly
-      if (projectQuestionnaires.length === 1) {
-        setSelectedQuestionnaire(projectQuestionnaires[0]);
+      const featureQuestionnaires = featureProjectId
+        ? projectQuestionnaires.filter((questionnaire) => (questionnaire.projectId || DEFAULT_PROJECT_ID) === featureProjectId)
+        : projectQuestionnaires;
+      if (featureQuestionnaires.length === 1) {
+        setSelectedQuestionnaire(featureQuestionnaires[0]);
       } else {
+        setFeatureProjectQuestionnaires(featureQuestionnaires);
         setFeatureQuestionnairePickerOpen(true);
       }
     },
-    [projectQuestionnaires]
+    [projectQuestionnaires, currentProject, enumeratorMapProjects]
   );
 
   if (authLoading) return <AppPreloader label="Starting secure workspace" />;
@@ -2489,6 +2718,8 @@ const AppContent: React.FC = () => {
       <EnumeratorQuestionnaireList
         userProfile={userProfile}
         geofenceZones={zonePolygons}
+        projectMapLayerStyles={mapProjectLayerStyles}
+        projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
         strictGeofence={questionnaireStrictGeofence}
         onLogout={async () => {
           await logout();
@@ -2510,8 +2741,11 @@ const AppContent: React.FC = () => {
       <EnumeratorQuestionnaireList
         userProfile={userProfile}
         geofenceZones={zonePolygons}
+        projectMapLayerStyles={mapProjectLayerStyles}
+        projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
         strictGeofence={questionnaireStrictGeofence}
-        onBack={() => setEnumeratorMode('home')}
+        startImmediately
+        onBack={() => setEnumeratorMode('geospatial')}
       />
     );
   }
@@ -2678,10 +2912,12 @@ const AppContent: React.FC = () => {
           const cached = readCachedZoneBundle(p.id);
           if (cached) {
             setZoneLayer(cached.layer);
+            setZoneLayers(cached.layers || (cached.layer ? [cached.layer] : []));
             setZonePolygons(cached.polygons);
             setZonesLoading(false);
           } else {
             setZoneLayer(null);
+            setZoneLayers([]);
             setZonePolygons([]);
             setZonesLoading(p.segments?.geospatial === true);
           }
@@ -2785,48 +3021,13 @@ const AppContent: React.FC = () => {
                       />
                     </div>
                     <p className="text-sm text-slate-500 leading-relaxed">
-                      Upload and manage geospatial features (Point, Line, Polygon GeoJSON), view them on the map, edit attributes, and link survey questionnaires.
+                      Manage GeoJSON layers and SHP boundaries, assign zones, review survey GPS pins, edit attributes, and link questionnaire surveys.
                     </p>
                     <div className="mt-4 flex flex-wrap gap-1.5">
-                      {['GeoJSON Upload', 'Point, Line & Polygon', 'Attribute Table', 'Linked Questionnaires'].map((tag) => (
+                      {['GeoJSON and SHP layers', 'Zone assignment', 'Survey GPS pins', 'Attribute table', 'Linked questionnaires'].map((tag) => (
                         <span
                           key={tag}
                           className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </button>
-              )}
-
-              {currentProjectHasGeo && (
-                <button
-                  onClick={() => setAdminMode('geospatial')}
-                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-sky-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
-                >
-                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-sky-100/60 rounded-full blur-2xl group-hover:bg-sky-200/70 transition-colors" />
-                  <div className="relative">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-sky-500 to-cyan-700 flex items-center justify-center shadow-lg shadow-sky-200 mb-4">
-                      <MapPin size={26} className="text-white" />
-                    </div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-lg font-bold text-slate-900">Geospatial Assignment</h3>
-                      <ChevronRight
-                        size={18}
-                        className="text-slate-300 group-hover:text-sky-600 group-hover:translate-x-0.5 transition-all"
-                      />
-                    </div>
-                    <p className="text-sm text-slate-500 leading-relaxed">
-                      Import and manage project SHP boundaries, choose assignment and label fields,
-                      and view survey GPS pins within boundaries.
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-1.5">
-                      {['Import / manage SHP', 'Boundary scope', 'Zone boundaries', 'Survey GPS pins'].map((tag) => (
-                        <span
-                          key={tag}
-                          className="text-[10px] font-semibold text-sky-700 bg-sky-50 border border-sky-100 px-2 py-0.5 rounded-full"
                         >
                           {tag}
                         </span>
@@ -3210,18 +3411,8 @@ const AppContent: React.FC = () => {
           )}
           
           <div className="flex items-center gap-3 border-l border-slate-200 pl-4 ml-4">
-            {/* Dual-segment enumerator: surface a "back to chooser" button so
-                they can switch to their questionnaire tasks without logging
-                out. Shown only when both segments are assigned. */}
-            {isApprovedEnumerator && enumeratorHasGeoTasks && enumeratorHasQTasks && (
-              <button
-                onClick={() => setEnumeratorMode('home')}
-                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
-                title="My tasks"
-              >
-                <LayoutGrid size={20} />
-              </button>
-            )}
+            {/* Dual-task enumerators land on the map and can open the regular
+                assigned questionnaire list from here. */}
             {isAdmin && (
               <>
                 <button
@@ -3242,24 +3433,59 @@ const AppContent: React.FC = () => {
                   </button>
                 )}
                 {currentProject && currentProjectHasGeo && (
-                  <button
-                    onClick={() => setShowFeatureImportModal(true)}
-                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-100 rounded-lg"
-                    title="Upload geospatial features in GeoJSON or Shapefile ZIP format (Point, Line, Polygon)"
-                  >
-                    <FileUp size={13} className="shrink-0" />
-                    Import Geospatial
-                  </button>
-                )}
-                {currentProject && currentProjectHasGeo && (
-                  <button
-                    onClick={() => setShowZoneLayerPanel(true)}
-                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-100 rounded-lg"
-                    title="Import / manage zone boundary SHP"
-                  >
-                    <Layers size={13} className="shrink-0" />
-                    Manage SHP
-                  </button>
+                  <div className="relative hidden sm:block">
+                    <button
+                      type="button"
+                      aria-expanded={showGeospatialLayerMenu}
+                      onClick={() => setShowGeospatialLayerMenu((open) => !open)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg"
+                      title="Import map data and manage project layers"
+                    >
+                      <Layers size={13} className="shrink-0" />
+                      Manage Layers
+                      <ChevronRight size={12} className={`transition-transform ${showGeospatialLayerMenu ? 'rotate-90' : ''}`} />
+                    </button>
+                    {showGeospatialLayerMenu && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Close layer menu"
+                          className="fixed inset-0 z-[1001] cursor-default"
+                          onClick={() => setShowGeospatialLayerMenu(false)}
+                        />
+                        <div className="absolute right-0 top-full z-[1002] mt-2 w-72 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowGeospatialLayerMenu(false);
+                              setShowFeatureImportModal(true);
+                            }}
+                            className="flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left hover:bg-emerald-50"
+                          >
+                            <FileUp size={16} className="mt-0.5 shrink-0 text-emerald-700" />
+                            <span>
+                              <span className="block text-xs font-semibold text-slate-800">Import map layers</span>
+                              <span className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">Add multiple GeoJSON or Shapefile ZIP files as separately toggleable layers.</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowGeospatialLayerMenu(false);
+                              setShowLayerManager(true);
+                            }}
+                            className="flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left hover:bg-sky-50"
+                          >
+                            <Layers size={16} className="mt-0.5 shrink-0 text-sky-700" />
+                            <span>
+                              <span className="block text-xs font-semibold text-slate-800">Manage uploaded layers</span>
+                              <span className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">Configure layer tables, colors, opacity, labels, and deletion.</span>
+                            </span>
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
                 {currentProject && currentProjectHasGeo && (
                   <button
@@ -3309,54 +3535,92 @@ const AppContent: React.FC = () => {
 
       {/* Main Layout */}
       <div className="flex-1 flex overflow-hidden relative">
-        <main className="flex-1 flex flex-col">
+        <main className={`flex-1 flex min-h-0 flex-col ${enumeratorCombinedTasks ? 'overflow-y-auto' : ''}`}>
           {activeTab === 'map' ? (
-            <div className="relative flex-1 min-h-0">
+            <>
+            {enumeratorCombinedTasks && (
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 py-1.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <MapIcon size={16} className="shrink-0 text-blue-600" />
+                  <span className="truncate text-xs font-bold text-slate-800">Survey map · Admin layers</span>
+                  <span className="hidden text-[10px] text-slate-500 sm:inline">Tap a survey feature to continue</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEnumeratorMapCollapsed((collapsed) => !collapsed)}
+                  className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
+                  aria-expanded={!enumeratorMapCollapsed}
+                >
+                  {enumeratorMapCollapsed ? 'Show map' : 'Collapse map'}
+                </button>
+              </div>
+            )}
+            <div className={`relative min-h-0 ${enumeratorCombinedTasks ? (enumeratorMapCollapsed ? 'h-0 overflow-hidden' : 'h-[65dvh] max-h-[680px] min-h-[320px] shrink-0') : 'flex-1'}`}>
             <MapComponent 
-              key={currentProject?.id || zoneLayer?.id || 'map'}
+              key={`${mapProjectId || zoneLayer?.id || 'map'}:${enumeratorMapCollapsed}`}
               features={visibleFeatures}
-              wards={geospatialMapMode ? null : wardsData}
+              activeSurveyLayerKeys={mapActiveSurveyLayerKeys}
+              surveyLayerActions={mapSurveyLayerActions}
+              projectMapLayerStyles={mapProjectLayerStyles}
+              projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
+              focusSelectedFeatures={!isApprovedEnumerator && !geospatialMapMode && !currentProject && !mapProjectId}
+              wards={isAdmin && !geospatialMapMode && !currentProject ? wardsData : null}
               getAdminLandmarkEnumeratorDisplayName={
-                isAdmin && !geospatialMapMode ? getAdminLandmarkEnumeratorDisplayName : undefined
+                isAdmin && !geospatialMapMode && !currentProject ? getAdminLandmarkEnumeratorDisplayName : undefined
               }
               enumeratorLandmarkWardFilter={
-                !isAdmin && !geospatialMapMode ? assignedWardsForFilter : undefined
+                !isAdmin && !geospatialMapMode && !mapProjectId ? assignedWardsForFilter : undefined
               }
               onFeatureSelect={handleMapFeatureSelect}
               onRequestMoveFeature={startMoveFeature}
               onCancelMoveFeature={cancelMoveFeature}
               onLandmarkPointSelect={handleLandmarkPointSelect}
               onFillQuestionnaire={handleStartQuestionnaireForFeature}
+              onSurveyActionRequest={setPendingSurveyFeature}
               selectedFeatureId={movingFeature?.id ?? selectedFeature?.id}
               featureFocusRequestKey={featureFocusRequestKey}
               movingFeatureId={movingFeature?.id || null}
               onMapClick={handleMapClick}
               addFeatureType={isAddingFeature}
               showPointAddBuffer={!isAdmin && isAddingFeature === 'point'}
-              landmarkGeoJsonRefreshKey={isAdmin && !geospatialMapMode ? adminFeaturesRefreshKey : 0}
-              defaultShowLandmarks={!geospatialMapMode}
-              defaultShowWards={!geospatialMapMode}
+              landmarkGeoJsonRefreshKey={isAdmin && !geospatialMapMode && !currentProject ? adminFeaturesRefreshKey : 0}
+              defaultShowLandmarks={!geospatialMapMode && !currentProject && !mapProjectId}
+              defaultShowWards={!geospatialMapMode && !currentProject && !mapProjectId}
               surveyLocations={surveyLocations}
               defaultShowSurveyLocations
               onSurveyLocationsVisibilityChange={setHhSurveyLayerEnabled}
               zoneBoundaries={zoneBoundaries}
+              importedZoneLayers={(geospatialMapMode || zoneBoundaryLayers.length > 0) ? zoneBoundaryLayers : undefined}
               zoneFitKey={zoneFitKey}
-              defaultBaseMap={geospatialMapMode || zoneBoundaries?.features?.length ? 'satellite' : 'osm'}
+              assignedBoundaryLayerKey={mapProject?.geospatialAssignmentLayerId}
+              assignedBoundaryField={mapProject?.geospatialAssignmentField}
+              assignedBoundaryValues={mapAssignmentValues}
+              defaultBaseMap={geospatialMapMode || (isApprovedEnumerator && enumeratorHasGeoTasks) || zoneBoundaries?.features?.length ? 'satellite' : 'osm'}
               defaultShowZones={!!zoneBoundaries?.features?.length}
+              projectId={mapProjectId}
+              importedExtentRequest={importedExtentRequest}
             />
             {/* Cover the map until the project's zone SHP is resolved, so the
                 default basemap view never flashes before fitting to zones. */}
             {geospatialMapMode && zonesLoading && (
-              <div className="absolute inset-0 z-[600] flex items-center justify-center bg-slate-900/45">
-                <div className="flex items-center gap-3 rounded-2xl bg-white/95 px-5 py-3 shadow-xl border border-slate-200">
-                  <div className="w-5 h-5 border-2 border-slate-300 border-t-sky-600 rounded-full animate-spin" />
+              <div className="pointer-events-none absolute left-3 top-3 z-[600]">
+                <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
                   <span className="text-sm font-medium text-slate-700">
                     Loading project survey area…
                   </span>
                 </div>
               </div>
             )}
-            {isAdmin && currentProjectHasGeo && !zonesLoading && !zoneLayer && dismissedZonePromptProjectId !== currentProject?.id && (
+            {isApprovedEnumerator && enumeratorHasGeoTasks && !enumeratorMapCollapsed && (enumeratorMapProjectsLoading || featuresInitialLoading) && (
+              <div className="pointer-events-none absolute right-3 top-3 z-[610]">
+                <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
+                  <span className="text-sm font-medium text-slate-700">Loading your assigned survey map…</span>
+                </div>
+              </div>
+            )}
+            {isAdmin && currentProjectHasGeo && !zonesLoading && !zoneLayer && zoneBoundaryLayers.length === 0 && !visibleFeatures.some((feature) => Boolean(feature.attributes?.__layerName || feature.attributes?.layerName || feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload' || feature.attributes?.projectId === currentProject?.id || (feature as any).projectId === currentProject?.id)) && dismissedZonePromptProjectId !== currentProject?.id && (
               <div className="absolute inset-0 z-[500] flex items-center justify-center bg-slate-900/40 p-4 pointer-events-none">
                 <div className="pointer-events-auto max-w-md w-full bg-white rounded-2xl shadow-2xl border border-slate-200 p-5 space-y-3">
                   <div className="flex items-center justify-between">
@@ -3387,13 +3651,13 @@ const AppContent: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => {
-                        setShowZoneLayerPanel(true);
+                        setShowLayerManager(true);
                         setDismissedZonePromptProjectId(currentProject?.id || null);
                       }}
                       className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700 transition"
                     >
                       <Layers size={16} />
-                      Open zone SHP import
+                      Manage map layers
                     </button>
                     <button
                       type="button"
@@ -3407,6 +3671,26 @@ const AppContent: React.FC = () => {
               </div>
             )}
             </div>
+            {enumeratorCombinedTasks && (
+              <section className="shrink-0 border-t border-slate-200 bg-white px-3 py-2 sm:px-5">
+                <div className="mx-auto flex max-w-3xl flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                  <div>
+                    <h2 className="text-xs font-bold text-slate-900">Questionnaire Survey</h2>
+                    <p className="mt-0.5 text-[10px] text-slate-500">
+                      {userProfile?.assignedQuestionnaireIds?.length || 0} questionnaire(s) assigned. Start or continue a regular questionnaire survey.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEnumeratorMode('questionnaire')}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm hover:bg-emerald-700"
+                  >
+                    <ClipboardList size={15} /> Start Questionnaire Survey
+                  </button>
+                </div>
+              </section>
+            )}
+            </>
           ) : (
             <div className="p-6 overflow-y-auto w-full">
               <div className="max-w-4xl mx-auto space-y-4">
@@ -3624,6 +3908,36 @@ const AppContent: React.FC = () => {
             </PanelSuspense>
           </div>
         )}
+        {isAdmin && showLayerManager && currentProject && (
+          <Suspense fallback={<ScreenFallback />}>
+            <GeospatialLayerManager
+              projectId={currentProject.id}
+              activeSurveyLayerKeys={currentProject.activeSurveyLayerKeys || []}
+              surveyLayerActions={currentProject.surveyLayerActions || {}}
+              surveyLayerQuestionFields={currentProject.surveyLayerQuestionFields || {}}
+              projectStyles={currentProject.mapLayerStyles || {}}
+              assignmentLayerId={currentProject.geospatialAssignmentLayerId}
+              assignmentField={currentProject.geospatialAssignmentField}
+              features={features}
+              zoneLayers={zoneLayers}
+              onClose={() => setShowLayerManager(false)}
+              onFeaturesChanged={() => setAdminFeaturesRefreshKey((key) => key + 1)}
+              onZonesChanged={handleZoneLayerChanged}
+              onActiveSurveyLayersChanged={async (layerKeys, actions, questionFields) => {
+                const { item } = await geosurveyApi.updateGeosurveyProjectSurveyLayers(currentProject.id, layerKeys, actions, questionFields);
+                setCurrentProject(item);
+              }}
+              onLayerStylesChanged={async (styles) => {
+                const { item } = await geosurveyApi.updateGeosurveyProjectMapLayerStyles(currentProject.id, styles, currentProject.geospatialAssignmentLayerId, currentProject.geospatialAssignmentField);
+                setCurrentProject(item);
+              }}
+              onAssignmentLayerChanged={async (layerId, field) => {
+                const { item } = await geosurveyApi.updateGeosurveyProjectMapLayerStyles(currentProject.id, currentProject.mapLayerStyles || {}, layerId, field);
+                setCurrentProject(item);
+              }}
+            />
+          </Suspense>
+        )}
 
         {/* Geospatial Feature Import (GeoJSON: Point, Line, Polygon) */}
         {isAdmin && showFeatureImportModal && currentProject && (
@@ -3638,10 +3952,6 @@ const AppContent: React.FC = () => {
                 currentUserEmail={user?.email || undefined}
                 currentUserUid={user?.uid}
                 onClose={() => setShowFeatureImportModal(false)}
-                onSuccess={(count) => {
-                  setAdminFeaturesRefreshKey((k) => k + 1);
-                  alert(`Successfully imported ${count} geospatial features to project "${currentProject.name}"!`);
-                }}
               />
             </PanelSuspense>
           </div>
@@ -3681,7 +3991,7 @@ const AppContent: React.FC = () => {
                     No active questionnaires found for this project.
                   </div>
                 ) : (
-                  projectQuestionnaires.map((q) => (
+              featureProjectQuestionnaires.map((q) => (
                     <button
                       key={q.id}
                       type="button"
@@ -3734,7 +4044,7 @@ const AppContent: React.FC = () => {
 
         {/* Questionnaire Form Overlay */}
         {selectedQuestionnaire && (
-          <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
+          <div className="fixed inset-0 z-[1200] bg-slate-50 animate-in fade-in duration-200">
             <PanelSuspense
               label="Loading form…"
               onClose={() => {
@@ -3753,9 +4063,36 @@ const AppContent: React.FC = () => {
                 geofenceZones={zonePolygons}
                 strictGeofence={questionnaireStrictGeofence}
                 linkedFeature={linkedSurveyFeature || undefined}
+                variant="fullscreen"
+                onSubmit={() => {
+                  setSelectedQuestionnaire(null);
+                  setLinkedSurveyFeature(null);
+                }}
               />
             </PanelSuspense>
           </div>
+        )}
+
+        {pendingSurveyFeature && (
+          (() => {
+            const surveyKey = String(pendingSurveyFeature.attributes?.__surveyLayerKey || '');
+            const pendingProjectId = String(pendingSurveyFeature.attributes?.projectId || (pendingSurveyFeature as any).projectId || '');
+            const pendingProject = enumeratorMapProjects.find((project) => project.id === pendingProjectId) || currentProject;
+            const action = pendingProject?.surveyLayerActions?.[surveyKey] || 'both';
+            return (
+          <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-slate-900/40 p-4">
+            <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+              <h2 className="text-base font-bold text-slate-900">Choose an action</h2>
+              <p className="mt-1 text-xs text-slate-500">{pendingSurveyFeature.attributes?.__layerName || pendingSurveyFeature.attributes?.layerName || 'Selected survey area'}</p>
+              <div className="mt-4 grid gap-2">
+                {action !== 'questionnaire' && <button type="button" onClick={() => { const feature = pendingSurveyFeature; setPendingSurveyFeature(null); handleMapFeatureSelect(feature); }} className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700">Edit attributes</button>}
+                {action !== 'edit' && <button type="button" onClick={() => { const feature = pendingSurveyFeature; setPendingSurveyFeature(null); handleStartQuestionnaireForFeature(feature); }} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">Fill questionnaire survey</button>}
+                <button type="button" onClick={() => setPendingSurveyFeature(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
+              </div>
+            </div>
+          </div>
+            );
+          })()
         )}
 
         {/* Feature Editor — only when a feature is explicitly selected for edit, not during move mode */}
@@ -3837,14 +4174,14 @@ const AppContent: React.FC = () => {
         </div>
         )}
 
-        {/* Geospatial Assignment — SHP management + layer-wise tasking */}
+        {/* Boundary assignment and SHP management within Geospatial Survey */}
         {isAdmin && useZoneMode && (
           <div className="absolute left-4 z-[1000] flex flex-col gap-2 top-[calc(1rem+env(safe-area-inset-top,0px))]">
             <div className="qc-panel-scroll bg-white/90 backdrop-blur-md p-3 pr-2 rounded-2xl shadow-lg border border-white/50 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] overflow-y-scroll overscroll-contain">
               <div className="flex items-center gap-2 mb-3">
                 <Layers size={16} className="text-sky-600" />
                 <span className="text-xs font-bold uppercase tracking-wider">
-                  Geospatial Assignment
+                  Geospatial Survey
                 </span>
               </div>
               <div className="space-y-3 text-xs">
@@ -3894,11 +4231,11 @@ const AppContent: React.FC = () => {
                 )}
                 <button
                   type="button"
-                  onClick={() => setShowZoneLayerPanel(true)}
+                  onClick={() => setShowLayerManager(true)}
                   className="w-full py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-[10px] font-bold uppercase transition-colors flex items-center justify-center gap-1"
                 >
                   <Layers size={12} />
-                  Manage zone SHP
+                  Manage map layers
                 </button>
                 <button
                   type="button"
@@ -4338,9 +4675,12 @@ export default function App() {
   return (
     <AuthProvider>
       <GeoLocationProvider>
-        <Suspense fallback={<ScreenFallback />}>
-          <AppContent />
-        </Suspense>
+        <>
+          <Suspense fallback={<ScreenFallback />}>
+            <AppContent />
+          </Suspense>
+          <GeospatialUploadStatus />
+        </>
       </GeoLocationProvider>
     </AuthProvider>
   );

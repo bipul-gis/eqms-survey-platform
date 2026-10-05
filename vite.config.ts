@@ -14,7 +14,7 @@ export default defineConfig(({mode}) => {
       // enumerator is offline (matches the Android app's bundled-assets
       // behaviour). Firestore handles its own offline queue via IndexedDB;
       // the SW only worries about the static shell + same-origin assets.
-      VitePWA({
+      ...(process.env.CAPACITOR_BUILD === 'true' ? [] : [VitePWA({
         registerType: 'autoUpdate',
         // Inject the SW registration helper into our index.html — keeps the
         // existing module entrypoint untouched, so AI Studio / strict
@@ -82,7 +82,7 @@ export default defineConfig(({mode}) => {
         // a cache layer; the plugin still exposes itself for testing if you
         // pass `?pwa=true` to the dev server.
         devOptions: {enabled: false}
-      })
+      })])
     ],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),

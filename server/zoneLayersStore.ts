@@ -129,13 +129,9 @@ export async function createOrReplaceZoneLayer(input: {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Replace polygons for this project layer: delete existing layers for project if replacing by id,
-    // or create fresh. Admin import typically replaces the project's active layer.
+    // Re-importing an existing layer replaces only that layer's polygons.
     if (input.id) {
       await client.query(`DELETE FROM zone_polygons WHERE layer_id = $1`, [layerId]);
-    } else {
-      // One primary layer per project for v1 — drop previous layers on fresh import.
-      await client.query(`DELETE FROM zone_layers WHERE project_id = $1`, [input.projectId]);
     }
 
     await client.query(

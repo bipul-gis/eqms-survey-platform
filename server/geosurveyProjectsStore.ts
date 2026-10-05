@@ -213,6 +213,58 @@ export async function updateGeosurveyProjectSegments(
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
+export async function updateGeosurveyProjectSurveyLayers(
+  projectId: string,
+  layerKeys: string[],
+  layerActions: Record<string, 'edit' | 'questionnaire' | 'both'> = {},
+  questionFields: Record<string, string[]> = {}
+): Promise<GeosurveyProjectRecord | null> {
+  const existing = await getGeosurveyProject(projectId);
+  if (!existing) return null;
+  const normalized = [...new Set(layerKeys.map((key) => String(key).trim()).filter(Boolean))];
+  const nextPayload = normalizeProjectPayload({
+    ...(existing.projectPayload || {}),
+    id: existing.projectId,
+    code: existing.projectCode,
+    name: existing.projectName,
+    activeSurveyLayerKeys: normalized,
+    surveyLayerActions: Object.fromEntries(Object.entries(layerActions).filter(([, action]) => ['edit', 'questionnaire', 'both'].includes(action))),
+    surveyLayerQuestionFields: Object.fromEntries(Object.entries(questionFields).map(([key, fields]) => [key, [...new Set(fields.map((field) => String(field).trim()).filter(Boolean))]])),
+  });
+  const { rows } = await pool.query(
+    `UPDATE geosurvey_projects
+     SET project_payload = $2, updated_at = NOW()
+     WHERE project_id = $1
+     RETURNING *`,
+    [projectId, JSON.stringify(nextPayload)]
+  );
+  return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
+export async function updateGeosurveyProjectMapLayerStyles(
+  projectId: string,
+  styles: Record<string, Record<string, unknown>>,
+  assignmentLayerId?: string | null,
+  assignmentField?: string | null
+): Promise<GeosurveyProjectRecord | null> {
+  const existing = await getGeosurveyProject(projectId);
+  if (!existing) return null;
+  const nextPayload = normalizeProjectPayload({
+    ...(existing.projectPayload || {}),
+    id: existing.projectId,
+    code: existing.projectCode,
+    name: existing.projectName,
+    mapLayerStyles: styles,
+    ...(assignmentLayerId !== undefined ? { geospatialAssignmentLayerId: assignmentLayerId } : {}),
+    ...(assignmentField !== undefined ? { geospatialAssignmentField: assignmentField } : {}),
+  });
+  const { rows } = await pool.query(
+    `UPDATE geosurvey_projects SET project_payload = $2, updated_at = NOW() WHERE project_id = $1 RETURNING *`,
+    [projectId, JSON.stringify(nextPayload)]
+  );
+  return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
 export async function deactivateGeosurveyProject(projectId: string): Promise<void> {
   await pool.query(
     `UPDATE geosurvey_projects

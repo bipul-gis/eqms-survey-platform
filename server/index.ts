@@ -31,6 +31,8 @@ import {
   deactivateGeosurveyProject,
   listActiveGeosurveyProjects,
   updateGeosurveyProjectSegments,
+  updateGeosurveyProjectSurveyLayers,
+  updateGeosurveyProjectMapLayerStyles,
   purgeProjectData,
 } from './geosurveyProjectsStore';
 import {
@@ -261,6 +263,62 @@ app.patch('/api/geosurvey-projects/:id/segments', requireAdmin, async (req, res)
         activeForGeosurvey: saved.isActive,
       },
     });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.patch('/api/geosurvey-projects/:id/survey-layers', requireAdmin, async (req, res) => {
+  const raw = req.body?.activeSurveyLayerKeys;
+  if (!Array.isArray(raw) || raw.some((name: unknown) => typeof name !== 'string')) {
+    res.status(400).json({ error: 'activeSurveyLayerKeys must be an array of layer keys.' });
+    return;
+  }
+  const rawActions = req.body?.surveyLayerActions;
+  if (rawActions !== undefined && (!rawActions || typeof rawActions !== 'object' || Array.isArray(rawActions) || Object.values(rawActions).some((action) => !['edit', 'questionnaire', 'both'].includes(String(action))))) {
+    res.status(400).json({ error: 'surveyLayerActions must map layer keys to edit, questionnaire, or both.' });
+    return;
+  }
+  const rawQuestionFields = req.body?.surveyLayerQuestionFields;
+  if (rawQuestionFields !== undefined && (!rawQuestionFields || typeof rawQuestionFields !== 'object' || Array.isArray(rawQuestionFields) || Object.values(rawQuestionFields).some((fields) => !Array.isArray(fields) || fields.some((field) => typeof field !== 'string')))) {
+    res.status(400).json({ error: 'surveyLayerQuestionFields must map layer keys to field name arrays.' });
+    return;
+  }
+  try {
+    const saved = await updateGeosurveyProjectSurveyLayers(req.params.id, raw, rawActions || {}, rawQuestionFields || {});
+    if (!saved) {
+      res.status(404).json({ error: 'Project not found or not active in GeoSurvey.' });
+      return;
+    }
+    res.json({ item: {
+      ...(saved.projectPayload || {}),
+      id: saved.projectId,
+      code: saved.projectCode,
+      name: saved.projectName,
+      description: saved.managerName ? `PM: ${saved.managerName}` : '',
+      activeForGeosurvey: saved.isActive,
+    } });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.patch('/api/geosurvey-projects/:id/map-layer-styles', requireAdmin, async (req, res) => {
+  const styles = req.body?.mapLayerStyles;
+  if (!styles || typeof styles !== 'object' || Array.isArray(styles)) {
+    res.status(400).json({ error: 'mapLayerStyles must be a map of layer keys to style settings.' });
+    return;
+  }
+  try {
+    const assignmentLayerId = req.body?.geospatialAssignmentLayerId;
+    const saved = await updateGeosurveyProjectMapLayerStyles(req.params.id, styles,
+      assignmentLayerId === undefined ? undefined : assignmentLayerId ? String(assignmentLayerId) : null,
+      req.body?.geospatialAssignmentField === undefined ? undefined : req.body.geospatialAssignmentField ? String(req.body.geospatialAssignmentField) : null);
+    if (!saved) {
+      res.status(404).json({ error: 'Project not found or not active in GeoSurvey.' });
+      return;
+    }
+    res.json({ item: { ...(saved.projectPayload || {}), id: saved.projectId, code: saved.projectCode, name: saved.projectName, description: saved.managerName ? `PM: ${saved.managerName}` : '', activeForGeosurvey: saved.isActive } });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -512,8 +570,28 @@ app.delete('/api/responses/:id', requireApproved, async (req: GeosurveyAuthentic
 
 app.get('/api/features', requireApproved, async (req: GeosurveyAuthenticatedRequest, res) => {
   const session = req.geosurveySession!;
-  const assignedWards = session.user.assignedWardNames || [];
   const projectId = req.query.projectId ? String(req.query.projectId).trim() : undefined;
+  let assignedWards = session.user.assignedWardNames || [];
+  if (session.user.role === 'enumerator' && projectId) {
+    const assignedProjectIds = session.user.assignedGeospatialProjectIds || [];
+    let hasProjectAccess = assignedProjectIds.includes(projectId);
+    if (!hasProjectAccess) {
+      const assignedQuestionnaireIds = new Set(session.user.assignedQuestionnaireIds || []);
+      if (assignedQuestionnaireIds.size > 0) {
+        const assignedQuestionnaires = await listQuestionnaires();
+        hasProjectAccess = assignedQuestionnaires.some((questionnaire) =>
+          assignedQuestionnaireIds.has(String(questionnaire.id)) && String(questionnaire.projectId || '') === projectId
+        );
+      }
+    }
+    if (!hasProjectAccess) {
+      res.status(403).json({ error: 'This project is not assigned to your geospatial survey tasks.' });
+      return;
+    }
+    // Explicit project assignment grants access to the project's imported
+    // layers; legacy ward filtering remains for ward-only task assignments.
+    assignedWards = [];
+  }
   const items = await listFeatures({
     role: session.user.role,
     projectId,
@@ -526,20 +604,33 @@ app.get('/api/features', requireApproved, async (req: GeosurveyAuthenticatedRequ
 
 // ── Zone layers (generic SHP boundaries) ─────────────────────────────────
 app.get('/api/zone-layers', requireApproved, async (req, res) => {
+  const session = (req as GeosurveyAuthenticatedRequest).geosurveySession!;
   const projectId = req.query.projectId ? String(req.query.projectId) : undefined;
   const withPolygons =
     req.query.withPolygons === '1' || String(req.query.withPolygons).toLowerCase() === 'true';
+  if (session.user.role === 'enumerator') {
+    const directlyAssigned = (session.user.assignedGeospatialProjectIds || []).includes(projectId || '');
+    const zoneAssignments = session.user.projectZoneAssignments || {};
+    const assignedZones = projectId ? zoneAssignments[projectId] : undefined;
+    if (!projectId || (!directlyAssigned && !Array.isArray(assignedZones))) {
+      res.status(403).json({ error: 'This project is not assigned to your survey map.' });
+      return;
+    }
+  }
   const items = await listZoneLayers(projectId);
   if (!withPolygons) {
     res.json({ items });
     return;
   }
-  // One round-trip for project open: primary layer + its polygons.
-  const layer = items[0] || null;
-  const polygons = layer
+  const assignedZones = projectId ? session.user.projectZoneAssignments?.[projectId] : undefined;
+  const assignedZoneLayerId = session.user.role === 'enumerator' && Array.isArray(assignedZones) && assignedZones.length
+    ? session.user.assignedZoneLayerId
+    : undefined;
+  const polygons = projectId
     ? await listZonePolygons({
-        layerId: layer.id,
-        projectId: projectId || layer.projectId,
+        projectId,
+        ...(Array.isArray(assignedZones) && assignedZones.length ? { assignValues: assignedZones } : {}),
+        ...(assignedZoneLayerId ? { layerId: assignedZoneLayerId } : {}),
       })
     : [];
   res.json({ items, polygons });

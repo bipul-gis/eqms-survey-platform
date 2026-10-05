@@ -19,6 +19,8 @@
     "db:migrate-firebase": "tsx scripts/migrate-firebase-to-pg.ts"
   },
   "dependencies": {
+    "@capacitor/core": "^6.2.2",
+    "@capacitor/geolocation": "^6.1.1",
     "@google/genai": "^1.29.0",
     "@mapbox/shp-write": "^0.4.3",
     "@tailwindcss/vite": "^4.1.14",

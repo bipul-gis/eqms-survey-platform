@@ -21,13 +21,23 @@ export async function requireAuth(
     res.status(401).json({ error: 'Authentication required.' });
     return;
   }
-  const session = await resolveSessionByToken(token);
-  if (!session) {
-    res.status(401).json({ error: 'Session expired or invalid.' });
-    return;
+  try {
+    const session = await resolveSessionByToken(token);
+    if (!session) {
+      res.status(401).json({ error: 'Session expired or invalid.' });
+      return;
+    }
+    req.geosurveySession = session;
+    next();
+  } catch (error) {
+    // Express 4 does not forward rejected async middleware promises. Returning
+    // an explicit response keeps transient database/tunnel errors from
+    // terminating the API process and turning every request into a proxy 500.
+    console.error('Session authentication lookup failed:', error);
+    if (!res.headersSent) {
+      res.status(503).json({ error: 'Authentication service is temporarily unavailable. Please retry.' });
+    }
   }
-  req.geosurveySession = session;
-  next();
 }
 
 export function requireAdmin(

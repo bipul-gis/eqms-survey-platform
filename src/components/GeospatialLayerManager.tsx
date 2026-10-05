@@ -1,0 +1,333 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Layers, Trash2, X, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
+import type { GeoFeature, SurveyLayerAction, ZoneLayer, ZonePolygon } from '../types';
+import { geosurveyApi } from '../lib/geosurveyApi';
+import { zoneLayersApi } from '../lib/zoneLayersApi';
+import {
+  DEFAULT_MAP_LAYER_STYLE,
+  mapLayerStyleKey,
+  readMapLayerSettings,
+  writeMapLayerStyle,
+  type MapLayerStyle,
+} from '../lib/mapLayerSettings';
+
+interface Props {
+  projectId: string;
+  activeSurveyLayerKeys: string[];
+  surveyLayerActions: Record<string, SurveyLayerAction>;
+  surveyLayerQuestionFields: Record<string, string[]>;
+  projectStyles: Record<string, MapLayerStyle>;
+  assignmentLayerId?: string | null;
+  assignmentField?: string | null;
+  features: GeoFeature[];
+  zoneLayers: ZoneLayer[];
+  onClose: () => void;
+  onFeaturesChanged: () => void;
+  onZonesChanged: () => void;
+  onActiveSurveyLayersChanged: (layerKeys: string[], actions: Record<string, SurveyLayerAction>, questionFields: Record<string, string[]>) => Promise<void>;
+  onLayerStylesChanged: (styles: Record<string, MapLayerStyle>) => Promise<void>;
+  onAssignmentLayerChanged: (layerId: string | null, field: string | null) => Promise<void>;
+}
+
+type ManagedLayer = {
+  key: string;
+  id: string;
+  name: string;
+  kind: 'feature' | 'zone';
+  count: number;
+  fields: string[];
+  featureIds?: string[];
+  surveyKey: string;
+};
+
+const layerNameOf = (feature: GeoFeature) => {
+  const attrs = feature.attributes || {};
+  const name = String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
+  if (name) return name;
+  return attrs.__source === 'geojson_upload' || attrs.__source === 'shapefile_upload' || attrs.projectId || (feature as any).projectId
+    ? 'Unassigned layer'
+    : '';
+};
+
+export const GeospatialLayerManager: React.FC<Props> = ({
+  projectId,
+  activeSurveyLayerKeys,
+  surveyLayerActions,
+  surveyLayerQuestionFields,
+  projectStyles,
+  assignmentLayerId,
+  assignmentField,
+  features,
+  zoneLayers,
+  onClose,
+  onFeaturesChanged,
+  onZonesChanged,
+  onActiveSurveyLayersChanged,
+  onLayerStylesChanged,
+  onAssignmentLayerChanged,
+}) => {
+  const managedLayers = useMemo<ManagedLayer[]>(() => {
+    const grouped = new Map<string, GeoFeature[]>();
+    for (const feature of features) {
+      const name = layerNameOf(feature);
+      if (!name) continue;
+      grouped.set(name, [...(grouped.get(name) || []), feature]);
+    }
+    const featureLayers = [...grouped.entries()].map(([name, items]) => {
+      const fields = new Set<string>();
+      items.forEach((feature) => Object.keys(feature.attributes || {}).filter((field) => !field.startsWith('__')).forEach((field) => fields.add(field)));
+      return {
+        key: mapLayerStyleKey('feature', name), id: name, name, kind: 'feature' as const, surveyKey: `feature:${name}`,
+        count: items.length, fields: [...fields].sort((a, b) => a.localeCompare(b)),
+        featureIds: items.map((feature) => String(feature.id)),
+        isPolygon: items.length > 0 && items.every((feature) => ['Polygon', 'MultiPolygon'].includes(String(feature.geometry?.type))),
+      };
+    });
+    const boundaries = zoneLayers.map((layer) => ({
+      key: mapLayerStyleKey('zone', layer.id), id: layer.id, name: layer.name, kind: 'zone' as const, surveyKey: `zone:${layer.id}`,
+      count: layer.featureCount, fields: layer.attributeFields || [],
+      isPolygon: true,
+    }));
+    return [...boundaries, ...featureLayers];
+  }, [features, zoneLayers]);
+
+  const [selectedKey, setSelectedKey] = useState('');
+  const selected = managedLayers.find((item) => item.key === selectedKey) || managedLayers[0] || null;
+  const [styles, setStyles] = useState(() => ({ ...readMapLayerSettings(projectId), ...projectStyles }));
+  const migratedProjectStylesRef = useRef('');
+  const [activeSurveyKeys, setActiveSurveyKeys] = useState(activeSurveyLayerKeys);
+  const [layerActions, setLayerActions] = useState(surveyLayerActions);
+  const [linkedQuestionFields, setLinkedQuestionFields] = useState(surveyLayerQuestionFields);
+  const style: MapLayerStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(selected ? styles[selected.key] : {}) };
+  const [rows, setRows] = useState<Array<{ id: string; properties: Record<string, unknown> }>>([]);
+  const [showAttributeTable, setShowAttributeTable] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [savingSurveyLayer, setSavingSurveyLayer] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => setActiveSurveyKeys(activeSurveyLayerKeys), [activeSurveyLayerKeys]);
+  useEffect(() => setLayerActions(surveyLayerActions), [surveyLayerActions]);
+  useEffect(() => setLinkedQuestionFields(surveyLayerQuestionFields), [surveyLayerQuestionFields]);
+  useEffect(() => setStyles((current) => ({ ...current, ...projectStyles })), [projectStyles]);
+  useEffect(() => {
+    if (!projectId || migratedProjectStylesRef.current === projectId) return;
+    migratedProjectStylesRef.current = projectId;
+    const legacyStyles = readMapLayerSettings(projectId);
+    const merged = { ...legacyStyles, ...projectStyles };
+    setStyles(merged);
+    if (Object.keys(legacyStyles).some((key) => !projectStyles[key])) {
+      void onLayerStylesChanged(merged).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    }
+  }, [projectId]);
+
+  useEffect(() => setShowAttributeTable(false), [selected?.key]);
+
+  useEffect(() => {
+    if (!selected) {
+      setRows([]);
+      return;
+    }
+    if (selected.kind === 'feature') {
+      setRows(features.filter((feature) => layerNameOf(feature) === selected.name).map((feature) => ({ id: feature.id, properties: feature.attributes || {} })));
+      return;
+    }
+    let cancelled = false;
+    void zoneLayersApi.listPolygons({ layerId: selected.id }).then(({ items }) => {
+      if (!cancelled) setRows(items.map((polygon: ZonePolygon) => ({ id: polygon.id, properties: polygon.properties || {} })));
+    }).catch((e) => {
+      if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+    });
+    return () => { cancelled = true; };
+  }, [selected?.key, features, zoneLayers]);
+
+  const columns = useMemo(() => {
+    if (selected?.fields.length) return selected.fields;
+    const fields = new Set<string>();
+    rows.forEach((row) => Object.keys(row.properties).forEach((field) => fields.add(field)));
+    return [...fields].sort((a, b) => a.localeCompare(b));
+  }, [selected, rows]);
+
+  const changeStyle = (patch: Partial<MapLayerStyle>) => {
+    if (!selected) return;
+    const next = { ...style, ...patch };
+    const updated = { ...styles, [selected.key]: next };
+    setStyles(updated);
+    writeMapLayerStyle(projectId, selected.key, next);
+    void onLayerStylesChanged(updated).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  };
+
+  const toggleSurveyLayer = async (layerName: string) => {
+    if (savingSurveyLayer) return;
+    const next = activeSurveyKeys.includes(layerName)
+      ? activeSurveyKeys.filter((key) => key !== layerName)
+      : [...activeSurveyKeys, layerName];
+    setActiveSurveyKeys(next);
+    setError(null);
+    setSavingSurveyLayer(true);
+    try {
+      await onActiveSurveyLayersChanged(next, layerActions, linkedQuestionFields);
+    } catch (e) {
+      setActiveSurveyKeys(activeSurveyKeys);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSurveyLayer(false);
+    }
+  };
+
+  const changeSurveyLayerAction = async (layerKey: string, action: SurveyLayerAction) => {
+    if (savingSurveyLayer) return;
+    const next = { ...layerActions, [layerKey]: action };
+    setLayerActions(next);
+    setSavingSurveyLayer(true);
+    setError(null);
+    try {
+      await onActiveSurveyLayersChanged(activeSurveyKeys, next, linkedQuestionFields);
+    } catch (e) {
+      setLayerActions(layerActions);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSurveyLayer(false);
+    }
+  };
+
+  const toggleQuestionField = async (field: string) => {
+    if (!selected || savingSurveyLayer) return;
+    const current = linkedQuestionFields[selected.surveyKey] || [];
+    const fields = current.includes(field) ? current.filter((item) => item !== field) : [...current, field];
+    const next = { ...linkedQuestionFields, [selected.surveyKey]: fields };
+    setLinkedQuestionFields(next);
+    setSavingSurveyLayer(true);
+    setError(null);
+    try {
+      await onActiveSurveyLayersChanged(activeSurveyKeys, layerActions, next);
+    } catch (e) {
+      setLinkedQuestionFields(linkedQuestionFields);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSurveyLayer(false);
+    }
+  };
+
+  const removeLayer = async (target: ManagedLayer) => {
+    if (!window.confirm(`Delete "${target.name}" and all ${target.count.toLocaleString()} records from the server? This cannot be undone.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (target.kind === 'zone') {
+        await zoneLayersApi.deleteLayer(target.id);
+        onZonesChanged();
+      } else {
+        const ids = target.featureIds || [];
+        const result = await geosurveyApi.bulkDeleteFeatures(ids);
+        if (result.count !== ids.length) throw new Error(`Server deleted ${result.count} of ${ids.length} features. Refresh and retry.`);
+        if (activeSurveyKeys.includes(target.surveyKey)) {
+          const next = activeSurveyKeys.filter((key) => key !== target.surveyKey);
+          const nextActions = { ...layerActions };
+          delete nextActions[target.surveyKey];
+          const nextQuestionFields = { ...linkedQuestionFields };
+          delete nextQuestionFields[target.surveyKey];
+          await onActiveSurveyLayersChanged(next, nextActions, nextQuestionFields);
+          setLayerActions(nextActions);
+          setLinkedQuestionFields(nextQuestionFields);
+          setActiveSurveyKeys(next);
+        }
+        onFeaturesChanged();
+      }
+      if (target.kind === 'zone' && activeSurveyKeys.includes(target.surveyKey)) {
+        const next = activeSurveyKeys.filter((key) => key !== target.surveyKey);
+        const nextActions = { ...layerActions };
+        delete nextActions[target.surveyKey];
+        const nextQuestionFields = { ...linkedQuestionFields };
+        delete nextQuestionFields[target.surveyKey];
+        await onActiveSurveyLayersChanged(next, nextActions, nextQuestionFields);
+        setLayerActions(nextActions);
+        setLinkedQuestionFields(nextQuestionFields);
+        setActiveSurveyKeys(next);
+      }
+      if (selectedKey === target.key) setSelectedKey('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed bottom-0 left-0 top-14 z-[2100] flex w-[min(31rem,94vw)] flex-col border-r border-slate-300 bg-white shadow-2xl" role="dialog" aria-modal="false" aria-label="Manage map layers">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <header className="flex items-center justify-between border-b border-slate-200 bg-sky-50 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Layers size={18} className="text-sky-700" />
+            <div><h2 className="text-sm font-bold text-slate-900">Manage map layers</h2><p className="text-[10px] text-slate-500">Manage data, symbology, labels, and enumerator boundary assignment.</p></div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-500 hover:bg-white" aria-label="Close layer manager"><X size={18} /></button>
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <aside className="max-h-40 shrink-0 overflow-y-auto border-b border-slate-200 p-3">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">Project layers ({managedLayers.length})</p>
+            <div className="space-y-1">
+              {managedLayers.map((item) => (
+                <div key={item.key} className={`flex items-center gap-2 rounded-lg border px-2 py-2 ${selected?.key === item.key ? 'border-sky-300 bg-sky-50' : 'border-transparent hover:bg-slate-50'}`}>
+                  <button type="button" onClick={() => { setSelectedKey(item.key); setError(null); }} className="min-w-0 flex-1 text-left">
+                    <span className="flex items-center gap-2">
+                      <span className="h-3.5 w-3.5 shrink-0 rounded-sm border" style={{ backgroundColor: styles[item.key]?.fillColor || DEFAULT_MAP_LAYER_STYLE.fillColor, borderColor: styles[item.key]?.boundaryColor || DEFAULT_MAP_LAYER_STYLE.boundaryColor, opacity: styles[item.key]?.opacity ?? DEFAULT_MAP_LAYER_STYLE.opacity }} />
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{item.name}</span>
+                    </span>
+                    <span className="block pl-5 text-[10px] text-slate-500">{item.kind === 'zone' ? 'Boundary SHP' : 'Map feature layer'} · {item.count.toLocaleString()} records</span>
+                  </button>
+                  {activeSurveyKeys.includes(item.surveyKey) && <select aria-label={`${item.name} survey popup actions`} title="Actions available from this layer's map popup" value={layerActions[item.surveyKey] || 'both'} disabled={busy || savingSurveyLayer} onChange={(event) => void changeSurveyLayerAction(item.surveyKey, event.target.value as SurveyLayerAction)} className="max-w-28 rounded border border-emerald-200 bg-white px-1.5 py-1 text-[9px] text-slate-700 disabled:opacity-50">
+                    <option value="edit">Edit attributes</option>
+                    <option value="questionnaire">Questionnaire survey</option>
+                    <option value="both">Both</option>
+                  </select>}
+                  {item.isPolygon && <label title="Use this polygon layer to assign enumerator boundaries" className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[9px] font-medium text-sky-800"><input type="checkbox" checked={assignmentLayerId === item.key || assignmentLayerId === item.id} disabled={busy} onChange={() => void onAssignmentLayerChanged(assignmentLayerId === item.key || assignmentLayerId === item.id ? null : (item.kind === 'zone' ? item.id : item.key), item.kind === 'zone' ? null : (item.fields[0] || null))} />Boundary assign</label>}
+                  {item.kind === 'feature' && assignmentLayerId === item.key && <select aria-label={`${item.name} boundary assignment field`} title="Attribute used to assign boundary areas" value={assignmentField || ''} onChange={(event) => void onAssignmentLayerChanged(item.key, event.target.value || null)} className="max-w-24 rounded border border-sky-200 bg-white px-1 py-1 text-[9px] text-sky-900">{item.fields.map((field) => <option key={field} value={field}>{field}</option>)}</select>}
+                  <label title="Allow enumerators to select this layer for questionnaire surveys" className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[9px] font-medium text-emerald-800">
+                    <input type="checkbox" checked={activeSurveyKeys.includes(item.surveyKey)} disabled={busy || savingSurveyLayer} onChange={() => void toggleSurveyLayer(item.surveyKey)} />Survey
+                  </label>
+                  <button type="button" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} disabled={busy} onClick={() => void removeLayer(item)} className="shrink-0 rounded p-1.5 text-red-600 hover:bg-red-50 disabled:opacity-40"><Trash2 size={14} /></button>
+                </div>
+              ))}
+              {managedLayers.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">No uploaded map layers in this project.</p>}
+            </div>
+          </aside>
+          {selected ? (
+            <main className="min-h-0 flex-1 overflow-y-auto p-3">
+              {error && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div><h3 className="text-sm font-bold text-slate-900">{selected.name}</h3><p className="text-[10px] text-slate-500">{selected.count.toLocaleString()} records · {selected.kind === 'zone' ? 'Boundary SHP' : 'Map feature layer'}</p></div>
+              </div>
+              {busy && <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-red-100"><div className="h-full w-1/3 animate-pulse rounded-full bg-red-500" /></div>}
+              <section className="mb-4 rounded-xl border border-slate-200 p-3">
+                <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Layer display</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-[10px] font-semibold text-slate-600">Fill color<input type="color" value={style.fillColor} onChange={(e) => changeStyle({ fillColor: e.target.value })} className="mt-1 block h-9 w-full cursor-pointer rounded border border-slate-200 p-1" /></label>
+                  <label className="text-[10px] font-semibold text-slate-600">Boundary / line color<input type="color" value={style.boundaryColor} onChange={(e) => changeStyle({ boundaryColor: e.target.value })} className="mt-1 block h-9 w-full cursor-pointer rounded border border-slate-200 p-1" /></label>
+                  <label className="text-[10px] font-semibold text-slate-600">Fill opacity · {Math.round(style.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={style.opacity} onChange={(e) => changeStyle({ opacity: Number(e.target.value) })} className="mt-2 block w-full" /></label>
+                  <label className="text-[10px] font-semibold text-slate-600">Label field<select value={style.labelField} onChange={(e) => changeStyle({ labelField: e.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-2 py-2 text-xs"><option value="">Use layer default</option>{columns.map((field) => <option key={field} value={field}>{field}</option>)}</select></label>
+                  <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(5rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
+                    <label className="flex items-center gap-1.5 whitespace-nowrap text-[10px] font-semibold text-slate-700"><input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />Show map labels</label>
+                    <label title="Label text color" className="flex items-center gap-1 text-[9px] text-slate-500">Text<input aria-label="Label text color" type="color" value={style.labelColor} onChange={(e) => changeStyle({ labelColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
+                    <label title="Label halo color" className="flex items-center gap-1 text-[9px] text-slate-500">Halo<input aria-label="Label halo color" type="color" value={style.haloColor} onChange={(e) => changeStyle({ haloColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
+                    <label title="Label font size" className="flex items-center gap-1 text-[9px] text-slate-500">{style.fontSize}px<input aria-label="Label font size" type="range" min="8" max="24" step="1" value={style.fontSize} onChange={(e) => changeStyle({ fontSize: Number(e.target.value) })} className="w-14" /></label>
+                  </div>
+                </div>
+                <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices through the project server. Labels appear as you zoom in, based on feature size.</p>
+              </section>
+              <section>
+                <button type="button" aria-expanded={showAttributeTable} onClick={() => setShowAttributeTable((shown) => !shown)} className="mb-2 flex w-full items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-left hover:bg-slate-50">
+                  <span><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-600">Attribute table</span><span className="block text-[10px] text-slate-400">{rows.length.toLocaleString()} row(s)</span></span>
+                  {showAttributeTable ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                </button>
+                {showAttributeTable && <div className="max-h-[42vh] overflow-auto rounded-xl border border-slate-200">
+                  {rows.length ? <table className="min-w-full text-[10px]"><thead className="sticky top-0 bg-slate-50"><tr>{columns.map((field) => <th key={field} className="whitespace-nowrap px-2 py-1.5 text-left font-bold text-slate-600"><div>{field}</div>{selected && activeSurveyKeys.includes(selected.surveyKey) && <label title={`Include ${field} in the linked questionnaire response`} className="mt-1 flex items-center gap-1 text-[9px] font-medium text-emerald-700"><input type="checkbox" checked={(linkedQuestionFields[selected.surveyKey] || []).includes(field)} disabled={savingSurveyLayer} onChange={() => void toggleQuestionField(field)} />Link</label>}</th>)}</tr></thead><tbody>{rows.slice(0, 1000).map((row) => <tr key={row.id} className="border-t border-slate-100">{columns.map((field) => <td key={field} className="max-w-48 truncate whitespace-nowrap px-2 py-1 text-slate-700">{row.properties[field] == null ? '' : String(row.properties[field])}</td>)}</tr>)}</tbody></table> : <p className="p-3 text-xs text-slate-400">Loading attribute records…</p>}
+                  {rows.length > 1000 && <p className="border-t bg-slate-50 px-2 py-1 text-[10px] text-slate-400">Showing first 1,000 rows.</p>}
+                </div>}
+              </section>
+            </main>
+          ) : <main className="flex items-center justify-center p-8 text-sm text-slate-400">Select a layer to manage it.</main>}
+        </div>
+      </div>
+    </div>
+  );
+};

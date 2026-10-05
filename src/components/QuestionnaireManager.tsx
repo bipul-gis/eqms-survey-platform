@@ -110,6 +110,7 @@ import {
   Lock,
   Inbox,
   Locate,
+  Link2,
   Satellite,
   Loader2,
   CheckCircle2,
@@ -177,6 +178,15 @@ const QUESTION_TYPE_BY_KEY: Record<QuestionType, QuestionTypeDef> = QUESTION_TYP
   (acc, def) => ({ ...acc, [def.type]: def }),
   {} as Record<QuestionType, QuestionTypeDef>
 );
+
+const isSurveyDateQuestion = (question: Question) => question.type === 'date' && [question.key, question.question]
+  .filter(Boolean)
+  .some((value) => String(value).normalize('NFKC').toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').includes('survey date'));
+
+const todayAsLocalDate = () => {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+};
 
 const isChoiceType = (t: QuestionType) =>
   t === 'select' || t === 'multiselect' || t === 'radio' || t === 'checkbox';
@@ -851,6 +861,7 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
       <QuestionnaireBuilder
         questionnaire={editing === 'new' ? undefined : editing}
         projectId={scopeProjectId}
+        project={project}
         onClose={() => setEditing(null)}
         onSaved={async () => {
           await fetchQuestionnaires();
@@ -1106,6 +1117,7 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
 
 interface QuestionnaireBuilderProps {
   questionnaire?: Questionnaire;
+  project?: Project | null;
   /** Active project to stamp on save; falls back to `DEFAULT_PROJECT_ID`. */
   projectId?: string;
   onClose: () => void;
@@ -1114,6 +1126,7 @@ interface QuestionnaireBuilderProps {
 
 const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   questionnaire,
+  project,
   projectId,
   onClose,
   onSaved
@@ -1121,6 +1134,14 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   // Effective project to stamp on this questionnaire — preserve existing
   // `projectId` on edit, otherwise use the project the picker was opened in.
   const scopeProjectId = questionnaire?.projectId || projectId;
+  const surveyFieldOptions = useMemo(() => (project?.activeSurveyLayerKeys || []).flatMap((layerKey) =>
+    (project?.surveyLayerQuestionFields?.[layerKey] || []).map((field) => ({
+      layerKey,
+      field,
+      value: JSON.stringify({ layerKey, field }),
+      label: `${layerKey.startsWith('feature:') ? layerKey.slice(8) : layerKey.startsWith('zone:') ? layerKey.slice(5) : layerKey} · ${field}`,
+    }))
+  ), [project?.activeSurveyLayerKeys, project?.surveyLayerQuestionFields]);
   const { user } = useAuth();
 
   // ----- Draft state (normalize legacy option strings to QuestionOption[]) ---
@@ -1897,6 +1918,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                   <PropertiesPanel
                     question={selectedQuestion}
                     allQuestions={questions}
+                    surveyFieldOptions={surveyFieldOptions}
                     onUpdate={(patch) => updateQuestion(selectedQuestion.id, patch)}
                   />
                 )}
@@ -2186,6 +2208,11 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
           {formatAdminLocalizedText(question.question, question.questionTranslations) ||
             (isSection ? 'Untitled section' : 'Untitled question')}
         </div>
+        {question.featureAttributeLink && (
+          <div className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[9px] font-semibold text-indigo-700">
+            <Link2 size={11} /> Auto-fill: {question.featureAttributeLink.layerKey.replace(/^(feature|zone):/, '')} · {question.featureAttributeLink.field}
+          </div>
+        )}
         {question.description !== undefined && (
           <input
             type="text"
@@ -2426,9 +2453,11 @@ const inputCls =
 const PropertiesPanel: React.FC<{
   question: Question;
   allQuestions: Question[];
+  surveyFieldOptions: Array<{ layerKey: string; field: string; value: string; label: string }>;
   onUpdate: (patch: Partial<Question>) => void;
-}> = ({ question, allQuestions, onUpdate }) => {
+}> = ({ question, allQuestions, surveyFieldOptions, onUpdate }) => {
   const typeDef = QUESTION_TYPE_BY_KEY[question.type];
+  const linkedFieldValue = question.featureAttributeLink ? JSON.stringify(question.featureAttributeLink) : '';
 
   return (
         <div>
@@ -2498,6 +2527,34 @@ const PropertiesPanel: React.FC<{
           className={inputCls}
           placeholder={slugify(question.question) || question.id}
         />
+      </Field>
+
+      <Field label="Auto-fill from Survey layer" hint="When an enumerator opens this questionnaire from a marked map feature, copy that feature's selected attribute into this question. The Preview shows the link configuration.">
+        {surveyFieldOptions.length > 0 ? (
+          <select
+            value={linkedFieldValue}
+            onChange={(event) => {
+              if (!event.target.value) {
+                onUpdate({ featureAttributeLink: undefined });
+                return;
+              }
+              try {
+                onUpdate({ featureAttributeLink: JSON.parse(event.target.value) as Question['featureAttributeLink'] });
+              } catch {
+                onUpdate({ featureAttributeLink: undefined });
+              }
+            }}
+            className={inputCls}
+          >
+            <option value="">Do not link a layer field</option>
+            {question.featureAttributeLink && !surveyFieldOptions.some((option) => option.value === linkedFieldValue) && (
+              <option value={linkedFieldValue}>{question.featureAttributeLink.layerKey} · {question.featureAttributeLink.field} (unavailable)</option>
+            )}
+            {surveyFieldOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        ) : (
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">No linked attribute headers are selected. Mark a layer as Survey and choose Link on its attribute table column first.</p>
+        )}
       </Field>
 
       {(question.type === 'text' ||
@@ -4732,7 +4789,9 @@ const PreviewDialog: React.FC<{
   onClose
 }) => {
   const { user, userProfile } = useAuth();
-  const [answers, setAnswers] = useState<Record<string, unknown>>({});
+  const [answers, setAnswers] = useState<Record<string, unknown>>(() => Object.fromEntries(
+    questions.filter(isSurveyDateQuestion).map((question) => [question.id, todayAsLocalDate()])
+  ));
   const [enumeratorAnswers, setEnumeratorAnswers] = useState<Record<string, unknown>>({});
   const [consentGranted, setConsentGranted] = useState(false);
   const [previewLanguage, setPreviewLanguage] = useState<SurveyLanguage>('en');
@@ -4964,7 +5023,8 @@ const PreviewDialog: React.FC<{
                     });
                   }
                   return slots.map(({ q, label, depth }) => {
-                    const locked = lockedQuestionIds.has(q.id);
+                    const linkedQuestionLocked = Boolean(q.featureAttributeLink) && !isSurveyDateQuestion(q);
+                    const locked = lockedQuestionIds.has(q.id) || linkedQuestionLocked;
                     return (
                       <fieldset
                         key={q.id}
@@ -4987,7 +5047,7 @@ const PreviewDialog: React.FC<{
                         />
                         {locked && (
                           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 mt-1">
-                            Auto-filled (locked by rule)
+                            {linkedQuestionLocked ? 'Auto-filled from map feature' : 'Auto-filled (locked by rule)'}
                           </span>
                         )}
                       </fieldset>
@@ -5532,6 +5592,11 @@ const PreviewQuestion: React.FC<{
         {getLocalizedText(question.question, language, question.questionTranslations) || 'Untitled question'}
         {question.required && <span className="text-red-500 ml-1">*</span>}
       </label>
+      {question.featureAttributeLink && (
+        <p className="-mt-1 flex items-center gap-1 text-[10px] font-medium text-indigo-700">
+          <Link2 size={11} /> Auto-filled from map feature: {question.featureAttributeLink.layerKey.replace(/^(feature|zone):/, '')} · {question.featureAttributeLink.field}
+        </p>
+      )}
       {question.description && (
         <p className="text-xs text-slate-500 -mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>
       )}

@@ -13,6 +13,8 @@ export interface GeoFeature {
   moveRemarks?: string;
   /** Auto-generated backend note when a new feature is created. */
   newFeatureRemarks?: string;
+  /** Transient source-layer key when launched into a linked questionnaire. */
+  surveyLayerKey?: string;
   /** Newline-separated audit log of admin-profile actions (import, merge, QC, moves). */
   adminRM?: string;
   createdBy: string;
@@ -159,12 +161,26 @@ export interface Project {
      */
     boundaryAppliesTo?: 'geospatial' | 'questionnaire' | 'both';
   };
+  /** Uploaded map-layer keys that enumerators may select for linked questionnaire surveys. */
+  activeSurveyLayerKeys?: string[];
+  /** Per active layer, controls which actions appear in its map popup. */
+  surveyLayerActions?: Record<string, SurveyLayerAction>;
+  /** Layer fields copied into linked questionnaire responses. */
+  surveyLayerQuestionFields?: Record<string, string[]>;
+  /** Admin-defined map symbology shared with enumerator devices. */
+  mapLayerStyles?: Record<string, import('./lib/mapLayerSettings').MapLayerStyle>;
+  /** Polygon boundary layer used to assign enumerator work areas. */
+  geospatialAssignmentLayerId?: string | null;
+  /** Attribute on a marked uploaded polygon feature layer used for assignment. */
+  geospatialAssignmentField?: string | null;
   /** Soft-archive flag. Archived projects are hidden by default. */
   isActive?: boolean;
   createdAt?: unknown;
   createdBy?: string;
   updatedAt?: unknown;
 }
+
+export type SurveyLayerAction = 'edit' | 'questionnaire' | 'both';
 
 export type QuestionType =
   | 'text'
@@ -403,6 +419,8 @@ export interface Question {
   questionTranslations?: LocalizedText;
   /** Internal short key used as the response field id (e.g. `head_name`). Falls back to `id`. */
   key?: string;
+  /** Survey-layer attribute copied into this question when a feature launches the form. */
+  featureAttributeLink?: { layerKey: string; field: string };
   /** Help / description text rendered below the question prompt. */
   description?: string;
   descriptionTranslations?: LocalizedText;

@@ -8,9 +8,25 @@ import { Project } from '../types';
 
 /** Legacy default project id — used only when bucketing questionnaires without projectId. */
 export const DEFAULT_PROJECT_ID = 'project_20612601105';
+const GEOSURVEY_PROJECTS_CACHE_KEY = 'eqms.geosurveyProjects.cache.v1';
+
+export const getCachedGeosurveyProjects = (): Project[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const value = JSON.parse(window.localStorage.getItem(GEOSURVEY_PROJECTS_CACHE_KEY) || '[]');
+    return Array.isArray(value) ? value as Project[] : [];
+  } catch {
+    return [];
+  }
+};
 
 export const listProjects = async (): Promise<Project[]> => {
   const { items } = await geosurveyApi.listGeosurveyProjects();
+  try {
+    window.localStorage.setItem(GEOSURVEY_PROJECTS_CACHE_KEY, JSON.stringify(items));
+  } catch {
+    // Project settings are small; continue if device storage is unavailable.
+  }
   return items;
 };
 

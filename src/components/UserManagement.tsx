@@ -339,7 +339,7 @@ const EnumeratorProjectTaskRow: React.FC<{
             </label>
           </div>
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 leading-relaxed">
-            Import a zone boundary SHP (ZIP) from <strong>Geospatial Assignment → Manage SHP</strong> first.
+            Import a polygon boundary from <strong>Manage uploaded layers</strong>, then mark it for assignment.
             Then assign enumerators by any attribute field from that shapefile.
           </div>
         </div>
@@ -756,8 +756,23 @@ export const UserManagement: React.FC<{
         return;
       }
       try {
+        if (project.geospatialAssignmentLayerId?.startsWith('feature:')) {
+          const layerName = project.geospatialAssignmentLayerId.slice('feature:'.length);
+          const field = project.geospatialAssignmentField || '';
+          const { items } = await geosurveyApi.listFeatures({ projectId: project.id });
+          const values = items
+            .filter((raw: any) => String(raw.geometry?.type || '') === 'Polygon' || String(raw.geometry?.type || '') === 'MultiPolygon')
+            .filter((raw: any) => String(raw.attributes?.__layerName || raw.attributes?.layerName || raw.layerName || '') === layerName)
+            .map((raw: any) => String(raw.attributes?.[field] ?? '').trim())
+            .filter(Boolean);
+          if (!mounted) return;
+          setZoneLayerId(null);
+          setZoneAssignField(field || null);
+          setZoneAssignOptions([...new Set(values)].sort((a, b) => a.localeCompare(b)));
+          return;
+        }
         const { items } = await zoneLayersApi.listLayers(project.id);
-        const layer = items[0] || null;
+        const layer = items.find((item) => item.id === project.geospatialAssignmentLayerId) || null;
         if (!mounted) return;
         if (!layer) {
           setZoneAssignOptions([]);
@@ -782,7 +797,7 @@ export const UserManagement: React.FC<{
     return () => {
       mounted = false;
     };
-  }, [project?.id, segmentGeo]);
+  }, [project?.id, project?.geospatialAssignmentLayerId, segmentGeo]);
 
   useEffect(() => {
     setTotalEnumeratorsCount(pendingUsers.length + activeEnumeratorsCount + deactivatedEnumeratorsCount);
@@ -1434,8 +1449,7 @@ export const UserManagement: React.FC<{
             )}
             {project && activeTab === 'boundary' && segmentGeo && zoneAssignOptions.length === 0 && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                No zone layer yet. Open <strong>Geospatial Assignment → Manage SHP</strong>, upload a
-                polygon SHP ZIP, pick an assignment field, then return here to assign boundaries.
+                No assignment layer selected. Open <strong>Manage uploaded layers</strong>, import a polygon boundary, mark it for assignment, then return here to assign boundaries.
               </p>
             )}
             {project && activeTab === 'questionnaire' && segmentQ && projectQuestionnaires.length === 0 && (

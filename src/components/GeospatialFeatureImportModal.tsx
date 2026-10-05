@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Upload, X, Check, FileJson, AlertCircle, Layers, Eye } from 'lucide-react';
 import shp from 'shpjs';
 import type { FeatureType } from '../types';
-import { geosurveyApi } from '../lib/geosurveyApi';
+import { startGeospatialUpload, type ImportedMapExtent } from '../lib/geospatialUploadManager';
 
 interface GeospatialFeatureImportModalProps {
   projectId: string;
@@ -10,7 +10,6 @@ interface GeospatialFeatureImportModalProps {
   currentUserEmail?: string;
   currentUserUid?: string;
   onClose: () => void;
-  onSuccess: (count: number) => void;
 }
 
 interface ParsedFeatureItem {
@@ -19,6 +18,7 @@ interface ParsedFeatureItem {
   geometry: any;
   attributes: Record<string, any>;
   propertiesCount: number;
+  layerIndex: number;
 }
 
 export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModalProps> = ({
@@ -26,15 +26,13 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
   projectName,
   currentUserEmail,
   currentUserUid,
-  onClose,
-  onSuccess,
+  onClose
 }) => {
-  const [file, setFile] = useState<File | null>(null);
-  const [layerName, setLayerName] = useState<string>('');
+  const [files, setFiles] = useState<File[]>([]);
+  const [layerNames, setLayerNames] = useState<string[]>([]);
   const [parsedFeatures, setParsedFeatures] = useState<ParsedFeatureItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
   const [summary, setSummary] = useState<{ points: number; lines: number; polygons: number } | null>(null);
 
   const cleanNameFromFileName = (fileName: string) => {
@@ -44,104 +42,110 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
       .trim();
   };
 
-  const handleFileChange = async (selectedFile: File | null) => {
-    if (!selectedFile) return;
+  const handleFileChange = async (selectedFiles: File[]) => {
+    if (selectedFiles.length === 0) return;
     setError(null);
-    setFile(selectedFile);
+    setFiles(selectedFiles);
+    setLayerNames([]);
+    setParsedFeatures([]);
+    setSummary(null);
     setIsProcessing(true);
 
-    const detectedLayerName = cleanNameFromFileName(selectedFile.name);
-    if (!layerName) {
-      setLayerName(detectedLayerName || 'Imported Layer');
-    }
-
     try {
-      let rawJson: any;
-      const isZip = selectedFile.name.toLowerCase().endsWith('.zip');
-
-      if (isZip) {
-        const buffer = await selectedFile.arrayBuffer();
-        rawJson = await shp(buffer);
-      } else {
-        const text = await selectedFile.text();
-        try {
-          rawJson = JSON.parse(text);
-        } catch {
-          throw new Error('Invalid JSON format. Please upload a valid .geojson, .json, or Shapefile .zip.');
-        }
-      }
-
-      let rawFeatures: any[] = [];
-      const flattenGeoData = (data: any) => {
-        if (!data) return;
-        if (Array.isArray(data)) {
-          data.forEach(flattenGeoData);
-        } else if (data.type === 'FeatureCollection' && Array.isArray(data.features)) {
-          rawFeatures.push(...data.features);
-        } else if (data.type === 'Feature') {
-          rawFeatures.push(data);
-        } else if (typeof data === 'object') {
-          // May be a dict of layerName -> FeatureCollection from shpjs
-          Object.values(data).forEach(flattenGeoData);
-        }
-      };
-
-      flattenGeoData(rawJson);
-
-      if (rawFeatures.length === 0) {
-        throw new Error('No geospatial features found in this file.');
-      }
-
-      const items: ParsedFeatureItem[] = [];
+      const nextFeatures: ParsedFeatureItem[] = [];
+      const nextLayerNames: string[] = [];
+      const nameCounts = new Map<string, number>();
       let points = 0;
       let lines = 0;
       let polygons = 0;
 
-      for (let i = 0; i < rawFeatures.length; i++) {
-        const feat = rawFeatures[i];
-        const geom = feat?.geometry;
-        if (!geom || !geom.type || !geom.coordinates) continue;
+      for (let fileIndex = 0; fileIndex < selectedFiles.length; fileIndex++) {
+        const selectedFile = selectedFiles[fileIndex];
+        let rawJson: any;
+        const isZip = selectedFile.name.toLowerCase().endsWith('.zip');
 
-        let type: FeatureType = 'point';
-        const geomType = String(geom.type).toLowerCase();
-
-        if (geomType === 'point' || geomType === 'multipoint') {
-          type = 'point';
-          points++;
-        } else if (geomType === 'linestring' || geomType === 'multilinestring') {
-          type = 'line';
-          lines++;
-        } else if (geomType === 'polygon' || geomType === 'multipolygon') {
-          type = 'polygon';
-          polygons++;
+        if (isZip) {
+          rawJson = await shp(await selectedFile.arrayBuffer());
         } else {
-          continue; // Skip unsupported geometry types
+          try {
+            rawJson = JSON.parse(await selectedFile.text());
+          } catch {
+            throw new Error(`${selectedFile.name}: invalid JSON. Choose GeoJSON, JSON, or Shapefile ZIP files.`);
+          }
         }
 
-        const props = (feat.properties && typeof feat.properties === 'object') ? { ...feat.properties } : {};
-        const featId = feat.id != null ? String(feat.id) : `feat_${Date.now()}_${i + 1}`;
+        const rawFeatures: any[] = [];
+        const flattenGeoData = (data: any) => {
+          if (!data) return;
+          if (Array.isArray(data)) {
+            data.forEach(flattenGeoData);
+          } else if (data.type === 'FeatureCollection' && Array.isArray(data.features)) {
+            rawFeatures.push(...data.features);
+          } else if (data.type === 'Feature') {
+            rawFeatures.push(data);
+          } else if (typeof data === 'object') {
+            Object.values(data).forEach(flattenGeoData);
+          }
+        }
+        flattenGeoData(rawJson);
+        if (rawFeatures.length === 0) {
+          throw new Error(`${selectedFile.name}: no geospatial features found.`);
+        }
 
-        items.push({
-          id: featId,
-          type,
-          geometry: geom,
-          attributes: {
-            ...props,
-            __source: isZip ? 'shapefile_upload' : 'geojson_upload',
-            projectId,
-          },
-          propertiesCount: Object.keys(props).length,
-        });
+        const baseName = cleanNameFromFileName(selectedFile.name) || 'Imported Layer';
+        const duplicateCount = (nameCounts.get(baseName.toLowerCase()) || 0) + 1;
+        nameCounts.set(baseName.toLowerCase(), duplicateCount);
+        nextLayerNames.push(duplicateCount === 1 ? baseName : `${baseName} ${duplicateCount}`);
+
+        let supportedCount = 0;
+        for (let i = 0; i < rawFeatures.length; i++) {
+          const feat = rawFeatures[i];
+          const geom = feat?.geometry;
+          if (!geom || !geom.type || !geom.coordinates) continue;
+
+          let type: FeatureType;
+          const geomType = String(geom.type).toLowerCase();
+          if (geomType === 'point' || geomType === 'multipoint') {
+            type = 'point';
+            points++;
+          } else if (geomType === 'linestring' || geomType === 'multilinestring') {
+            type = 'line';
+            lines++;
+          } else if (geomType === 'polygon' || geomType === 'multipolygon') {
+            type = 'polygon';
+            polygons++;
+          } else {
+            continue;
+          }
+
+          const props = (feat.properties && typeof feat.properties === 'object') ? { ...feat.properties } : {};
+          const sourceId = feat.id == null ? '' : String(feat.id);
+          nextFeatures.push({
+            id: `import_${Date.now().toString(36)}_${fileIndex}_${i}_${sourceId}`,
+            type,
+            geometry: geom,
+            attributes: {
+              ...props,
+              ...(sourceId ? { __sourceFeatureId: sourceId } : {}),
+              __source: isZip ? 'shapefile_upload' : 'geojson_upload',
+              projectId,
+            },
+            propertiesCount: Object.keys(props).length,
+            layerIndex: fileIndex,
+          });
+          supportedCount++;
+        }
+        if (supportedCount === 0) {
+          throw new Error(`${selectedFile.name}: no supported point, line, or polygon features found.`);
+        }
       }
 
-      if (items.length === 0) {
-        throw new Error('No supported Point, LineString, or Polygon features found in this file.');
-      }
-
-      setParsedFeatures(items);
+      setLayerNames(nextLayerNames);
+      setParsedFeatures(nextFeatures);
       setSummary({ points, lines, polygons });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setLayerNames([]);
       setParsedFeatures([]);
       setSummary(null);
     } finally {
@@ -151,46 +155,37 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
 
   const handleImport = async () => {
     if (parsedFeatures.length === 0) return;
-    setIsUploading(true);
+    const normalizedLayerNames = layerNames.map((name) => name.trim());
+    if (normalizedLayerNames.some((name) => !name)) {
+      setError('Enter a layer name for every selected file.');
+      return;
+    }
+    if (new Set(normalizedLayerNames.map((name) => name.toLowerCase())).size !== normalizedLayerNames.length) {
+      setError('Each selected file needs a unique layer name so map visibility can be controlled separately.');
+      return;
+    }
     setError(null);
 
     try {
-      const now = new Date().toISOString();
-      const finalLayerName = (layerName || 'Imported Layer').trim();
-
-      const featuresToUpload: Record<string, unknown>[] = parsedFeatures.map((item) => ({
-        id: item.id,
-        type: item.type,
-        geometry: item.geometry,
-        attributes: {
-          ...item.attributes,
-          __layerName: finalLayerName,
-          layerName: finalLayerName,
-        },
-        status: 'pending',
+      const extent = getImportedFeaturesExtent(parsedFeatures);
+      if (!extent) throw new Error('Imported features have no valid coordinates to fit on the map.');
+      startGeospatialUpload({
         projectId,
-        createdBy: currentUserEmail || 'admin',
-        createdByUid: currentUserUid || null,
-        updatedBy: currentUserEmail || 'admin',
-        updatedAt: now,
-      }));
-
-      // Bulk upload in chunks of 500
-      const CHUNK_SIZE = 500;
-      let totalSaved = 0;
-
-      for (let i = 0; i < featuresToUpload.length; i += CHUNK_SIZE) {
-        const chunk = featuresToUpload.slice(i, i + CHUNK_SIZE);
-        const res = await geosurveyApi.bulkSaveFeatures(chunk);
-        totalSaved += res.count || chunk.length;
-      }
-
-      onSuccess(totalSaved);
+        projectName,
+        currentUserEmail,
+        currentUserUid,
+        extent,
+        features: parsedFeatures.map((item) => ({
+          id: item.id,
+          type: item.type,
+          geometry: item.geometry,
+          attributes: item.attributes,
+          layerName: normalizedLayerNames[item.layerIndex]
+        }))
+      });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to import features to server.');
-    } finally {
-      setIsUploading(false);
     }
   };
 
@@ -215,7 +210,6 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
           <button
             type="button"
             onClick={onClose}
-            disabled={isUploading}
             className="p-1 hover:bg-white/20 rounded-full transition"
           >
             <X size={20} />
@@ -231,33 +225,16 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
             </div>
           )}
 
-          {/* Layer Name Input */}
-          <div>
-            <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center gap-1.5">
-              <Layers size={14} className="text-sky-600" />
-              Layer Name
-            </label>
-            <input
-              type="text"
-              value={layerName}
-              onChange={(e) => setLayerName(e.target.value)}
-              placeholder="e.g. Roads, Transformers, Plot Boundaries, Slum Clusters"
-              className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 font-medium text-slate-800 placeholder:text-slate-400"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">
-              Give this dataset a distinct layer name so you can toggle and identify it alongside other layers on the map.
-            </p>
-          </div>
-
           {/* File input drag/drop box */}
           <div className="border-2 border-dashed border-slate-300 hover:border-sky-500 rounded-2xl p-6 text-center transition-colors bg-slate-50/50">
             <input
               type="file"
               id="geospatial-file-upload"
               accept=".geojson,.json,.zip,application/json,application/geo+json,application/zip,application/x-zip-compressed"
+              multiple
               className="hidden"
-              disabled={isProcessing || isUploading}
-              onChange={(e) => void handleFileChange(e.target.files?.[0] || null)}
+              disabled={isProcessing}
+              onChange={(e) => void handleFileChange(Array.from(e.target.files || []))}
             />
             <label
               htmlFor="geospatial-file-upload"
@@ -268,23 +245,49 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
               </div>
               <div>
                 <p className="text-sm font-bold text-slate-800">
-                  {file ? file.name : 'Choose a GeoJSON, JSON, or Shapefile (.zip)'}
+                  {files.length ? `${files.length} file${files.length === 1 ? '' : 's'} selected` : 'Choose one or more GIS files'}
                 </p>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Points, lines (polylines), and polygons will be imported under this layer
+                  Each GeoJSON or Shapefile ZIP becomes its own named, toggleable map layer
                 </p>
               </div>
               <span className="mt-2 text-xs font-semibold px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm hover:bg-slate-50">
-                Browse File
+                Browse Files
               </span>
             </label>
           </div>
+
+          {files.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">Map layers</h4>
+                <span className="text-[10px] text-slate-400">{files.length} selected</span>
+              </div>
+              {files.map((selectedFile, index) => (
+                <label key={`${selectedFile.name}_${index}`} className="flex items-center gap-2">
+                  <Layers size={14} className="shrink-0 text-sky-600" />
+                  <span className="w-36 shrink-0 truncate text-[10px] text-slate-500" title={selectedFile.name}>
+                    {selectedFile.name}
+                  </span>
+                  <input
+                    type="text"
+                    value={layerNames[index] || ''}
+                    disabled={isProcessing}
+                    onChange={(e) => setLayerNames((previous) => previous.map((name, i) => i === index ? e.target.value : name))}
+                    aria-label={`Map layer name for ${selectedFile.name}`}
+                    className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    placeholder="Layer name"
+                  />
+                </label>
+              ))}
+            </div>
+          )}
 
           {/* Feature Breakdown Summary */}
           {summary && (
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
-                <span>Features Found: {parsedFeatures.length}</span>
+                <span>{parsedFeatures.length} features across {layerNames.length} layer{layerNames.length === 1 ? '' : 's'}</span>
                 <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
                   Valid GeoJSON
                 </span>
@@ -336,7 +339,6 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
           <button
             type="button"
             onClick={onClose}
-            disabled={isUploading}
             className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200 rounded-lg transition"
           >
             Cancel
@@ -344,19 +346,43 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
           <button
             type="button"
             onClick={() => void handleImport()}
-            disabled={parsedFeatures.length === 0 || isUploading}
+            disabled={parsedFeatures.length === 0 || isProcessing}
             className="px-4 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg shadow-sm flex items-center gap-1.5 transition"
           >
-            {isUploading ? (
-              <>Uploading to Server…</>
-            ) : (
-              <>
-                <Check size={14} /> Import {parsedFeatures.length > 0 ? `${parsedFeatures.length} Features` : ''}
-              </>
-            )}
+            <><Check size={14} /> Start upload {parsedFeatures.length > 0 ? `${parsedFeatures.length} features` : ''}</>
           </button>
         </div>
       </div>
     </div>
   );
+};
+
+const getImportedFeaturesExtent = (features: ParsedFeatureItem[]): ImportedMapExtent | null => {
+  let south = Infinity;
+  let west = Infinity;
+  let north = -Infinity;
+  let east = -Infinity;
+
+  const visitCoordinates = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    if (
+      value.length >= 2 &&
+      typeof value[0] === 'number' &&
+      typeof value[1] === 'number' &&
+      Number.isFinite(value[0]) &&
+      Number.isFinite(value[1])
+    ) {
+      const [lng, lat] = value;
+      south = Math.min(south, lat);
+      west = Math.min(west, lng);
+      north = Math.max(north, lat);
+      east = Math.max(east, lng);
+      return;
+    }
+    value.forEach(visitCoordinates);
+  };
+
+  features.forEach((feature) => visitCoordinates(feature.geometry?.coordinates));
+  if (![south, west, north, east].every(Number.isFinite)) return null;
+  return { south, west, north, east };
 };

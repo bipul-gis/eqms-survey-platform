@@ -135,13 +135,46 @@ export async function deleteFeature(id: string): Promise<void> {
 }
 
 export async function bulkUpsertFeatures(items: Record<string, unknown>[]): Promise<number> {
-  let count = 0;
-  for (const item of items) {
-    const id = String(item.id || randomUUID());
-    await upsertFeature(id, { ...item, id });
-    count += 1;
+  const batchSize = 500;
+  for (let offset = 0; offset < items.length; offset += batchSize) {
+    const batch = items.slice(offset, offset + batchSize);
+    const values: unknown[] = [];
+    const rows = batch.map((item, index) => {
+      const id = String(item.id || randomUUID());
+      const full = { ...item, id, updatedAt: new Date().toISOString() };
+      const idx = extractFeatureIndexFields(full);
+      const base = index * 10;
+      values.push(
+        id,
+        JSON.stringify(full),
+        idx.type,
+        idx.status,
+        idx.createdByUid,
+        idx.createdBy,
+        idx.projectId,
+        idx.taskWard,
+        idx.wardName,
+        new Date(full.updatedAt).toISOString()
+      );
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10})`;
+    });
+    await pool.query(
+      `INSERT INTO features (id, payload, type, status, created_by_uid, created_by, project_id, task_ward, ward_name, updated_at)
+       VALUES ${rows.join(', ')}
+       ON CONFLICT (id) DO UPDATE SET
+         payload = EXCLUDED.payload,
+         type = EXCLUDED.type,
+         status = EXCLUDED.status,
+         created_by_uid = EXCLUDED.created_by_uid,
+         created_by = EXCLUDED.created_by,
+         project_id = EXCLUDED.project_id,
+         task_ward = EXCLUDED.task_ward,
+         ward_name = EXCLUDED.ward_name,
+         updated_at = EXCLUDED.updated_at`,
+      values
+    );
   }
-  return count;
+  return items.length;
 }
 
 export async function bulkDeleteFeatures(ids: string[]): Promise<number> {

@@ -9,6 +9,12 @@ export interface ParsedZoneFeature {
   geometry: Record<string, unknown>;
 }
 
+export interface ParsedZoneLayer {
+  name: string;
+  features: ParsedZoneFeature[];
+  attributeFields: string[];
+}
+
 function isPolygonGeom(g: unknown): g is { type: string; coordinates: unknown } {
   if (!g || typeof g !== 'object') return false;
   const t = (g as { type?: string }).type;
@@ -120,15 +126,48 @@ export function suggestLabelField(fields: string[]): string | null {
 }
 
 export async function parseZoneShapefileZip(file: File | ArrayBuffer): Promise<{
+  layers: ParsedZoneLayer[];
   features: ParsedZoneFeature[];
   attributeFields: string[];
 }> {
   const buffer = file instanceof File ? await file.arrayBuffer() : file;
   const geo = await shp(buffer);
-  const features = collectFeatures(geo);
+  const fallbackName = file instanceof File ? file.name.replace(/\.zip$/i, '') || 'Zones' : 'Zones';
+  const getLayerName = (rawName: unknown, fallback: string) => {
+    const path = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : fallback;
+    return path.replace(/\\/g, '/').split('/').pop()?.replace(/\.(shp|geojson|json)$/i, '').trim() || fallback;
+  };
+  const grouped: Array<{ name: string; features: ParsedZoneFeature[] }> = [];
+  const collectGroups = (value: unknown, name: string) => {
+    if (!value || typeof value !== 'object') return;
+    const obj = value as Record<string, unknown>;
+    if (obj.type === 'FeatureCollection' || obj.type === 'Feature') {
+      const features = collectFeatures(value);
+      if (features.length) grouped.push({ name: getLayerName(obj.fileName, name), features });
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => {
+        const itemName = item && typeof item === 'object' ? (item as Record<string, unknown>).fileName : null;
+        collectGroups(item, getLayerName(itemName, `${name} ${index + 1}`));
+      });
+      return;
+    }
+    for (const [key, child] of Object.entries(obj)) {
+      collectGroups(child, key || name);
+    }
+  };
+  collectGroups(geo, fallbackName);
+  const layers = grouped.map((group) => ({
+    ...group,
+    name: getLayerName(group.name, fallbackName),
+    attributeFields: attributeFieldsFromFeatures(group.features),
+  }));
+  // A shapefile ZIP with one layer may be returned in an unexpected wrapper shape.
+  const features = layers.length ? layers.flatMap((layer) => layer.features) : collectFeatures(geo);
   if (features.length === 0) {
     throw new Error('No polygon/multipolygon features found in the shapefile.');
   }
   const attributeFields = attributeFieldsFromFeatures(features);
-  return { features, attributeFields };
+  return { layers: layers.length ? layers : [{ name: fallbackName, features, attributeFields }], features, attributeFields };
 }

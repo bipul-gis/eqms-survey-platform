@@ -94,6 +94,7 @@ console.log('\n[2/4] Building web app (parent project)…');
 // Point the Capacitor WebView at the live GeoSurvey API (no Vite proxy on device).
 const webBuildEnv = {
   ...process.env,
+  CAPACITOR_BUILD: 'true',
   VITE_API_BASE_URL: process.env.VITE_API_BASE_URL || 'https://geosurvey.eqmscl.com'
 };
 execSync('npm run build', {

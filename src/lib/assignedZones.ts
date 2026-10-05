@@ -48,6 +48,8 @@ export function zonesToGeoJson(
         id: p.id,
         properties: {
           ...p.properties,
+          __projectId: p.projectId,
+          __layerId: p.layerId,
           __assignValue: p.assignValue,
           __label: label || null,
           __labelField: labelField || null,
