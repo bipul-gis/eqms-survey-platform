@@ -99,6 +99,8 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const [layerActions, setLayerActions] = useState(surveyLayerActions);
   const [linkedQuestionFields, setLinkedQuestionFields] = useState(surveyLayerQuestionFields);
   const style: MapLayerStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(selected?.kind === 'zone' ? { labelsVisible: true } : {}), ...(selected ? styles[selected.key] : {}) };
+  const featureZoomDraftKey = selected ? `${selected.key}:showFromZoom` : '';
+  const labelZoomDraftKey = selected ? `${selected.key}:labelsFromZoom` : '';
   const [rows, setRows] = useState<Array<{ id: string; properties: Record<string, unknown> }>>([]);
   const [showAttributeTable, setShowAttributeTable] = useState(false);
   const [attributeSearchQuery, setAttributeSearchQuery] = useState('');
@@ -106,6 +108,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const [busy, setBusy] = useState(false);
   const [savingSurveyLayer, setSavingSurveyLayer] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [zoomDrafts, setZoomDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => setActiveSurveyKeys(activeSurveyLayerKeys), [activeSurveyLayerKeys]);
   useEffect(() => setLayerActions(surveyLayerActions), [surveyLayerActions]);
@@ -175,6 +178,21 @@ export const GeospatialLayerManager: React.FC<Props> = ({
 
   const changeStyle = (patch: Partial<MapLayerStyle>) => {
     if (selected) changeLayerStyle(selected.key, patch);
+  };
+
+  const commitZoomDraft = (draftKey: string, field: 'showFromZoom' | 'labelsFromZoom', currentValue: number) => {
+    const draft = zoomDrafts[draftKey];
+    if (draft === undefined) return;
+    const parsed = Number.parseInt(draft, 10);
+    const value = draft.trim() === '' || Number.isNaN(parsed)
+      ? currentValue
+      : Math.max(0, Math.min(30, parsed));
+    changeStyle({ [field]: value });
+    setZoomDrafts((current) => {
+      const next = { ...current };
+      delete next[draftKey];
+      return next;
+    });
   };
 
   const toggleSurveyLayer = async (layerName: string) => {
@@ -386,13 +404,13 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   <label className="flex items-center gap-2 text-[10px] font-semibold text-slate-600">
                     <input type="checkbox" checked={style.showFromZoom > 0} onChange={(e) => changeStyle({ showFromZoom: e.target.checked ? 17 : 0 })} />
                     <span className="flex-1">Show features only from zoom</span>
-                    {style.showFromZoom > 0 && <input aria-label="Show features from zoom level" type="number" min="0" max="30" step="1" value={style.showFromZoom} onChange={(e) => changeStyle({ showFromZoom: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
+                    {style.showFromZoom > 0 && <input aria-label="Show features from zoom level" type="number" min="0" max="30" step="1" value={zoomDrafts[featureZoomDraftKey] ?? style.showFromZoom} onChange={(e) => setZoomDrafts((current) => ({ ...current, [featureZoomDraftKey]: e.target.value }))} onBlur={() => commitZoomDraft(featureZoomDraftKey, 'showFromZoom', style.showFromZoom)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
                   </label>
                   <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(6rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
                     <label className="flex items-center gap-2 whitespace-nowrap text-[10px] font-semibold text-slate-600">
                       <input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />
                       <span>Show labels only from zoom</span>
-                      {style.labelsVisible && <input aria-label="Show labels from zoom level" type="number" min="0" max="30" step="1" value={style.labelsFromZoom} onChange={(e) => changeStyle({ labelsFromZoom: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
+                      {style.labelsVisible && <input aria-label="Show labels from zoom level" type="number" min="0" max="30" step="1" value={zoomDrafts[labelZoomDraftKey] ?? style.labelsFromZoom} onChange={(e) => setZoomDrafts((current) => ({ ...current, [labelZoomDraftKey]: e.target.value }))} onBlur={() => commitZoomDraft(labelZoomDraftKey, 'labelsFromZoom', style.labelsFromZoom)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
                     </label>
                     <label title="Label text color" className="flex items-center gap-1 text-[9px] text-slate-500">Text<input aria-label="Label text color" type="color" value={style.labelColor} onChange={(e) => changeStyle({ labelColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
                     <label title="Label halo color" className="flex items-center gap-1 text-[9px] text-slate-500">Halo<input aria-label="Label halo color" type="color" value={style.haloColor} onChange={(e) => changeStyle({ haloColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
