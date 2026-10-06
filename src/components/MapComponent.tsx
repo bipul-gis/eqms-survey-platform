@@ -106,6 +106,7 @@ const surveyLayerKeyMatches = (keys: string[], key: string) => {
 };
 
 const featureLabelZoomCache = new WeakMap<object, number>();
+const SMALL_FEATURE_MIN_ZOOM = 17;
 const labelHaloShadow = (color: string) => [
   `-1.5px -1.5px 0 ${color}`, `0 -1.5px 0 ${color}`, `1.5px -1.5px 0 ${color}`,
   `-1.5px 0 0 ${color}`, `1.5px 0 0 ${color}`,
@@ -114,7 +115,7 @@ const labelHaloShadow = (color: string) => [
 const safeLabelColor = (color: string, fallback: string) => /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
 const escapeTooltipText = (text: string) => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
 const featureLabelMinZoom = (feature: { type?: string; geometry?: { coordinates?: unknown } }): number => {
-  return 19;
+  return feature.type === 'point' ? SMALL_FEATURE_MIN_ZOOM : 19;
 };
 
 const MapZoomListener: React.FC<{ onZoomChange: (zoom: number) => void }> = ({ onZoomChange }) => {
@@ -1537,7 +1538,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
 
         {/* Existing Features */}
-        {features.filter(isFeatureLayerVisible).map(feature => {
+        {features.filter(isFeatureLayerVisible).filter((feature) => (
+          feature.type !== 'point' || mapZoom >= SMALL_FEATURE_MIN_ZOOM
+        )).map(feature => {
           const isSelected = feature.id === selectedFeatureId;
           const isMoveTarget = feature.id === movingFeatureId;
           const isPulsing = feature.id === pulseFeatureId;
@@ -1644,7 +1647,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {/* Landmark points from CCC_all_Landmark.geojson (read-only visual layer).
             Hide a GeoJSON point when a matching Firestore feature exists so users
             always interact with the live/editable record after first edit/create. */}
-        {showLandmarks && landmarkPoints
+        {showLandmarks && mapZoom >= SMALL_FEATURE_MIN_ZOOM && landmarkPoints
           .filter((p) =>
             staticLandmarkMatchesAssignedWards(
               p.lng,
@@ -1681,7 +1684,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             both green/red feature markers and amber landmark dots. Status
             tints the outline so reviewers can tell drafts apart from
             submitted/reviewed responses at a glance. */}
-        {showSurveyLocations && Array.isArray(surveyLocations) && surveyLocations.map((p) => (
+        {showSurveyLocations && mapZoom >= SMALL_FEATURE_MIN_ZOOM && Array.isArray(surveyLocations) && surveyLocations.map((p) => (
           <SurveyLocationCircle key={`survey_loc_${p.id}`} point={p} />
         ))}
 
