@@ -167,9 +167,9 @@ const todayAsLocalDate = () => {
 };
 
 const linkedAttributeAnswers = (questionnaire: Questionnaire, attributes?: Record<string, any>, surveyLayerKey?: string) => {
-  if (!attributes) return {} as Record<string, any>;
-  const answers: Record<string, any> = Object.fromEntries(Object.entries(attributes).map(([key, value]) => [`linked_attribute:${key}`, value]));
-  const values = new Map(Object.entries(attributes).map(([key, value]) => [key.trim().normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' '), value]));
+  const sourceAttributes = attributes || {};
+  const answers: Record<string, any> = Object.fromEntries(Object.entries(sourceAttributes).map(([key, value]) => [`linked_attribute:${key}`, value]));
+  const values = new Map(Object.entries(sourceAttributes).map(([key, value]) => [key.trim().normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' '), value]));
   for (const question of questionnaire.questions || []) {
     if (isSurveyDateQuestion(question)) {
       answers[question.id] = todayAsLocalDate();
@@ -177,7 +177,7 @@ const linkedAttributeAnswers = (questionnaire: Questionnaire, attributes?: Recor
     }
     const link = question.featureAttributeLink;
     const linkedValue = link && surveyLayerKey && link.layerKey.trim().normalize('NFKC').toLocaleLowerCase() === surveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase()
-      ? attributes[link.field]
+      ? sourceAttributes[link.field]
       : undefined;
     if (linkedValue !== undefined && linkedValue !== null && linkedValue !== '') {
       answers[question.id] = linkedValue;
@@ -1638,7 +1638,24 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                 });
               }
               return slots.map(({ q, label, depth }) => {
-                const linkedQuestionLocked = Boolean(q.featureAttributeLink) && !isSurveyDateQuestion(q);
+                const link = q.featureAttributeLink;
+                const linkedLayerMatches = Boolean(
+                  link &&
+                  linkedFeature?.surveyLayerKey &&
+                  link.layerKey.trim().normalize('NFKC').toLocaleLowerCase() ===
+                    linkedFeature.surveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase()
+                );
+                const linkedValue = link && linkedLayerMatches
+                  ? linkedFeature?.attributes?.[link.field]
+                  : undefined;
+                const linkedQuestionLocked = Boolean(
+                  link &&
+                  linkedLayerMatches &&
+                  linkedValue !== undefined &&
+                  linkedValue !== null &&
+                  linkedValue !== '' &&
+                  !isSurveyDateQuestion(q)
+                );
                 const locked = lockedQuestionIds.has(q.id) || linkedQuestionLocked;
                 return (
                   <div

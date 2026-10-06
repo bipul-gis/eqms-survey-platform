@@ -78,35 +78,39 @@ export const LoginScreen: React.FC = () => {
   const [password, setPassword] = useState(remembered.password);
   const [rememberLogin, setRememberLogin] = useState(remembered.remember);
   const [error, setError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<ScreenMode>('login');
   const [name, setName] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
+  const [forgotStep, setForgotStep] = useState<1 | 2>(1);
+  const [resetToken, setResetToken] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [signUpSuccess, setSignUpSuccess] = useState(false);
-  const [forgotResetLink, setForgotResetLink] = useState<string | null>(null);
-  const [forgotEmailSent, setForgotEmailSent] = useState(false);
+  const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
 
   const mapForgotPasswordError = (err: unknown): string => {
     if (err instanceof ApiError) {
       if (err.status === 400) {
-        return 'Enter both email and the mobile number you registered with.';
+        return err.message || 'Enter both registered email and mobile number.';
       }
       if (err.status === 403) {
         return 'The email and mobile number do not match our records.';
       }
       if (err.status === 404) {
-        return 'No enumerator account matches this email and mobile number.';
+        return 'No account matches this email and mobile number.';
       }
       if (err.status >= 500) {
-        return 'Password reset service is unavailable right now. Please try again later or contact an administrator.';
+        return 'Service is unavailable right now. Please try again later or contact an administrator.';
       }
     }
     return err instanceof Error ? err.message : 'Request failed';
   };
 
-  const handleForgotPassword = async () => {
-    setForgotResetLink(null);
-    setForgotEmailSent(false);
+  const handleVerifyIdentity = async () => {
+    setError(null);
+    setEmailError(null);
     const em = email.trim();
     const phone = mobileNumber.trim();
     if (!em || !phone) {
@@ -114,41 +118,89 @@ export const LoginScreen: React.FC = () => {
       throw new Error('validation');
     }
     const data = await geosurveyApi.forgotPassword(em, phone);
-    if (data?.temporaryPassword) {
-      setForgotResetLink(`Temporary password: ${data.temporaryPassword}`);
+    if (data?.resetToken) {
+      setResetToken(data.resetToken);
+      setForgotStep(2);
+      setError(null);
       return;
     }
-    if (data?.ok) {
-      setForgotEmailSent(true);
+    throw new Error('Identity verification failed');
+  };
+
+  const handleCompleteReset = async () => {
+    setError(null);
+    if (!resetToken) {
+      setError('Verification session expired. Please verify your email and mobile again.');
+      setForgotStep(1);
       return;
     }
+    if (!newPassword || newPassword.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('New password and confirm password do not match.');
+      return;
+    }
+
+    const data = await geosurveyApi.resetPassword(resetToken, newPassword);
+    setResetSuccessMessage(data.message || 'Password successfully changed! You can now log in.');
+    // Prepare for login
+    setPassword(newPassword);
+    setForgotStep(1);
+    setResetToken(null);
+    setNewPassword('');
+    setConfirmPassword('');
+    setMode('login');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    try {
-      if (mode === 'forgot') {
-        try {
-          await handleForgotPassword();
-        } catch (err: unknown) {
-          if (err instanceof Error && err.message === 'validation') return;
-          setError(mapForgotPasswordError(err));
+    setEmailError(null);
+
+    if (mode === 'forgot') {
+      try {
+        if (forgotStep === 1) {
+          const trimmedEmail = email.trim();
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!trimmedEmail || !emailRegex.test(trimmedEmail)) {
+            setEmailError('Enter a valid email address');
+            setLoading(false);
+            return;
+          }
+          await handleVerifyIdentity();
+        } else {
+          await handleCompleteReset();
         }
-        return;
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message === 'validation') return;
+        setError(mapForgotPasswordError(err));
+      } finally {
+        setLoading(false);
       }
+      return;
+    }
+
+    const trimmedEmail = email.trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!trimmedEmail || !emailRegex.test(trimmedEmail)) {
+      setEmailError('Enter a valid email address');
+      setLoading(false);
+      return;
+    }
+
+    try {
       if (mode === 'signup') {
         await handleSignUp();
       } else {
-        await login(email, password);
-        persistRememberedLogin(rememberLogin, email, password);
+        await login(trimmedEmail, password);
+        persistRememberedLogin(rememberLogin, trimmedEmail, password);
       }
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 401) {
-        setError('Incorrect username or password.');
-        // Drop a stale saved password (e.g. changed on the server) so it does
-        // not keep re-filling a value that can no longer sign in.
+        setError('Incorrect email or password');
         persistRememberedLogin(rememberLogin, email, '');
       } else if (err instanceof ApiError && err.status === 403) {
         setError('Your account has been disabled. Please contact an administrator.');
@@ -181,29 +233,41 @@ export const LoginScreen: React.FC = () => {
   const switchLoginSignup = () => {
     setMode(mode === 'signup' ? 'login' : 'signup');
     setError(null);
+    setEmailError(null);
     setSignUpSuccess(false);
-    setForgotResetLink(null);
+    setResetSuccessMessage(null);
   };
 
   const goForgot = () => {
     setMode('forgot');
+    setForgotStep(1);
+    setResetToken(null);
+    setNewPassword('');
+    setConfirmPassword('');
     setError(null);
-    setForgotResetLink(null);
-    setForgotEmailSent(false);
+    setEmailError(null);
+    setResetSuccessMessage(null);
   };
 
   const goLogin = () => {
     setMode('login');
+    setForgotStep(1);
+    setResetToken(null);
+    setNewPassword('');
+    setConfirmPassword('');
     setError(null);
-    setForgotResetLink(null);
-    setForgotEmailSent(false);
+    setEmailError(null);
   };
 
   const submitLabel =
     mode === 'forgot'
       ? loading
-        ? 'Verifying…'
-        : 'Verify & open password reset'
+        ? forgotStep === 1
+          ? 'Checking details…'
+          : 'Updating password…'
+        : forgotStep === 1
+          ? 'Verify Identity'
+          : 'Save New Password'
       : loading
         ? mode === 'signup'
           ? 'Creating Account...'
@@ -228,12 +292,14 @@ export const LoginScreen: React.FC = () => {
           </h1>
           <p className="text-slate-400 text-center mt-2 text-sm">
             {mode === 'forgot'
-              ? 'Confirm your registered email and mobile to get a password reset link.'
+              ? forgotStep === 1
+                ? 'Step 1 of 2: Verify your registered email and mobile number.'
+                : 'Step 2 of 2: Enter your new password.'
               : 'Collect and validate geospatial data from ground level'}
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 mb-6">
+        <form onSubmit={handleSubmit} noValidate className="space-y-4 mb-6">
           {mode === 'signup' && (
             <div>
               <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">Full Name</label>
@@ -251,46 +317,113 @@ export const LoginScreen: React.FC = () => {
             </div>
           )}
 
-          {(mode === 'signup' || mode === 'forgot') && (
+          {/* Mobile input: Signup or Forgot Step 1 */}
+          {(mode === 'signup' || (mode === 'forgot' && forgotStep === 1)) && (
             <div>
               <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">
-                Mobile Number <span className="text-red-500">*</span>
+                Registered Mobile Number <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                 <input
                   type="tel"
                   value={mobileNumber}
-                  onChange={(e) => setMobileNumber(e.target.value)}
+                  onChange={(e) => {
+                    setMobileNumber(e.target.value);
+                    if (error) setError(null);
+                  }}
                   placeholder="01XXXXXXXXX"
                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
                   required
                 />
               </div>
-              {mode === 'forgot' && (
-                <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
-                  Must match the mobile number on your enumerator profile (same account as your email).
+            </div>
+          )}
+
+          {/* Email input: Login, Signup, or Forgot Step 1 */}
+          {(mode !== 'forgot' || forgotStep === 1) && (
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">
+                {mode === 'forgot' ? 'Registered Email' : 'Email'}
+              </label>
+              <div className="relative">
+                <Mail className={`absolute left-3 top-1/2 -translate-y-1/2 ${emailError ? 'text-red-400' : 'text-slate-400'}`} size={18} />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (emailError) setEmailError(null);
+                    if (error) setError(null);
+                  }}
+                  autoComplete="email"
+                  placeholder="Enter your registered email"
+                  className={`w-full pl-10 pr-4 py-3 bg-slate-50 border rounded-xl outline-none transition-all text-sm ${
+                    emailError
+                      ? 'border-red-400 focus:ring-2 focus:ring-red-400 focus:border-red-400 bg-red-50/20'
+                      : 'border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
+                  }`}
+                  required
+                />
+              </div>
+              {emailError && (
+                <p className="text-xs text-red-500 font-medium mt-1.5 ml-1 flex items-center gap-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                  <AlertCircle size={14} className="shrink-0" />
+                  {emailError}
                 </p>
               )}
             </div>
           )}
 
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">Email / Username</label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="username"
-                placeholder="admin@ccc.gov.bd"
-                className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
-                required
-              />
-            </div>
-          </div>
+          {/* Forgot Step 2: New Password & Confirm Password */}
+          {mode === 'forgot' && forgotStep === 2 && (
+            <>
+              <div className="bg-emerald-50 border border-emerald-100 p-3 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
+                <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                <span>Identity verified for <strong>{email}</strong>. Enter your new password below.</span>
+              </div>
 
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">New Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => {
+                      setNewPassword(e.target.value);
+                      if (error) setError(null);
+                    }}
+                    autoComplete="new-password"
+                    placeholder="Enter new password (min 6 characters)"
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">Confirm New Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => {
+                      setConfirmPassword(e.target.value);
+                      if (error) setError(null);
+                    }}
+                    autoComplete="new-password"
+                    placeholder="Confirm your new password"
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
+                    required
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Normal Password Input */}
           {mode !== 'forgot' && (
             <div>
               <label className="text-xs font-bold text-slate-500 uppercase ml-1 mb-1 block">Password</label>
@@ -301,7 +434,7 @@ export const LoginScreen: React.FC = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                  placeholder="••••••••"
+                  placeholder="Enter your password"
                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
                   required
                 />
@@ -341,6 +474,13 @@ export const LoginScreen: React.FC = () => {
             </div>
           )}
 
+          {resetSuccessMessage && (
+            <div className="bg-green-50 text-green-700 p-3 rounded-xl text-xs flex items-center gap-2 border border-green-100 leading-relaxed font-medium">
+              <CheckCircle2 size={20} className="shrink-0 text-green-600" />
+              {resetSuccessMessage}
+            </div>
+          )}
+
           {signUpSuccess && (
             <div className="bg-green-50 text-green-600 p-3 rounded-xl text-xs flex items-center gap-2 border border-green-100 leading-relaxed font-medium">
               <CheckCircle2 size={20} className="shrink-0" />
@@ -348,35 +488,9 @@ export const LoginScreen: React.FC = () => {
             </div>
           )}
 
-          {forgotEmailSent && (
-            <div className="bg-green-50 text-green-800 p-3 rounded-xl text-xs border border-green-100 space-y-2">
-              <p className="font-semibold flex items-center gap-2">
-                <CheckCircle2 size={18} />
-                Verified. Check your email inbox for a password reset message.
-              </p>
-            </div>
-          )}
-
-          {forgotResetLink && (
-            <div className="bg-green-50 text-green-800 p-3 rounded-xl text-xs border border-green-100 space-y-2">
-              <p className="font-semibold flex items-center gap-2">
-                <CheckCircle2 size={18} />
-                Verified. Open the link below to set a new password.
-              </p>
-              <a
-                href={forgotResetLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block w-full text-center bg-green-600 text-white font-semibold py-2.5 rounded-xl hover:bg-green-700 transition-colors"
-              >
-                Open password reset page
-              </a>
-            </div>
-          )}
-
           <button
             type="submit"
-            disabled={loading || Boolean(forgotResetLink) || forgotEmailSent}
+            disabled={loading}
             className="w-full bg-blue-600 text-white font-semibold py-4 rounded-2xl flex items-center justify-center gap-3 hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 active:scale-[0.98] disabled:opacity-50"
           >
             {submitLabel}

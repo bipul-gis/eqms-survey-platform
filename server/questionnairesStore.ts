@@ -11,6 +11,15 @@ export async function listQuestionnaires(projectId?: string): Promise<Record<str
   return rows.map((r) => r.payload as Record<string, unknown>);
 }
 
+export async function listQuestionnairesByIds(ids: string[]): Promise<Record<string, unknown>[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await pool.query(
+    'SELECT payload FROM questionnaires WHERE id = ANY($1::text[]) ORDER BY updated_at DESC',
+    [ids]
+  );
+  return rows.map((r) => r.payload as Record<string, unknown>);
+}
+
 export async function getQuestionnaire(id: string): Promise<Record<string, unknown> | null> {
   const { rows } = await pool.query('SELECT payload FROM questionnaires WHERE id = $1', [id]);
   return rows[0] ? (rows[0].payload as Record<string, unknown>) : null;

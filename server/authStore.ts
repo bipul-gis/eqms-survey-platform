@@ -106,3 +106,41 @@ export async function getAuthSession(token: string): Promise<AuthSession | null>
 export async function revokeAuthSession(token: string): Promise<void> {
   await pool.query('DELETE FROM auth_sessions WHERE token = $1', [token]);
 }
+
+export async function revokeUserAuthSessions(userId: string): Promise<void> {
+  await pool.query('DELETE FROM auth_sessions WHERE user_id = $1', [userId]);
+}
+
+export async function createPasswordResetToken(userId: string): Promise<string> {
+  const tokenId = randomUUID();
+  const resetToken = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes validity
+
+  // Invalidate any previous unused reset tokens for this user
+  await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [userId]);
+
+  await pool.query(
+    `INSERT INTO password_reset_tokens (id, user_id, reset_token, expires_at, used)
+     VALUES ($1, $2, $3, $4, FALSE)`,
+    [tokenId, userId, resetToken, expiresAt.toISOString()]
+  );
+  return resetToken;
+}
+
+export async function verifyAndConsumeResetToken(resetToken: string): Promise<string | null> {
+  const res = await pool.query<{ user_id: string; expires_at: string; used: boolean }>(
+    `SELECT user_id, expires_at, used FROM password_reset_tokens WHERE reset_token = $1`,
+    [resetToken]
+  );
+  if (!res.rowCount) return null;
+  const row = res.rows[0];
+  if (row.used) return null;
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    await pool.query('DELETE FROM password_reset_tokens WHERE reset_token = $1', [resetToken]);
+    return null;
+  }
+
+  // Mark token as used
+  await pool.query('UPDATE password_reset_tokens SET used = TRUE WHERE reset_token = $1', [resetToken]);
+  return row.user_id;
+}

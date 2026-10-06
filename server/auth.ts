@@ -1,10 +1,14 @@
 import type { Request } from 'express';
 import {
   createAuthSession,
+  createPasswordResetToken,
   ensureUserPassword,
   getAuthSession,
+  getPasswordHash,
   revokeAuthSession,
+  revokeUserAuthSessions,
   setUserPassword,
+  verifyAndConsumeResetToken,
   verifyUserPassword,
 } from './authStore';
 import {
@@ -34,7 +38,9 @@ export async function authenticateWithPassword(email: string, password: string) 
 
   const ok = await verifyUserPassword(user.id, password);
   if (!ok) {
-    if (isWhitelistedAdmin(user.email) && password === getDefaultPassword()) {
+    // Only permit initial default password seeding if NO password hash exists yet in DB
+    const hasHash = await getPasswordHash(user.id);
+    if (!hasHash && isWhitelistedAdmin(user.email) && password === getDefaultPassword()) {
       await ensureUserPassword(user.id, password);
     } else {
       return null;
@@ -43,6 +49,28 @@ export async function authenticateWithPassword(email: string, password: string) 
 
   const session = await createAuthSession(user.id);
   return { user, profile: userToProfile(user), sessionToken: session.token };
+}
+
+export async function changePasswordForUser(userId: string, oldPassword: string, newPassword: string): Promise<void> {
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error('New password must be at least 6 characters.');
+  }
+  const user = await findUserById(userId);
+  if (!user) {
+    throw new Error('User not found.');
+  }
+  const ok = await verifyUserPassword(userId, oldPassword);
+  if (!ok) {
+    // Check if whitelisted admin with default password ONLY if no hash exists yet
+    const hasHash = await getPasswordHash(userId);
+    if (!hasHash && isWhitelistedAdmin(user.email) && oldPassword === getDefaultPassword()) {
+      // Allowed for initial transition
+    } else {
+      throw new Error('Current password is incorrect.');
+    }
+  }
+  await setUserPassword(userId, newPassword);
+  await revokeUserAuthSessions(userId);
 }
 
 export async function registerEnumerator(input: {
@@ -106,6 +134,53 @@ export async function adminCreateEnumerator(
   });
   await setUserPassword(user.id, input.password);
   return userToProfile(user);
+}
+
+/** Replace an enumerator's password and return the one-time cleartext to the admin. */
+export async function adminResetEnumeratorPassword(userId: string): Promise<string> {
+  const user = await findUserById(userId);
+  if (!user || user.role !== 'enumerator') {
+    throw new Error('Enumerator account not found.');
+  }
+  const password = randomUUID().replace(/-/g, '') + 'aA7!';
+  await setUserPassword(user.id, password);
+  await revokeUserAuthSessions(user.id);
+  return password;
+}
+
+export async function verifyIdentityForPasswordReset(
+  email: string,
+  mobileNumber: string
+): Promise<{ resetToken: string; displayName: string }> {
+  const normEmail = email.trim().toLowerCase();
+  const user = await findUserByEmail(normEmail);
+  if (!user) {
+    throw new Error('No account found for this email address.');
+  }
+  if (user.status === 'rejected') {
+    throw new Error('This account has been rejected.');
+  }
+
+  const userMobile = (user.mobileNumber || '').replace(/\D/g, '');
+  const providedMobile = mobileNumber.replace(/\D/g, '');
+  if (!userMobile || userMobile !== providedMobile) {
+    throw new Error('Mobile number does not match registered account.');
+  }
+
+  const resetToken = await createPasswordResetToken(user.id);
+  return { resetToken, displayName: user.displayName || user.email };
+}
+
+export async function completePasswordReset(resetToken: string, newPassword: string): Promise<void> {
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+  const userId = await verifyAndConsumeResetToken(resetToken);
+  if (!userId) {
+    throw new Error('Reset session has expired or is invalid. Please verify again.');
+  }
+  await setUserPassword(userId, newPassword);
+  await revokeUserAuthSessions(userId);
 }
 
 export async function requestPasswordReset(email: string, mobileNumber: string): Promise<string> {

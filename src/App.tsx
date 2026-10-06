@@ -63,6 +63,7 @@ const ZoneLayerPanel = lazy(() =>
 const GeospatialLayerManager = lazy(() =>
   import('./components/GeospatialLayerManager').then((m) => ({ default: m.GeospatialLayerManager }))
 );
+import { ProfileModal } from './components/ProfileModal';
 const GeospatialFeatureImportModal = lazy(() =>
   import('./components/GeospatialFeatureImportModal').then((m) => ({
     default: m.GeospatialFeatureImportModal,
@@ -89,6 +90,7 @@ import {
   Map as MapIcon,
   List,
   LogOut,
+  User,
   Shield,
   Compass,
   Activity,
@@ -431,6 +433,30 @@ const AppContent: React.FC = () => {
   >('pending');
   const [showZoneLayerPanel, setShowZoneLayerPanel] = useState(false);
   const [showLayerManager, setShowLayerManager] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+
+  const openUserManagement = (tab: 'pending' | 'boundary' | 'geospatial' | 'questionnaire' | 'create' = 'pending') => {
+    setShowLayerManager(false);
+    setUserManagementTab(tab);
+    setShowUserManagement(true);
+  };
+
+  const openLayerManager = () => {
+    setShowUserManagement(false);
+    setShowLayerManager(true);
+  };
+
+  useEffect(() => {
+    if (showUserManagement) {
+      setShowLayerManager(false);
+    }
+  }, [showUserManagement]);
+
+  useEffect(() => {
+    if (showLayerManager) {
+      setShowUserManagement(false);
+    }
+  }, [showLayerManager]);
   const [showGeospatialLayerMenu, setShowGeospatialLayerMenu] = useState(false);
   const [zoneLayer, setZoneLayer] = useState<ZoneLayer | null>(() => {
     if (typeof window === 'undefined') return null;
@@ -599,7 +625,29 @@ const AppContent: React.FC = () => {
       : Object.assign({}, ...enumeratorMapProjects.map((project) => project.surveyLayerActions || {})),
     [isAdmin, enumeratorMapProjects, currentProject?.surveyLayerActions]
   );
-  const [dismissedZonePromptProjectId, setDismissedZonePromptProjectId] = useState<string | null>(null);
+  const [dismissedZonePromptProjectIds, setDismissedZonePromptProjectIds] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('eqms.dismissedZonePrompts');
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const dismissZonePromptForProject = useCallback((projectId?: string | null) => {
+    if (!projectId) return;
+    setDismissedZonePromptProjectIds((prev) => {
+      if (prev.includes(projectId)) return prev;
+      const next = [...prev, projectId];
+      try {
+        window.localStorage.setItem('eqms.dismissedZonePrompts', JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
   useEffect(() => {
     try {
       if (currentProject) {
@@ -1268,6 +1316,34 @@ const AppContent: React.FC = () => {
       featureMatchesAssignedWardsResolved(f, assignedWardsForFilter, wardsData)
     );
   }, [isAdmin, features, assignedWardsForFilter, enumeratorMapProjects, assignedGeoProjectIds.join('|'), wardsData, user?.email, user?.uid, geospatialMapMode, userProfile?.projectZoneAssignments, userProfile?.assignedZoneValues, currentProject?.id, mapProjectId]);
+
+  /** True if the current project already has imported zones, boundaries, or features */
+  const currentProjectHasMapData = useMemo(() => {
+    if (!currentProject) return false;
+    // 1. Direct zone layer or polygons in state
+    if (zoneLayer != null || zoneBoundaryLayers.length > 0 || zonePolygons.length > 0) return true;
+    // 2. Cached zone bundle in localStorage for this project
+    const cachedZones = readCachedZoneBundle(currentProject.id);
+    if (cachedZones && (cachedZones.polygons?.length > 0 || cachedZones.layer != null || cachedZones.layers?.length > 0)) {
+      return true;
+    }
+    // 3. Project configuration indicating uploaded/configured layers
+    if (
+      Boolean(currentProject.geospatialAssignmentLayerId) ||
+      Boolean(currentProject.geospatialAssignmentField) ||
+      (currentProject.activeSurveyLayerKeys && currentProject.activeSurveyLayerKeys.length > 0) ||
+      (currentProject.mapLayerStyles && Object.keys(currentProject.mapLayerStyles).length > 0)
+    ) {
+      return true;
+    }
+    // 4. Features loaded in memory
+    return features.some((feature) => {
+      const fProjId = String(feature.attributes?.projectId || (feature as any).projectId || '');
+      const hasLayer = Boolean(feature.attributes?.__layerName || feature.attributes?.layerName);
+      const isUpload = feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload';
+      return (fProjId === currentProject.id) || ((hasLayer || isUpload) && (!fProjId || fProjId === currentProject.id));
+    });
+  }, [currentProject, zoneLayer, zoneBoundaryLayers.length, zonePolygons.length, features]);
 
   const enumeratorSyncUi = useMemo(() => {
     if (isAdmin) {
@@ -2654,6 +2730,12 @@ const AppContent: React.FC = () => {
 
           <div className="space-y-3">
             <button
+              onClick={() => setShowProfileModal(true)}
+              className="w-full bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold py-3 rounded-2xl transition-all shadow-sm active:scale-[0.98] flex items-center justify-center gap-2 text-sm"
+            >
+              <User size={16} /> My Profile
+            </button>
+            <button
               onClick={() => void logout()}
               className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-3 rounded-2xl transition-all shadow-lg active:scale-[0.98]"
             >
@@ -2663,6 +2745,7 @@ const AppContent: React.FC = () => {
         </div>
         </div>
         <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
+        <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
       </div>
     );
   }
@@ -2715,16 +2798,20 @@ const AppContent: React.FC = () => {
     userProfile
   ) {
     return (
-      <EnumeratorQuestionnaireList
-        userProfile={userProfile}
-        geofenceZones={zonePolygons}
-        projectMapLayerStyles={mapProjectLayerStyles}
-        projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
-        strictGeofence={questionnaireStrictGeofence}
-        onLogout={async () => {
-          await logout();
-        }}
-      />
+      <>
+        <EnumeratorQuestionnaireList
+          userProfile={userProfile}
+          geofenceZones={zonePolygons}
+          projectMapLayerStyles={mapProjectLayerStyles}
+          projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
+          strictGeofence={questionnaireStrictGeofence}
+          onOpenProfile={() => setShowProfileModal(true)}
+          onLogout={async () => {
+            await logout();
+          }}
+        />
+        <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
+      </>
     );
   }
 
@@ -2738,15 +2825,19 @@ const AppContent: React.FC = () => {
     userProfile
   ) {
     return (
-      <EnumeratorQuestionnaireList
-        userProfile={userProfile}
-        geofenceZones={zonePolygons}
-        projectMapLayerStyles={mapProjectLayerStyles}
-        projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
-        strictGeofence={questionnaireStrictGeofence}
-        startImmediately
-        onBack={() => setEnumeratorMode('geospatial')}
-      />
+      <>
+        <EnumeratorQuestionnaireList
+          userProfile={userProfile}
+          geofenceZones={zonePolygons}
+          projectMapLayerStyles={mapProjectLayerStyles}
+          projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
+          strictGeofence={questionnaireStrictGeofence}
+          startImmediately
+          onOpenProfile={() => setShowProfileModal(true)}
+          onBack={() => setEnumeratorMode('geospatial')}
+        />
+        <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
+      </>
     );
   }
 
@@ -2779,6 +2870,14 @@ const AppContent: React.FC = () => {
               </p>
               <p className="text-[10px] text-emerald-700 font-bold uppercase">ENUMERATOR</p>
             </div>
+            <button
+              onClick={() => setShowProfileModal(true)}
+              className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all flex items-center gap-1.5 text-xs font-medium"
+              title="My Profile"
+            >
+              <User size={18} />
+              <span className="hidden sm:inline">My Profile</span>
+            </button>
             <button
               onClick={() => void logout()}
               className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
@@ -2859,6 +2958,7 @@ const AppContent: React.FC = () => {
           </div>
         </main>
         <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
+        <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
       </div>
     );
   }
@@ -2880,15 +2980,24 @@ const AppContent: React.FC = () => {
             Your admin hasn't assigned any wards or questionnaires to your account yet. They'll
             show up here automatically once they do.
           </p>
-          <button
-            onClick={() => void logout()}
-            className="text-xs font-semibold px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1.5"
-          >
-            <LogOut size={13} /> Sign out
-          </button>
+          <div className="flex items-center justify-center gap-2">
+            <button
+              onClick={() => setShowProfileModal(true)}
+              className="text-xs font-semibold px-4 py-2 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 inline-flex items-center gap-1.5 transition-colors"
+            >
+              <User size={14} /> My Profile
+            </button>
+            <button
+              onClick={() => void logout()}
+              className="text-xs font-semibold px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1.5 transition-colors"
+            >
+              <LogOut size={13} /> Sign out
+            </button>
+          </div>
         </div>
         </div>
         <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
+        <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
       </div>
     );
   }
@@ -2904,7 +3013,8 @@ const AppContent: React.FC = () => {
   // ────────────────────────────────────────────────────────────────────────
   if (isAdmin && !currentProject) {
     return (
-      <ProjectPicker
+      <>
+        <ProjectPicker
         currentUserUid={user.uid}
         currentUserName={userProfile?.displayName || user.email || undefined}
         isAdmin={isAdmin}
@@ -2925,9 +3035,12 @@ const AppContent: React.FC = () => {
           setAdminMode('home');
         }}
         onSignOut={() => void logout()}
+        onOpenProfile={() => setShowProfileModal(true)}
       />
-    );
-  }
+      <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
+    </>
+  );
+}
 
   if (isAdmin && adminMode === 'home') {
     return (
@@ -2961,6 +3074,14 @@ const AppContent: React.FC = () => {
                 </p>
                 <p className="text-[10px] text-blue-600 font-bold uppercase">ADMIN</p>
               </div>
+              <button
+                onClick={() => setShowProfileModal(true)}
+                className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all flex items-center gap-1.5 text-xs font-medium"
+                title="My Profile"
+              >
+                <User size={18} />
+                <span className="hidden sm:inline">My Profile</span>
+              </button>
               <button
                 onClick={() => void logout()}
                 className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
@@ -3073,43 +3194,6 @@ const AppContent: React.FC = () => {
                 </div>
               </button>
 
-              {currentProjectHasQuestionnaire && (
-                <button
-                  onClick={() => {
-                    setUserManagementTab('questionnaire');
-                    setShowUserManagement(true);
-                  }}
-                  className="group relative text-left bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-emerald-300 hover:-translate-y-0.5 transition-all duration-200 overflow-hidden"
-                >
-                  <div className="absolute -top-12 -right-12 w-40 h-40 bg-emerald-100/60 rounded-full blur-2xl group-hover:bg-emerald-200/70 transition-colors" />
-                  <div className="relative">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-lg shadow-emerald-200 mb-4">
-                      <Users size={26} className="text-white" />
-                    </div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-lg font-bold text-slate-900">Questionnaire Assignment</h3>
-                      <ChevronRight
-                        size={18}
-                        className="text-slate-300 group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all"
-                      />
-                    </div>
-                    <p className="text-sm text-slate-500 leading-relaxed">
-                      Assign published questionnaire forms to enumerators independently from
-                      geospatial SHP tasks.
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-1.5">
-                      {['Published forms', 'Enumerator tasks', 'Project scoped'].map((tag) => (
-                        <span
-                          key={tag}
-                          className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </button>
-              )}
             </div>
 
             {/* Quick actions row */}
@@ -3127,10 +3211,7 @@ const AppContent: React.FC = () => {
                   </div>
                 </div>
                 <button
-                  onClick={() => {
-                    setUserManagementTab('pending');
-                    setShowUserManagement(true);
-                  }}
+                  onClick={() => openUserManagement('pending')}
                   className="text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
                 >
                   Open <ChevronRight size={14} />
@@ -3294,6 +3375,7 @@ const AppContent: React.FC = () => {
             </div>
           </div>
         )}
+        <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
       </div>
     );
   }
@@ -3472,7 +3554,7 @@ const AppContent: React.FC = () => {
                             type="button"
                             onClick={() => {
                               setShowGeospatialLayerMenu(false);
-                              setShowLayerManager(true);
+                              openLayerManager();
                             }}
                             className="flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left hover:bg-sky-50"
                           >
@@ -3487,24 +3569,9 @@ const AppContent: React.FC = () => {
                     )}
                   </div>
                 )}
-                {currentProject && currentProjectHasGeo && (
-                  <button
-                    onClick={() => {
-                      setUserManagementTab('boundary');
-                      setShowUserManagement(true);
-                    }}
-                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-700 bg-cyan-50 hover:bg-cyan-100 border border-cyan-100 rounded-lg"
-                    title="Assign boundaries to enumerators"
-                  >
-                    <MapPin size={13} className="shrink-0" />
-                    Assign boundaries
-                  </button>
-                )}
+
                 <button 
-                  onClick={() => {
-                    setUserManagementTab('pending');
-                    setShowUserManagement(true);
-                  }}
+                  onClick={() => openUserManagement('pending')}
                   className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
                   title="Manage Users"
                 >
@@ -3516,6 +3583,14 @@ const AppContent: React.FC = () => {
               <p className="text-xs font-bold text-slate-900">{userProfile?.displayName || user.email}</p>
               <p className="text-[10px] text-blue-600 font-bold uppercase">{isAdmin ? 'ADMIN' : 'ENUMERATOR'}</p>
             </div>
+            <button
+              onClick={() => setShowProfileModal(true)}
+              className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all flex items-center gap-1.5 text-xs font-medium"
+              title="My Profile"
+            >
+              <User size={18} />
+              <span className="hidden sm:inline">My Profile</span>
+            </button>
             <button 
               onClick={() => {
                 setShowUserManagement(false);
@@ -3620,7 +3695,7 @@ const AppContent: React.FC = () => {
                 </div>
               </div>
             )}
-            {isAdmin && currentProjectHasGeo && !zonesLoading && !zoneLayer && zoneBoundaryLayers.length === 0 && !visibleFeatures.some((feature) => Boolean(feature.attributes?.__layerName || feature.attributes?.layerName || feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload' || feature.attributes?.projectId === currentProject?.id || (feature as any).projectId === currentProject?.id)) && dismissedZonePromptProjectId !== currentProject?.id && (
+            {isAdmin && currentProjectHasGeo && !zonesLoading && !featuresInitialLoading && !currentProjectHasMapData && !dismissedZonePromptProjectIds.includes(currentProject?.id || '') && (
               <div className="absolute inset-0 z-[500] flex items-center justify-center bg-slate-900/40 p-4 pointer-events-none">
                 <div className="pointer-events-auto max-w-md w-full bg-white rounded-2xl shadow-2xl border border-slate-200 p-5 space-y-3">
                   <div className="flex items-center justify-between">
@@ -3635,7 +3710,7 @@ const AppContent: React.FC = () => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setDismissedZonePromptProjectId(currentProject?.id || null)}
+                      onClick={() => dismissZonePromptForProject(currentProject?.id)}
                       className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
                       title="Close"
                     >
@@ -3651,8 +3726,8 @@ const AppContent: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => {
-                        setShowLayerManager(true);
-                        setDismissedZonePromptProjectId(currentProject?.id || null);
+                        openLayerManager();
+                        dismissZonePromptForProject(currentProject?.id);
                       }}
                       className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700 transition"
                     >
@@ -3661,7 +3736,7 @@ const AppContent: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setDismissedZonePromptProjectId(currentProject?.id || null)}
+                      onClick={() => dismissZonePromptForProject(currentProject?.id)}
                       className="px-3 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-semibold transition"
                     >
                       Skip to Map
@@ -3880,7 +3955,7 @@ const AppContent: React.FC = () => {
 
         {/* User Management Overlay */}
         {isAdmin && showUserManagement && (
-          <div className="absolute top-0 right-0 h-full z-[1003] flex animate-in slide-in-from-right duration-300">
+          <div className="absolute top-0 left-0 h-full z-[1003] flex animate-in slide-in-from-left duration-300">
             <PanelSuspense
               label="Loading users…"
               onClose={() => setShowUserManagement(false)}
@@ -3909,34 +3984,36 @@ const AppContent: React.FC = () => {
           </div>
         )}
         {isAdmin && showLayerManager && currentProject && (
-          <Suspense fallback={<ScreenFallback />}>
-            <GeospatialLayerManager
-              projectId={currentProject.id}
-              activeSurveyLayerKeys={currentProject.activeSurveyLayerKeys || []}
-              surveyLayerActions={currentProject.surveyLayerActions || {}}
-              surveyLayerQuestionFields={currentProject.surveyLayerQuestionFields || {}}
-              projectStyles={currentProject.mapLayerStyles || {}}
-              assignmentLayerId={currentProject.geospatialAssignmentLayerId}
-              assignmentField={currentProject.geospatialAssignmentField}
-              features={features}
-              zoneLayers={zoneLayers}
-              onClose={() => setShowLayerManager(false)}
-              onFeaturesChanged={() => setAdminFeaturesRefreshKey((key) => key + 1)}
-              onZonesChanged={handleZoneLayerChanged}
-              onActiveSurveyLayersChanged={async (layerKeys, actions, questionFields) => {
-                const { item } = await geosurveyApi.updateGeosurveyProjectSurveyLayers(currentProject.id, layerKeys, actions, questionFields);
-                setCurrentProject(item);
-              }}
-              onLayerStylesChanged={async (styles) => {
-                const { item } = await geosurveyApi.updateGeosurveyProjectMapLayerStyles(currentProject.id, styles, currentProject.geospatialAssignmentLayerId, currentProject.geospatialAssignmentField);
-                setCurrentProject(item);
-              }}
-              onAssignmentLayerChanged={async (layerId, field) => {
-                const { item } = await geosurveyApi.updateGeosurveyProjectMapLayerStyles(currentProject.id, currentProject.mapLayerStyles || {}, layerId, field);
-                setCurrentProject(item);
-              }}
-            />
-          </Suspense>
+          <div className="absolute top-0 left-0 h-full z-[1003] flex animate-in slide-in-from-left duration-300">
+            <Suspense fallback={<ScreenFallback />}>
+              <GeospatialLayerManager
+                projectId={currentProject.id}
+                activeSurveyLayerKeys={currentProject.activeSurveyLayerKeys || []}
+                surveyLayerActions={currentProject.surveyLayerActions || {}}
+                surveyLayerQuestionFields={currentProject.surveyLayerQuestionFields || {}}
+                projectStyles={currentProject.mapLayerStyles || {}}
+                assignmentLayerId={currentProject.geospatialAssignmentLayerId}
+                assignmentField={currentProject.geospatialAssignmentField}
+                features={features}
+                zoneLayers={zoneLayers}
+                onClose={() => setShowLayerManager(false)}
+                onFeaturesChanged={() => setAdminFeaturesRefreshKey((key) => key + 1)}
+                onZonesChanged={handleZoneLayerChanged}
+                onActiveSurveyLayersChanged={async (layerKeys, actions, questionFields) => {
+                  const { item } = await geosurveyApi.updateGeosurveyProjectSurveyLayers(currentProject.id, layerKeys, actions, questionFields);
+                  setCurrentProject(item);
+                }}
+                onLayerStylesChanged={async (styles) => {
+                  const { item } = await geosurveyApi.updateGeosurveyProjectMapLayerStyles(currentProject.id, styles, currentProject.geospatialAssignmentLayerId, currentProject.geospatialAssignmentField);
+                  setCurrentProject(item);
+                }}
+                onAssignmentLayerChanged={async (layerId, field) => {
+                  const { item } = await geosurveyApi.updateGeosurveyProjectMapLayerStyles(currentProject.id, currentProject.mapLayerStyles || {}, layerId, field);
+                  setCurrentProject(item);
+                }}
+              />
+            </Suspense>
+          </div>
         )}
 
         {/* Geospatial Feature Import (GeoJSON: Point, Line, Polygon) */}
@@ -4231,7 +4308,7 @@ const AppContent: React.FC = () => {
                 )}
                 <button
                   type="button"
-                  onClick={() => setShowLayerManager(true)}
+                  onClick={() => openLayerManager()}
                   className="w-full py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-[10px] font-bold uppercase transition-colors flex items-center justify-center gap-1"
                 >
                   <Layers size={12} />
@@ -4667,6 +4744,7 @@ const AppContent: React.FC = () => {
       <div className="bg-white/90 backdrop-blur border-t border-slate-200 px-3 py-1 flex items-center justify-center">
         <AppFooter variant="inline" />
       </div>
+      <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
     </div>
   );
 };

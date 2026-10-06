@@ -14,7 +14,9 @@ import {
   Search,
   MapPin,
   FileText,
-  Folder
+  Folder,
+  Eye,
+  Loader2
 } from 'lucide-react';
 import { fetchLandmarkGeoJson } from '../lib/landmarkGeoJson';
 import { Project, Questionnaire, UserProfile } from '../types';
@@ -458,6 +460,36 @@ const EnumeratorProjectTaskRow: React.FC<{
 
 export type UserManagementTab = 'pending' | 'boundary' | 'geospatial' | 'questionnaire' | 'create';
 
+const USER_MGMT_CACHE_PREFIX = 'eqms_user_mgmt_cache_v2';
+
+interface CachedUserMgmtState {
+  activeEnumerators: EnumeratorEntry[];
+  deactivatedEnumerators: EnumeratorEntry[];
+  pendingUsers: UserProfile[];
+  totalCount: number;
+}
+
+const getUserMgmtCacheKey = (projectId?: string | null) => `${USER_MGMT_CACHE_PREFIX}_${projectId || 'global'}`;
+
+const readCachedUserMgmt = (projectId?: string | null): CachedUserMgmtState | null => {
+  try {
+    const raw = localStorage.getItem(getUserMgmtCacheKey(projectId)) || localStorage.getItem(`${USER_MGMT_CACHE_PREFIX}_global`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.activeEnumerators) && Array.isArray(parsed.deactivatedEnumerators)) {
+      return parsed as CachedUserMgmtState;
+    }
+  } catch {}
+  return null;
+};
+
+const writeCachedUserMgmt = (projectId: string | null | undefined, data: CachedUserMgmtState) => {
+  try {
+    localStorage.setItem(getUserMgmtCacheKey(projectId), JSON.stringify(data));
+    localStorage.setItem(`${USER_MGMT_CACHE_PREFIX}_global`, JSON.stringify(data));
+  } catch {}
+};
+
 export const UserManagement: React.FC<{
   /**
    * Active project context. When provided:
@@ -470,6 +502,8 @@ export const UserManagement: React.FC<{
   initialTab?: UserManagementTab;
   onClose: () => void;
 }> = ({ project, initialTab = 'pending', onClose }) => {
+  const initialCache = useMemo(() => readCachedUserMgmt(project?.id), [project?.id]);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -477,8 +511,9 @@ export const UserManagement: React.FC<{
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pendingUsers, setPendingUsers] = useState<UserProfile[]>([]);
+  const [pendingUsers, setPendingUsers] = useState<UserProfile[]>(() => initialCache?.pendingUsers || []);
   const [activeTab, setActiveTab] = useState<UserManagementTab>(initialTab);
+  const [initialLoading, setInitialLoading] = useState(() => !initialCache);
   const segmentGeo = project ? project.segments?.geospatial === true : false;
   const segmentQ = project ? project.segments?.questionnaire !== false : true;
 
@@ -489,11 +524,25 @@ export const UserManagement: React.FC<{
   // Project's questionnaires — drives the Questionnaire Assignment tab.
   const [projectQuestionnaires, setProjectQuestionnaires] = useState<Questionnaire[]>([]);
 
-  const [activeEnumeratorsCount, setActiveEnumeratorsCount] = useState(0);
-  const [activeEnumerators, setActiveEnumerators] = useState<EnumeratorEntry[]>([]);
-  const [deactivatedEnumeratorsCount, setDeactivatedEnumeratorsCount] = useState(0);
-  const [deactivatedEnumerators, setDeactivatedEnumerators] = useState<EnumeratorEntry[]>([]);
-  const [totalEnumeratorsCount, setTotalEnumeratorsCount] = useState(0);
+  const [activeEnumeratorsCount, setActiveEnumeratorsCount] = useState<number>(
+    () => initialCache?.activeEnumerators?.length ?? 0
+  );
+  const [activeEnumerators, setActiveEnumerators] = useState<EnumeratorEntry[]>(
+    () => initialCache?.activeEnumerators ?? []
+  );
+  const [deactivatedEnumeratorsCount, setDeactivatedEnumeratorsCount] = useState<number>(
+    () => initialCache?.deactivatedEnumerators?.length ?? 0
+  );
+  const [deactivatedEnumerators, setDeactivatedEnumerators] = useState<EnumeratorEntry[]>(
+    () => initialCache?.deactivatedEnumerators ?? []
+  );
+  const [totalEnumeratorsCount, setTotalEnumeratorsCount] = useState<number>(
+    () =>
+      initialCache?.totalCount ??
+      ((initialCache?.activeEnumerators?.length ?? 0) +
+        (initialCache?.deactivatedEnumerators?.length ?? 0) +
+        (initialCache?.pendingUsers?.length ?? 0))
+  );
   const [landmarkWardOptions, setLandmarkWardOptions] = useState<string[]>([]);
   const [zoneAssignOptions, setZoneAssignOptions] = useState<string[]>([]);
   const [zoneAssignField, setZoneAssignField] = useState<string | null>(null);
@@ -503,6 +552,7 @@ export const UserManagement: React.FC<{
   const [taskSavingEmail, setTaskSavingEmail] = useState<string | null>(null);
   const [clearingAllAssignments, setClearingAllAssignments] = useState(false);
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
+  const [revealedPassword, setRevealedPassword] = useState<{ email: string; password: string } | null>(null);
   const [manageTabSearch, setManageTabSearch] = useState('');
   const [tasksTabSearch, setTasksTabSearch] = useState('');
 
@@ -704,14 +754,27 @@ export const UserManagement: React.FC<{
 
       const approvedEntries = buildEntries('approved');
       const rejectedEntries = buildEntries('rejected');
+      const pendingList = allUsers.filter((u) => u.status === 'pending');
+      const totalCount = approvedEntries.length + rejectedEntries.length + pendingList.length;
+
       setActiveEnumerators(approvedEntries);
       setActiveEnumeratorsCount(approvedEntries.length);
       setDeactivatedEnumerators(rejectedEntries);
       setDeactivatedEnumeratorsCount(rejectedEntries.length);
+      setTotalEnumeratorsCount(totalCount);
       setError(null);
+
+      writeCachedUserMgmt(project?.id, {
+        activeEnumerators: approvedEntries,
+        deactivatedEnumerators: rejectedEntries,
+        pendingUsers: pendingList,
+        totalCount
+      });
     } catch (error) {
       console.error('Error loading user management data:', error);
       setError(error instanceof Error ? error.message : 'Failed to load user data');
+    } finally {
+      setInitialLoading(false);
     }
   };
 
@@ -833,6 +896,31 @@ export const UserManagement: React.FC<{
     } catch (e) {
       console.error('Error updating enumerator status:', e);
       setError(`Failed to update enumerator (${status})`);
+    } finally {
+      setEnumActionLoadingEmail(null);
+    }
+  };
+
+  const resetAndRevealEnumeratorPassword = async (entry: EnumeratorEntry) => {
+    const uid = entry.uids[0];
+    if (!uid) {
+      setError('Could not find an account ID for this enumerator.');
+      return;
+    }
+    const confirmed = confirm(
+      `Reset ${entry.displayName}'s password? This replaces the current password and signs the enumerator out on other devices.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setEnumActionLoadingEmail(entry.email);
+      setError(null);
+      setRevealedPassword(null);
+      const result = await geosurveyApi.resetEnumeratorPassword(uid);
+      setRevealedPassword({ email: entry.email, password: result.password });
+    } catch (e) {
+      console.error('Error resetting enumerator password:', e);
+      setError(e instanceof Error ? e.message : 'Failed to reset enumerator password.');
     } finally {
       setEnumActionLoadingEmail(null);
     }
@@ -1053,7 +1141,7 @@ export const UserManagement: React.FC<{
   };
 
   return (
-    <div className="flex flex-col h-full bg-white shadow-2xl border-l border-gray-200 w-full md:w-96">
+    <div className="flex flex-col h-full bg-white shadow-2xl border-r border-gray-200 w-full sm:w-[440px] md:w-[500px] lg:w-[540px]">
       <div className="border-b border-gray-100 bg-gray-50/50 pt-[calc(env(safe-area-inset-top,0px)+1rem)] px-4 pb-4">
         <div className="flex items-center justify-between gap-2">
           <h2 className="font-semibold text-gray-800 flex items-center gap-2">
@@ -1180,11 +1268,19 @@ export const UserManagement: React.FC<{
         </div>
 
         <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-4">
-          <h3 className="text-sm font-bold text-amber-900 mb-3">
-            Pending Enumerator Sign-ups ({filteredPendingForManage.length}
-            {manageTabSearch.trim() && pendingUsers.length > 0 ? ` / ${pendingUsers.length}` : ''})
+          <h3 className="text-sm font-bold text-amber-900 mb-3 flex items-center justify-between">
+            <span>
+              Pending Enumerator Sign-ups ({initialLoading && pendingUsers.length === 0 ? '…' : filteredPendingForManage.length}
+              {manageTabSearch.trim() && pendingUsers.length > 0 ? ` / ${pendingUsers.length}` : ''})
+            </span>
+            {initialLoading && <Loader2 size={13} className="animate-spin text-amber-600" />}
           </h3>
-          {pendingUsers.length === 0 ? (
+          {initialLoading && pendingUsers.length === 0 ? (
+            <div className="flex items-center gap-2 py-2 text-xs text-amber-900/70">
+              <Loader2 size={13} className="animate-spin text-amber-600 shrink-0" />
+              <span>Checking pending sign-ups…</span>
+            </div>
+          ) : pendingUsers.length === 0 ? (
             <p className="text-amber-900/70 text-sm">
               No pending sign-ups. New registrations appear here for approval.
             </p>
@@ -1231,12 +1327,20 @@ export const UserManagement: React.FC<{
         </div>
 
         <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
-          <h3 className="text-xs font-bold text-gray-700 mb-3">
-            Active Enumerators ({filteredActiveForManage.length}
-            {manageTabSearch.trim() ? ` / ${activeEnumeratorsCount}` : ''})
+          <h3 className="text-xs font-bold text-gray-700 mb-3 flex items-center justify-between">
+            <span>
+              Active Enumerators ({initialLoading && activeEnumerators.length === 0 ? '…' : filteredActiveForManage.length}
+              {manageTabSearch.trim() ? ` / ${activeEnumeratorsCount}` : ''})
+            </span>
+            {initialLoading && <Loader2 size={12} className="animate-spin text-blue-500" />}
           </h3>
 
-          {activeEnumerators.length === 0 ? (
+          {initialLoading && activeEnumerators.length === 0 ? (
+            <div className="flex items-center gap-2 py-2 text-[11px] text-gray-400">
+              <Loader2 size={13} className="animate-spin text-blue-500 shrink-0" />
+              <span>Loading active enumerators…</span>
+            </div>
+          ) : activeEnumerators.length === 0 ? (
             <p className="text-[11px] text-gray-400">No approved enumerators yet.</p>
           ) : filteredActiveForManage.length === 0 ? (
             <p className="text-[11px] text-gray-500">No users match your search.</p>
@@ -1250,9 +1354,24 @@ export const UserManagement: React.FC<{
                     </p>
                     <p className="text-[10px] text-gray-500 truncate">{u.email}</p>
                     <p className="text-[10px] text-gray-500 truncate">{u.mobileNumber || 'No mobile number'}</p>
+                    {revealedPassword?.email === u.email && (
+                      <div className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[10px] text-amber-900 break-all">
+                        <span>New password: <code className="font-bold">{revealedPassword.password}</code></span>
+                        <button type="button" className="ml-2 font-semibold underline" onClick={() => setRevealedPassword(null)}>Hide</button>
+                      </div>
+                    )}
                     <EnumeratorUidLines uids={u.uids} />
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center justify-end gap-2 shrink-0 max-w-[9rem]">
+                    <button
+                      type="button"
+                      onClick={() => void resetAndRevealEnumeratorPassword(u)}
+                      disabled={enumActionLoadingEmail === u.email}
+                      className="text-[10px] px-2 py-1 rounded-lg bg-amber-50 text-amber-800 hover:bg-amber-100 transition-colors border border-amber-200 disabled:opacity-50 inline-flex items-center gap-1"
+                      title="Reset and reveal a new password"
+                    >
+                      <Eye size={12} /> Reset &amp; view
+                    </button>
                     <button
                       onClick={() => {
                         const ok = confirm(`Deactivate "${u.displayName}"?`);
@@ -1287,12 +1406,20 @@ export const UserManagement: React.FC<{
         </div>
 
         <div className="bg-white border border-gray-100 rounded-xl p-4">
-          <h3 className="text-xs font-bold text-gray-700 mb-3">
-            Deactivated Enumerators ({filteredDeactivatedForManage.length}
-            {manageTabSearch.trim() ? ` / ${deactivatedEnumeratorsCount}` : ''})
+          <h3 className="text-xs font-bold text-gray-700 mb-3 flex items-center justify-between">
+            <span>
+              Deactivated Enumerators ({initialLoading && deactivatedEnumerators.length === 0 ? '…' : filteredDeactivatedForManage.length}
+              {manageTabSearch.trim() ? ` / ${deactivatedEnumeratorsCount}` : ''})
+            </span>
+            {initialLoading && <Loader2 size={12} className="animate-spin text-gray-400" />}
           </h3>
 
-          {deactivatedEnumerators.length === 0 ? (
+          {initialLoading && deactivatedEnumerators.length === 0 ? (
+            <div className="flex items-center gap-2 py-2 text-[11px] text-gray-400">
+              <Loader2 size={13} className="animate-spin text-gray-400 shrink-0" />
+              <span>Loading deactivated enumerators…</span>
+            </div>
+          ) : deactivatedEnumerators.length === 0 ? (
             <p className="text-[11px] text-gray-400">No deactivated enumerators yet.</p>
           ) : filteredDeactivatedForManage.length === 0 ? (
             <p className="text-[11px] text-gray-500">No users match your search.</p>
@@ -1306,9 +1433,24 @@ export const UserManagement: React.FC<{
                     </p>
                     <p className="text-[10px] text-gray-500 truncate">{u.email}</p>
                     <p className="text-[10px] text-gray-500 truncate">{u.mobileNumber || 'No mobile number'}</p>
+                    {revealedPassword?.email === u.email && (
+                      <div className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[10px] text-amber-900 break-all">
+                        <span>New password: <code className="font-bold">{revealedPassword.password}</code></span>
+                        <button type="button" className="ml-2 font-semibold underline" onClick={() => setRevealedPassword(null)}>Hide</button>
+                      </div>
+                    )}
                     <EnumeratorUidLines uids={u.uids} />
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center justify-end gap-2 shrink-0 max-w-[9rem]">
+                    <button
+                      type="button"
+                      onClick={() => void resetAndRevealEnumeratorPassword(u)}
+                      disabled={enumActionLoadingEmail === u.email}
+                      className="text-[10px] px-2 py-1 rounded-lg bg-amber-50 text-amber-800 hover:bg-amber-100 transition-colors border border-amber-200 disabled:opacity-50 inline-flex items-center gap-1"
+                      title="Reset and reveal a new password"
+                    >
+                      <Eye size={12} /> Reset &amp; view
+                    </button>
                     <button
                       onClick={() => {
                         const ok = confirm(`Activate "${u.displayName}"?`);
@@ -1626,7 +1768,7 @@ export const UserManagement: React.FC<{
               </div>
 
               <div>
-                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1 mb-1 block">Email / Username</label>
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1 mb-1 block">Email</label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
                   <input 

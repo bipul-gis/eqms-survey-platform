@@ -137,14 +137,17 @@ export const EnumeratorAssignedZoneMap: React.FC<{
     const savedStyle = projectStyles?.[mapLayerStyleKey('zone', layerId)]
       ?? projectMapLayerStyles[mapLayerStyleKey('zone', layerId)];
     const style = { ...DEFAULT_MAP_LAYER_STYLE, labelsVisible: true, ...savedStyle };
+    const baseWeight = Math.max(0.5, Number(style.borderWidth ?? 2));
+    const hoverWeight = Math.max(1, baseWeight + 2);
     return {
-      base: { color: style.boundaryColor, weight: 2, opacity: 1, fillColor: style.fillColor, fillOpacity: style.opacity } as L.PathOptions,
-      hover: { color: style.boundaryColor, weight: 4, opacity: 1, fillColor: style.fillColor, fillOpacity: Math.min(1, style.opacity + 0.18) } as L.PathOptions,
+      base: { color: style.boundaryColor, weight: baseWeight, opacity: 1, fillColor: style.fillColor, fillOpacity: style.opacity } as L.PathOptions,
+      hover: { color: style.boundaryColor, weight: hoverWeight, opacity: 1, fillColor: style.fillColor, fillOpacity: Math.min(1, style.opacity + 0.18) } as L.PathOptions,
       labelsVisible: style.labelsVisible,
       labelField: style.labelField,
       labelColor: style.labelColor,
       haloColor: style.haloColor,
       fontSize: style.fontSize,
+      borderWidth: baseWeight,
     };
   };
   const scopedSurveyLocations = useMemo(
@@ -251,7 +254,7 @@ export const EnumeratorAssignedZoneMap: React.FC<{
                   if (layerStyle.labelsVisible && rawLabel) {
                     const textColor = /^#[0-9a-f]{6}$/i.test(layerStyle.labelColor) ? layerStyle.labelColor : '#0f172a';
                     const outlineColor = /^#[0-9a-f]{6}$/i.test(layerStyle.haloColor) ? layerStyle.haloColor : '#ffffff';
-                    const safeSize = Math.min(24, Math.max(8, Number(layerStyle.fontSize) || 11));
+                    const safeSize = Math.min(48, Math.max(4, Number(layerStyle.fontSize) || 11));
                     const haloShadow = [
                       `-1.5px -1.5px 0 ${outlineColor}`, `0 -1.5px 0 ${outlineColor}`, `1.5px -1.5px 0 ${outlineColor}`,
                       `-1.5px 0 0 ${outlineColor}`, `1.5px 0 0 ${outlineColor}`,

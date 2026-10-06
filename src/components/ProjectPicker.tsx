@@ -20,6 +20,7 @@ import {
   Loader2,
   Info,
   LogOut,
+  User,
   Trash2,
   Database
 } from 'lucide-react';
@@ -44,13 +45,15 @@ interface ProjectPickerProps {
   isAdmin?: boolean;
   onOpen: (project: Project) => void;
   onSignOut?: () => void;
+  onOpenProfile?: () => void;
 }
 
 export const ProjectPicker: React.FC<ProjectPickerProps> = ({
   currentUserName,
   isAdmin: isAdminProp,
   onOpen,
-  onSignOut
+  onSignOut,
+  onOpenProfile
 }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -212,6 +215,15 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {onOpenProfile && (
+              <button
+                onClick={onOpenProfile}
+                className="text-xs font-semibold px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 hover:text-blue-600 inline-flex items-center gap-1.5 transition-colors"
+                title="My Profile"
+              >
+                <User size={14} /> My Profile
+              </button>
+            )}
             <button
               onClick={() => {
                 void refresh();
@@ -227,7 +239,7 @@ export const ProjectPicker: React.FC<ProjectPickerProps> = ({
             {onSignOut && (
               <button
                 onClick={onSignOut}
-                className="text-xs font-semibold px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1"
+                className="text-xs font-semibold px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 hover:text-red-600 inline-flex items-center gap-1 transition-colors"
                 title="Sign out"
               >
                 <LogOut size={14} /> Sign out

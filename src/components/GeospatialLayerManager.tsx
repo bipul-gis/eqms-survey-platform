@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Layers, Trash2, X, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Layers, Trash2, X, Loader2, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import type { GeoFeature, SurveyLayerAction, ZoneLayer, ZonePolygon } from '../types';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
@@ -101,6 +101,8 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const style: MapLayerStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(selected ? styles[selected.key] : {}) };
   const [rows, setRows] = useState<Array<{ id: string; properties: Record<string, unknown> }>>([]);
   const [showAttributeTable, setShowAttributeTable] = useState(false);
+  const [attributeSearchQuery, setAttributeSearchQuery] = useState('');
+  const [showAllRows, setShowAllRows] = useState(false);
   const [busy, setBusy] = useState(false);
   const [savingSurveyLayer, setSavingSurveyLayer] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +122,11 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     }
   }, [projectId]);
 
-  useEffect(() => setShowAttributeTable(false), [selected?.key]);
+  useEffect(() => {
+    setShowAttributeTable(false);
+    setAttributeSearchQuery('');
+    setShowAllRows(false);
+  }, [selected?.key]);
 
   useEffect(() => {
     if (!selected) {
@@ -146,6 +152,17 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     rows.forEach((row) => Object.keys(row.properties).forEach((field) => fields.add(field)));
     return [...fields].sort((a, b) => a.localeCompare(b));
   }, [selected, rows]);
+
+  const filteredRows = useMemo(() => {
+    const query = attributeSearchQuery.trim().toLowerCase();
+    if (!query) return rows;
+    return rows.filter((row) =>
+      Object.values(row.properties).some((val) => {
+        if (val == null) return false;
+        return String(val).toLowerCase().includes(query);
+      })
+    );
+  }, [rows, attributeSearchQuery]);
 
   const changeStyle = (patch: Partial<MapLayerStyle>) => {
     if (!selected) return;
@@ -253,17 +270,22 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   };
 
   return (
-    <div className="fixed bottom-0 left-0 top-14 z-[2100] flex w-[min(31rem,94vw)] flex-col border-r border-slate-300 bg-white shadow-2xl" role="dialog" aria-modal="false" aria-label="Manage map layers">
+    <div className="flex flex-col h-full bg-white shadow-2xl border-r border-gray-200 w-full sm:w-[440px] md:w-[500px] lg:w-[540px]" role="dialog" aria-modal="true" aria-label="Manage map layers">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-sky-50 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Layers size={18} className="text-sky-700" />
-            <div><h2 className="text-sm font-bold text-slate-900">Manage map layers</h2><p className="text-[10px] text-slate-500">Manage data, symbology, labels, and enumerator boundary assignment.</p></div>
+        <header className="flex items-center justify-between border-b border-gray-100 bg-gray-50/70 px-4 py-3 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-sky-100 flex items-center justify-center text-sky-700 shrink-0">
+              <Layers size={18} />
+            </div>
+            <div className="min-w-0">
+              <h2 className="font-semibold text-gray-800 text-sm truncate">Manage Map Layers</h2>
+              <p className="text-[10px] text-gray-500 truncate">Symbology, labels, attribute table & boundary assignment</p>
+            </div>
           </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-500 hover:bg-white" aria-label="Close layer manager"><X size={18} /></button>
+          <button type="button" onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors text-gray-500 shrink-0 ml-2" aria-label="Close layer manager"><X size={20} /></button>
         </header>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <aside className="max-h-40 shrink-0 overflow-y-auto border-b border-slate-200 p-3">
+          <aside className="max-h-64 sm:max-h-72 shrink-0 overflow-y-auto border-b border-slate-200 p-3 bg-slate-50/50">
             <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">Project layers ({managedLayers.length})</p>
             <div className="space-y-1">
               {managedLayers.map((item) => (
@@ -301,28 +323,201 @@ export const GeospatialLayerManager: React.FC<Props> = ({
               <section className="mb-4 rounded-xl border border-slate-200 p-3">
                 <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Layer display</h4>
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="text-[10px] font-semibold text-slate-600">Fill color<input type="color" value={style.fillColor} onChange={(e) => changeStyle({ fillColor: e.target.value })} className="mt-1 block h-9 w-full cursor-pointer rounded border border-slate-200 p-1" /></label>
-                  <label className="text-[10px] font-semibold text-slate-600">Boundary / line color<input type="color" value={style.boundaryColor} onChange={(e) => changeStyle({ boundaryColor: e.target.value })} className="mt-1 block h-9 w-full cursor-pointer rounded border border-slate-200 p-1" /></label>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold text-slate-600">Fill color</span>
+                      <label title="Disable fill (transparent interior)" className="inline-flex cursor-pointer items-center gap-1 text-[10px] font-medium text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={style.opacity === 0}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              changeStyle({ opacity: 0 });
+                            } else {
+                              changeStyle({ opacity: 0.25 });
+                            }
+                          }}
+                          className="h-3 w-3 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                        />
+                        <span>No fill</span>
+                      </label>
+                    </div>
+                    <input
+                      type="color"
+                      disabled={style.opacity === 0}
+                      value={style.fillColor}
+                      onChange={(e) => changeStyle({ fillColor: e.target.value })}
+                      className="mt-1 block h-9 w-full cursor-pointer rounded border border-slate-200 p-1 disabled:cursor-not-allowed disabled:opacity-40"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="min-w-0 flex-1 text-[10px] font-semibold text-slate-600">
+                      Boundary / line color
+                      <input type="color" value={style.boundaryColor} onChange={(e) => changeStyle({ boundaryColor: e.target.value })} className="mt-1 block h-9 w-full cursor-pointer rounded border border-slate-200 p-1" />
+                    </label>
+                    <label title="Boundary or line stroke width in points/pixels (e.g. 1, 1.5, 2, 3 pt)" className="w-20 shrink-0 text-[10px] font-semibold text-slate-600">
+                      Width (pt)
+                      <input
+                        aria-label="Boundary or line stroke width"
+                        type="number"
+                        min="0.5"
+                        max="20"
+                        step="0.1"
+                        value={style.borderWidth ?? 2}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!Number.isNaN(val)) {
+                            const rounded = Math.round(val * 10) / 10;
+                            changeStyle({ borderWidth: rounded });
+                          }
+                        }}
+                        className="mt-1 block h-9 w-full rounded border border-slate-200 px-2 py-1 text-right font-mono text-xs text-slate-800 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    </label>
+                  </div>
                   <label className="text-[10px] font-semibold text-slate-600">Fill opacity · {Math.round(style.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={style.opacity} onChange={(e) => changeStyle({ opacity: Number(e.target.value) })} className="mt-2 block w-full" /></label>
                   <label className="text-[10px] font-semibold text-slate-600">Label field<select value={style.labelField} onChange={(e) => changeStyle({ labelField: e.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-2 py-2 text-xs"><option value="">Use layer default</option>{columns.map((field) => <option key={field} value={field}>{field}</option>)}</select></label>
-                  <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(5rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
+                  <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(6rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
                     <label className="flex items-center gap-1.5 whitespace-nowrap text-[10px] font-semibold text-slate-700"><input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />Show map labels</label>
                     <label title="Label text color" className="flex items-center gap-1 text-[9px] text-slate-500">Text<input aria-label="Label text color" type="color" value={style.labelColor} onChange={(e) => changeStyle({ labelColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
                     <label title="Label halo color" className="flex items-center gap-1 text-[9px] text-slate-500">Halo<input aria-label="Label halo color" type="color" value={style.haloColor} onChange={(e) => changeStyle({ haloColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
-                    <label title="Label font size" className="flex items-center gap-1 text-[9px] text-slate-500">{style.fontSize}px<input aria-label="Label font size" type="range" min="8" max="24" step="1" value={style.fontSize} onChange={(e) => changeStyle({ fontSize: Number(e.target.value) })} className="w-14" /></label>
+                    <label title="Label font size in pixels (e.g. 11, 11.5, 12)" className="flex items-center gap-1 text-[9px] text-slate-600 font-medium">
+                      Size
+                      <div className="flex items-center">
+                        <input
+                          aria-label="Label font size in pixels"
+                          type="number"
+                          min="4"
+                          max="48"
+                          step="0.1"
+                          value={style.fontSize ?? 11}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!Number.isNaN(val)) {
+                              const rounded = Math.round(val * 10) / 10;
+                              changeStyle({ fontSize: rounded });
+                            }
+                          }}
+                          className="h-7 w-16 rounded border border-slate-200 px-1.5 py-0.5 text-right font-mono text-xs text-slate-800 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                        />
+                        <span className="ml-1 text-[9px] text-slate-400">px</span>
+                      </div>
+                    </label>
                   </div>
                 </div>
                 <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices through the project server. Labels appear as you zoom in, based on feature size.</p>
               </section>
               <section>
-                <button type="button" aria-expanded={showAttributeTable} onClick={() => setShowAttributeTable((shown) => !shown)} className="mb-2 flex w-full items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-left hover:bg-slate-50">
-                  <span><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-600">Attribute table</span><span className="block text-[10px] text-slate-400">{rows.length.toLocaleString()} row(s)</span></span>
-                  {showAttributeTable ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                </button>
-                {showAttributeTable && <div className="max-h-[42vh] overflow-auto rounded-xl border border-slate-200">
-                  {rows.length ? <table className="min-w-full text-[10px]"><thead className="sticky top-0 bg-slate-50"><tr>{columns.map((field) => <th key={field} className="whitespace-nowrap px-2 py-1.5 text-left font-bold text-slate-600"><div>{field}</div>{selected && activeSurveyKeys.includes(selected.surveyKey) && <label title={`Include ${field} in the linked questionnaire response`} className="mt-1 flex items-center gap-1 text-[9px] font-medium text-emerald-700"><input type="checkbox" checked={(linkedQuestionFields[selected.surveyKey] || []).includes(field)} disabled={savingSurveyLayer} onChange={() => void toggleQuestionField(field)} />Link</label>}</th>)}</tr></thead><tbody>{rows.slice(0, 1000).map((row) => <tr key={row.id} className="border-t border-slate-100">{columns.map((field) => <td key={field} className="max-w-48 truncate whitespace-nowrap px-2 py-1 text-slate-700">{row.properties[field] == null ? '' : String(row.properties[field])}</td>)}</tr>)}</tbody></table> : <p className="p-3 text-xs text-slate-400">Loading attribute records…</p>}
-                  {rows.length > 1000 && <p className="border-t bg-slate-50 px-2 py-1 text-[10px] text-slate-400">Showing first 1,000 rows.</p>}
-                </div>}
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 transition hover:border-slate-300">
+                  <button
+                    type="button"
+                    aria-expanded={showAttributeTable}
+                    onClick={() => setShowAttributeTable((shown) => !shown)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    <span className="shrink-0 text-slate-500">
+                      {showAttributeTable ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </span>
+                    <span className="min-w-0 truncate">
+                      <span className="block text-[11px] font-bold uppercase tracking-wide text-slate-700">Attribute table</span>
+                      <span className="block text-[10px] text-slate-400">
+                        {rows.length.toLocaleString()} record(s) · {showAttributeTable ? (showAllRows ? 'All' : 'Top 5') : 'Click to expand'}
+                      </span>
+                    </span>
+                  </button>
+
+                  {/* Search input appears on the same header line ONLY while the table is expanded */}
+                  {showAttributeTable && (
+                    <div className="relative flex w-44 shrink-0 items-center animate-in fade-in duration-150 sm:w-52">
+                      <Search size={13} className="pointer-events-none absolute left-2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={attributeSearchQuery}
+                        onChange={(e) => {
+                          setAttributeSearchQuery(e.target.value);
+                          setShowAllRows(false);
+                        }}
+                        placeholder="Search attributes..."
+                        className="h-7 w-full rounded-md border border-slate-200 bg-slate-50/70 pl-7 pr-6 text-[11px] text-slate-800 placeholder-slate-400 focus:border-sky-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                      {attributeSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setAttributeSearchQuery('')}
+                          className="absolute right-1.5 text-slate-400 hover:text-slate-600"
+                          title="Clear search"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {showAttributeTable && (
+                  <div className="space-y-2">
+                    <div className="max-h-[26vh] overflow-auto rounded-xl border border-slate-200 bg-white">
+                      {filteredRows.length > 0 ? (
+                        <>
+                          <table className="min-w-full text-[10px]">
+                            <thead className="sticky top-0 z-10 bg-slate-50 shadow-sm">
+                              <tr>
+                                <th className="w-8 px-2 py-1.5 text-center font-bold text-slate-400">#</th>
+                                {columns.map((field) => (
+                                  <th key={field} className="whitespace-nowrap px-2 py-1.5 text-left font-bold text-slate-600">
+                                    <div>{field}</div>
+                                    {selected && activeSurveyKeys.includes(selected.surveyKey) && (
+                                      <label title={`Include ${field} in the linked questionnaire response`} className="mt-1 flex items-center gap-1 text-[9px] font-medium text-emerald-700">
+                                        <input
+                                          type="checkbox"
+                                          checked={(linkedQuestionFields[selected.surveyKey] || []).includes(field)}
+                                          disabled={savingSurveyLayer}
+                                          onChange={() => void toggleQuestionField(field)}
+                                        />
+                                        Link
+                                      </label>
+                                    )}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(showAllRows ? filteredRows : filteredRows.slice(0, 5)).map((row, idx) => (
+                                <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50/60">
+                                  <td className="px-2 py-1 text-center font-mono text-[9px] text-slate-400">{idx + 1}</td>
+                                  {columns.map((field) => (
+                                    <td key={field} className="max-w-48 truncate whitespace-nowrap px-2 py-1 text-slate-700">
+                                      {row.properties[field] == null ? '' : String(row.properties[field])}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+
+                          {filteredRows.length > 5 && (
+                            <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/80 px-3 py-1.5 text-[10px] text-slate-500">
+                              <span>
+                                Showing {showAllRows ? filteredRows.length : 5} of {filteredRows.length.toLocaleString()} matching row(s)
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setShowAllRows((prev) => !prev)}
+                                className="font-semibold text-sky-600 hover:text-sky-800 hover:underline"
+                              >
+                                {showAllRows ? 'Show top 5 only' : `Show all ${filteredRows.length.toLocaleString()} rows`}
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      ) : rows.length === 0 ? (
+                        <p className="p-3 text-xs text-slate-400">Loading attribute records…</p>
+                      ) : (
+                        <p className="p-3 text-xs text-slate-400">No matching attribute records found for "{attributeSearchQuery}".</p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </section>
             </main>
           ) : <main className="flex items-center justify-center p-8 text-sm text-slate-400">Select a layer to manage it.</main>}

@@ -161,22 +161,34 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       (merged as unknown as Record<string, unknown>)[key as string] = value;
     }
   }
+  if (patch.email !== undefined) {
+    const newEmail = String(patch.email).trim().toLowerCase();
+    if (newEmail !== existing.email) {
+      const duplicate = await findUserByEmail(newEmail);
+      if (duplicate && duplicate.id !== id) {
+        throw new Error('An account with this email address already exists.');
+      }
+      merged.email = newEmail;
+    }
+  }
+
   if (isWhitelistedAdmin(merged.email)) {
     merged.role = 'admin';
     merged.status = 'approved';
   }
   const { rows } = await pool.query(
     `UPDATE users SET
-      display_name = $2, mobile_number = $3, role = $4, status = $5,
-      landmark_icon_scale = $6, assigned_ward_name = $7, assigned_ward_names = $8,
-      project_ward_assignments = $9, assigned_questionnaire_ids = $10,
-      assigned_slum_ids = $11, project_slum_assignments = $12,
-      assigned_zone_values = $13, project_zone_assignments = $14,
-      assigned_zone_layer_id = $15,
-      assigned_geospatial_project_ids = $16, updated_at = NOW()
+      email = $2, display_name = $3, mobile_number = $4, role = $5, status = $6,
+      landmark_icon_scale = $7, assigned_ward_name = $8, assigned_ward_names = $9,
+      project_ward_assignments = $10, assigned_questionnaire_ids = $11,
+      assigned_slum_ids = $12, project_slum_assignments = $13,
+      assigned_zone_values = $14, project_zone_assignments = $15,
+      assigned_zone_layer_id = $16,
+      assigned_geospatial_project_ids = $17, updated_at = NOW()
      WHERE id = $1 RETURNING *`,
     [
       id,
+      merged.email,
       merged.displayName,
       merged.mobileNumber ?? null,
       merged.role,

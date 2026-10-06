@@ -7,6 +7,7 @@ export interface MapLayerStyle {
   labelColor: string;
   haloColor: string;
   fontSize: number;
+  borderWidth?: number;
 }
 
 export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
@@ -18,6 +19,7 @@ export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
   labelColor: '#0f172a',
   haloColor: '#ffffff',
   fontSize: 11,
+  borderWidth: 2,
 };
 
 const prefix = 'eqms.mapLayerSettings:';

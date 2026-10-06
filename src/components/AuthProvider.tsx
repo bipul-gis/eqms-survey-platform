@@ -93,6 +93,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!cancelled) setLoading(false);
           return;
         }
+        // Restore the last verified workspace immediately. Session validation
+        // still runs below, but a slow server wake-up or field connection no
+        // longer holds the entire app behind the startup screen.
+        const cached = getCachedAuthProfile();
+        if (cached && cached.token === token) {
+          if (!cancelled) {
+            applySession(cached.profile as unknown as UserProfile, cached.token);
+            setLoading(false);
+          }
+        }
         // Retry transient failures so an API restart mid-launch does not look
         // like a dead session.
         let lastError: unknown = null;
@@ -115,9 +125,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!isAuthRejection(lastError)) {
           // Server unreachable: fall back to the cached profile and keep the
           // token so the session resumes once the API is back.
-          const cached = getCachedAuthProfile();
           if (cached && cached.token === token) {
-            applySession(cached.profile as unknown as UserProfile, cached.token);
+            if (!cancelled) applySession(cached.profile as unknown as UserProfile, cached.token);
           }
           return;
         }

@@ -122,8 +122,8 @@ export default defineConfig(({mode}) => {
     },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
-      port: 3000,
-      strictPort: true,
+      port: Number(process.env.VITE_PORT || 3005),
+      strictPort: false,
       host: '0.0.0.0',
       proxy: {
         '/api': {

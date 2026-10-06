@@ -126,9 +126,15 @@ export const geosurveyApi = {
     ),
 
   forgotPassword: (email: string, mobileNumber: string) =>
-    apiFetch<{ ok: boolean; message: string; temporaryPassword?: string }>(
+    apiFetch<{ ok: boolean; message: string; resetToken: string; displayName: string }>(
       '/api/auth/forgot-password',
       { method: 'POST', body: JSON.stringify({ email, mobileNumber }) }
+    ),
+
+  resetPassword: (resetToken: string, newPassword: string) =>
+    apiFetch<{ ok: boolean; message: string }>(
+      '/api/auth/reset-password',
+      { method: 'POST', body: JSON.stringify({ resetToken, newPassword }) }
     ),
 
   session: () =>
@@ -204,6 +210,12 @@ export const geosurveyApi = {
       body: JSON.stringify(patch),
     }),
 
+  changeUserPassword: (id: string, body: { currentPassword: string; newPassword: string }) =>
+    apiFetch<{ ok: boolean; message: string }>(`/api/users/${id}/change-password`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   createEnumerator: (body: {
     email: string;
     password: string;
@@ -213,6 +225,11 @@ export const geosurveyApi = {
     apiFetch<{ profile: import('../types').UserProfile }>('/api/users/enumerator', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  resetEnumeratorPassword: (id: string) =>
+    apiFetch<{ password: string }>(`/api/users/${encodeURIComponent(id)}/reset-password`, {
+      method: 'POST',
     }),
 
   deleteUser: (id: string) =>
@@ -242,6 +259,29 @@ export const geosurveyApi = {
           : cached;
         return { items };
       }
+      throw error;
+    }
+  },
+
+  listQuestionnairesByIds: async (ids: string[]) => {
+    const { cacheQuestionnaires, getCachedQuestionnaires, isNetworkFailure } = await import('./offlineResponses');
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    if (uniqueIds.length === 0) return { items: [] as Record<string, unknown>[] };
+    const params = new URLSearchParams();
+    params.set('ids', uniqueIds.join(','));
+    try {
+      const result = await apiFetch<{ items: Record<string, unknown>[] }>(
+        `/api/questionnaires?${params.toString()}`
+      );
+      const merged = new Map(getCachedQuestionnaires().map((item) => [String(item.id), item]));
+      for (const item of result.items || []) merged.set(String(item.id), item);
+      cacheQuestionnaires([...merged.values()]);
+      return result;
+    } catch (error) {
+      if (!isNetworkFailure(error)) throw error;
+      const assigned = new Set(uniqueIds);
+      const items = getCachedQuestionnaires().filter((item) => assigned.has(String(item.id)));
+      if (items.length > 0) return { items };
       throw error;
     }
   },

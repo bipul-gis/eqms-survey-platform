@@ -11,6 +11,7 @@ import {
   ClipboardList,
   FileText,
   LogOut,
+  User,
   RefreshCw,
   Search,
   CheckCircle2,
@@ -27,6 +28,7 @@ import {
   MapPinned
 } from 'lucide-react';
 import { geosurveyApi } from '../lib/geosurveyApi';
+import { getCachedQuestionnaires } from '../lib/offlineResponses';
 import { Project, Questionnaire, QuestionnaireResponse, UserProfile, ZonePolygon } from '../types';
 import { useAuth } from './AuthProvider';
 import { QuestionnaireForm } from './QuestionnaireForm';
@@ -46,6 +48,8 @@ interface EnumeratorQuestionnaireListProps {
   onBack?: () => void;
   /** Logout handler — only shown when there is no back-link. */
   onLogout?: () => Promise<void> | void;
+  /** Open user profile modal */
+  onOpenProfile?: () => void;
   /** Captured location to pre-fill on questionnaire submission, if any. */
   initialLocation?: { lat: number; lng: number; ward?: string };
   /** Assigned zone polygons for strict survey geofencing (optional). */
@@ -91,6 +95,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   userProfile,
   onBack,
   onLogout,
+  onOpenProfile,
   initialLocation,
   geofenceZones,
   projectMapLayerStyles = {},
@@ -155,12 +160,24 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       setError(null);
       return;
     }
-    setLoading(true);
+    // Render the last downloaded questionnaire immediately. listQuestionnaires
+    // refreshes this cache after its network request, which can be slow on
+    // field connections. Keep cached content visible while that refresh runs.
+    const cached = getCachedQuestionnaires();
+    const assignedSet = new Set(assignedIds);
+    const cachedList = cached.filter((item) => assignedSet.has(String(item.id))) as unknown as Questionnaire[];
+    if (cachedList.length > 0) {
+      cachedList.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      setQuestionnaires(cachedList);
+      setLoading(false);
+      setError(null);
+    } else {
+      setLoading(true);
+    }
     void (async () => {
       try {
-        const result = await geosurveyApi.listQuestionnaires();
+        const result = await geosurveyApi.listQuestionnairesByIds(assignedIds);
         if (cancelled) return;
-        const assignedSet = new Set(assignedIds);
         const list = (result.items as unknown as Questionnaire[]).filter((item) => assignedSet.has(item.id));
         list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
         setQuestionnaires(list);
@@ -281,16 +298,19 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   }, [user?.uid, questionnaires.length, refreshTick]);
 
   useEffect(() => {
-    if (!startImmediately || autoStartConsumed.current || loading || !responseStatsLoaded) return;
+    // When startImmediately is true, don't wait for the slower responseStats
+    // fetch — that's what caused the "first click does nothing" bug. Open
+    // the form as soon as questionnaires finish loading. If response stats
+    // happen to already be loaded (cache hit), pick up the latest draft;
+    // otherwise open fresh (the form handles draft resumption internally).
+    if (!startImmediately || autoStartConsumed.current || loading) return;
     const available = questionnaires.filter((questionnaire) => questionnaire.isActive !== false);
     if (available.length !== 1) return;
     autoStartConsumed.current = true;
     const questionnaire = available[0];
-    const draft = responseStats[questionnaire.id]?.latestDraft;
-    setOpening(draft
-      ? { questionnaire, existingResponse: draft }
-      : { questionnaire, forceNew: true });
-  }, [startImmediately, loading, responseStatsLoaded, questionnaires, responseStats]);
+    const draft = responseStatsLoaded ? responseStats[questionnaire.id]?.latestDraft : undefined;
+    setOpening(draft ? { questionnaire, existingResponse: draft } : { questionnaire });
+  }, [startImmediately, loading, questionnaires, responseStatsLoaded, responseStats]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -423,10 +443,20 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
               </>
             )}
           </div>
+          {onOpenProfile && (
+            <button
+              onClick={onOpenProfile}
+              className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-medium"
+              title="My Profile"
+            >
+              <User size={18} />
+              <span className="hidden sm:inline">My Profile</span>
+            </button>
+          )}
           {!onBack && onLogout && (
             <button
               onClick={() => void onLogout()}
-              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"
+              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
               title="Logout"
             >
               <LogOut size={18} />

@@ -5,11 +5,15 @@ import express from 'express';
 import { initDb } from './db';
 import {
   adminCreateEnumerator,
+  adminResetEnumeratorPassword,
   authenticateWithPassword,
+  changePasswordForUser,
+  completePasswordReset,
   extractSessionToken,
   registerEnumerator,
   requestPasswordReset,
   resolveSessionByToken,
+  verifyIdentityForPasswordReset,
 } from './auth';
 import {
   requireAdmin,
@@ -39,6 +43,7 @@ import {
   countQuestionnairesByProject,
   deleteQuestionnaire,
   listQuestionnaires,
+  listQuestionnairesByIds,
   upsertQuestionnaire,
 } from './questionnairesStore';
 import {
@@ -118,11 +123,34 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     const email = String(req.body?.email || '').trim();
     const mobileNumber = String(req.body?.mobileNumber || '');
-    const tempPassword = await requestPasswordReset(email, mobileNumber);
+    if (!email || !mobileNumber) {
+      res.status(400).json({ error: 'Registered email and mobile number are required.' });
+      return;
+    }
+    const result = await verifyIdentityForPasswordReset(email, mobileNumber);
     res.json({
       ok: true,
-      message: 'Password reset successful. Use the temporary password to sign in.',
-      temporaryPassword: tempPassword,
+      message: 'Identity verified. You can now set your new password.',
+      resetToken: result.resetToken,
+      displayName: result.displayName,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const resetToken = String(req.body?.resetToken || '').trim();
+    const newPassword = String(req.body?.newPassword || '');
+    if (!resetToken || !newPassword) {
+      res.status(400).json({ error: 'Reset token and new password are required.' });
+      return;
+    }
+    await completePasswordReset(resetToken, newPassword);
+    res.json({
+      ok: true,
+      message: 'Password successfully changed! You can now log in.',
     });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -355,7 +383,6 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
   if (!isAdmin) {
     delete patch.role;
     delete patch.status;
-    delete patch.email;
     delete patch.assignedWardNames;
     delete patch.projectWardAssignments;
     delete patch.assignedQuestionnaireIds;
@@ -367,6 +394,7 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     delete patch.assignedGeospatialProjectIds;
   }
   const allowedKeys = [
+    'email',
     'displayName',
     'mobileNumber',
     'role',
@@ -389,12 +417,37 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
       cleanPatch[key] = patch[key];
     }
   }
-  const updated = await updateUser(req.params.id, cleanPatch);
-  if (!updated) {
-    res.status(404).json({ error: 'User not found.' });
+  try {
+    const updated = await updateUser(req.params.id, cleanPatch);
+    if (!updated) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+    res.json({ profile: userToProfile(updated) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/users/:id/change-password', requireAuth, async (req: GeosurveyAuthenticatedRequest, res) => {
+  const isSelf = req.geosurveySession?.user.id === req.params.id;
+  const isAdmin = req.geosurveySession?.user.role === 'admin';
+  if (!isSelf && !isAdmin) {
+    res.status(403).json({ error: 'Forbidden.' });
     return;
   }
-  res.json({ profile: userToProfile(updated) });
+  const currentPassword = String(req.body?.currentPassword || '');
+  const newPassword = String(req.body?.newPassword || '');
+  if (!newPassword || newPassword.length < 6) {
+    res.status(400).json({ error: 'New password must be at least 6 characters.' });
+    return;
+  }
+  try {
+    await changePasswordForUser(req.params.id, currentPassword, newPassword);
+    res.json({ ok: true, message: 'Password successfully updated.' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.post('/api/users/enumerator', requireAdmin, async (req: GeosurveyAuthenticatedRequest, res) => {
@@ -408,6 +461,16 @@ app.post('/api/users/enumerator', requireAdmin, async (req: GeosurveyAuthenticat
     res.json({ profile });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/users/:id/reset-password', requireAdmin, async (req, res) => {
+  try {
+    const password = await adminResetEnumeratorPassword(req.params.id);
+    res.json({ password });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(message === 'Enumerator account not found.' ? 404 : 500).json({ error: message });
   }
 });
 
@@ -426,6 +489,11 @@ app.get('/api/questionnaires/counts', requireApproved, async (_req, res) => {
 });
 
 app.get('/api/questionnaires', requireApproved, async (req, res) => {
+  if (req.query.ids) {
+    const ids = [...new Set(String(req.query.ids).split(',').map((id) => id.trim()).filter(Boolean))];
+    res.json({ items: await listQuestionnairesByIds(ids) });
+    return;
+  }
   const projectId = req.query.projectId ? String(req.query.projectId) : undefined;
   res.json({ items: await listQuestionnaires(projectId) });
 });

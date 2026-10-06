@@ -114,30 +114,7 @@ const labelHaloShadow = (color: string) => [
 const safeLabelColor = (color: string, fallback: string) => /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
 const escapeTooltipText = (text: string) => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
 const featureLabelMinZoom = (feature: { type?: string; geometry?: { coordinates?: unknown } }): number => {
-  const cached = featureLabelZoomCache.get(feature as object);
-  if (cached !== undefined) return cached;
-  if (feature.type === 'point') return 16;
-  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-  const visit = (value: unknown) => {
-    if (!Array.isArray(value)) return;
-    if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
-      minLng = Math.min(minLng, value[0]); maxLng = Math.max(maxLng, value[0]);
-      minLat = Math.min(minLat, value[1]); maxLat = Math.max(maxLat, value[1]);
-      return;
-    }
-    value.forEach(visit);
-  };
-  visit(feature.geometry?.coordinates);
-  if (!Number.isFinite(minLng) || !Number.isFinite(minLat)) return 16;
-  const midLat = (minLat + maxLat) / 2;
-  const widthKm = Math.abs(maxLng - minLng) * 111.32 * Math.cos((midLat * Math.PI) / 180);
-  const heightKm = Math.abs(maxLat - minLat) * 111.32;
-  const dimensionKm = Math.max(widthKm, heightKm);
-  const zoom = feature.type === 'line'
-    ? dimensionKm >= 20 ? 8 : dimensionKm >= 5 ? 10 : dimensionKm >= 1 ? 12 : dimensionKm >= 0.25 ? 14 : 16
-    : dimensionKm >= 100 ? 4 : dimensionKm >= 50 ? 5 : dimensionKm >= 20 ? 7 : dimensionKm >= 10 ? 8 : dimensionKm >= 5 ? 9 : dimensionKm >= 2 ? 10 : dimensionKm >= 1 ? 11 : dimensionKm >= 0.5 ? 12 : dimensionKm >= 0.2 ? 13 : dimensionKm >= 0.1 ? 14 : 15;
-  featureLabelZoomCache.set(feature as object, zoom);
-  return zoom;
+  return 19;
 };
 
 const MapZoomListener: React.FC<{ onZoomChange: (zoom: number) => void }> = ({ onZoomChange }) => {
@@ -155,6 +132,7 @@ const ScaleAwareZoneLayer: React.FC<{
   data: GeoJSON.FeatureCollection;
   color: string;
   fillColor: string;
+  borderWidth?: number;
   opacity: number;
   labelsVisible: boolean;
   labelField: string;
@@ -166,9 +144,10 @@ const ScaleAwareZoneLayer: React.FC<{
   projectId?: string;
   interactive: boolean;
   onFeatureSelect?: (feature: GeoFeature) => void;
-}> = ({ data, color, fillColor, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, layerName, surveyLayerKey, projectId, interactive, onFeatureSelect }) => {
+}> = ({ data, color, fillColor, borderWidth, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, layerName, surveyLayerKey, projectId, interactive, onFeatureSelect }) => {
   const map = useMap();
   const geoJsonRef = useRef<L.GeoJSON | null>(null);
+  const strokeWidth = Math.max(0.5, Number(borderWidth ?? 2));
   useEffect(() => {
     const updateLabels = () => {
       const zoom = map.getZoom();
@@ -177,7 +156,7 @@ const ScaleAwareZoneLayer: React.FC<{
         if (!feature) return;
         layer.options.interactive = interactive;
         if (typeof layer.setStyle === 'function') {
-          layer.setStyle({ color, weight: 2, fillColor, fillOpacity: opacity, interactive });
+          layer.setStyle({ color, weight: strokeWidth, fillColor, fillOpacity: opacity, interactive });
         }
         const pathElement = layer.getElement?.() as SVGElement | undefined;
         if (pathElement) pathElement.style.pointerEvents = interactive ? 'auto' : 'none';
@@ -186,7 +165,7 @@ const ScaleAwareZoneLayer: React.FC<{
         const text = value == null ? '' : String(value);
         const textColor = safeLabelColor(labelColor, '#0f172a');
         const outlineColor = safeLabelColor(haloColor, '#ffffff');
-        const safeSize = Math.min(24, Math.max(8, Number(fontSize) || 11));
+        const safeSize = Math.min(48, Math.max(4, Number(fontSize) || 11));
         const content = `<span style="color:${textColor};font-size:${safeSize}px;text-shadow:${labelHaloShadow(outlineColor)}">${escapeTooltipText(text)}</span>`;
         if (!layer.getTooltip()) layer.bindTooltip(content, { permanent: true, direction: 'center', className: 'zone-label', opacity: 1 });
         else layer.setTooltipContent(content);
@@ -214,9 +193,9 @@ const ScaleAwareZoneLayer: React.FC<{
     updateLabels();
     map.on('zoomend', updateLabels);
     return () => { map.off('zoomend', updateLabels); };
-  }, [map, data, color, fillColor, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, interactive, onFeatureSelect, layerName, surveyLayerKey, projectId]);
+  }, [map, data, color, fillColor, strokeWidth, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, interactive, onFeatureSelect, layerName, surveyLayerKey, projectId]);
 
-  return <GeoJSON key={`${layerName}:${interactive ? 'active' : 'inactive'}:${color}:${fillColor}:${opacity}:${labelField}:${labelsVisible}:${labelColor}:${haloColor}:${fontSize}`} ref={geoJsonRef as any} data={data} style={() => ({ color, weight: 2, fillColor, fillOpacity: opacity, interactive })} onEachFeature={(_feature, layer) => {
+  return <GeoJSON key={`${layerName}:${interactive ? 'active' : 'inactive'}:${color}:${fillColor}:${strokeWidth}:${opacity}:${labelField}:${labelsVisible}:${labelColor}:${haloColor}:${fontSize}`} ref={geoJsonRef as any} data={data} style={() => ({ color, weight: strokeWidth, fillColor, fillOpacity: opacity, interactive })} onEachFeature={(_feature, layer) => {
     if (!layer.getTooltip()) layer.bindTooltip('', { permanent: true, direction: 'center', className: 'zone-label', opacity: 1 });
   }} />;
 };
@@ -588,6 +567,7 @@ const PointMarker = React.memo(({
   interactive = true,
   color,
   boundaryColor,
+  borderWidth,
   opacity,
   labelText,
   labelColor,
@@ -609,6 +589,7 @@ const PointMarker = React.memo(({
   interactive?: boolean;
   color: string;
   boundaryColor?: string;
+  borderWidth?: number;
   opacity?: number;
   labelText?: string;
   labelColor: string;
@@ -623,7 +604,9 @@ const PointMarker = React.memo(({
   onFillQuestionnaire?: (f: GeoFeature) => void;
   allowAttributeEdit?: boolean;
   allowMoveActions?: boolean;
-}) => (
+}) => {
+  const baseWeight = Math.max(0.5, Number(borderWidth ?? 2));
+  return (
   <CircleMarker
     interactive={interactive}
     center={[feature.geometry.coordinates[1], feature.geometry.coordinates[0]]}
@@ -633,7 +616,7 @@ const PointMarker = React.memo(({
       color: isMoveTarget ? '#2563eb' : boundaryColor || color,
       fillColor: isMoveTarget ? '#3b82f6' : color,
       fillOpacity: opacity ?? 0.9,
-      weight: isMoveTarget ? 4 : isSelected ? (isPulsing ? 4 : 3) : 2
+      weight: isMoveTarget ? baseWeight + 2 : isSelected ? (isPulsing ? baseWeight + 2 : baseWeight + 1) : baseWeight
     }}
   >
     {labelText && <Tooltip permanent direction="top" offset={[0, -6]} className="map-feature-label"><span style={{ color: labelColor, fontSize, textShadow: labelHaloShadow(haloColor) }}>{labelText}</span></Tooltip>}
@@ -721,7 +704,8 @@ const PointMarker = React.memo(({
       </div>
     </Popup>}
   </CircleMarker>
-));
+  );
+});
 
 PointMarker.displayName = 'PointMarker';
 
@@ -731,6 +715,7 @@ const LineMarker = React.memo(({
   isSelected,
   color,
   boundaryColor,
+  borderWidth,
   opacity,
   labelText,
   interactive = true,
@@ -745,6 +730,7 @@ const LineMarker = React.memo(({
   isSelected: boolean;
   color: string;
   boundaryColor?: string;
+  borderWidth?: number;
   opacity?: number;
   labelText?: string;
   interactive?: boolean;
@@ -754,7 +740,9 @@ const LineMarker = React.memo(({
   onFeatureSelect: (f: GeoFeature) => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
   allowAttributeEdit?: boolean;
-}) => (
+}) => {
+  const baseWeight = Math.max(0.5, Number(borderWidth ?? 3));
+  return (
   <Polyline
     interactive={interactive}
     positions={feature.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]])}
@@ -762,7 +750,7 @@ const LineMarker = React.memo(({
       className: interactive ? undefined : 'survey-layer-inactive',
       color: isSelected ? '#3b82f6' : boundaryColor || color,
       opacity: opacity ?? 1,
-      weight: isSelected ? 6 : 4
+      weight: isSelected ? baseWeight + 2 : baseWeight
     }}
     eventHandlers={{}}
   >
@@ -820,7 +808,8 @@ const LineMarker = React.memo(({
       </div>
     </Popup>}
   </Polyline>
-));
+  );
+});
 
 LineMarker.displayName = 'LineMarker';
 
@@ -831,6 +820,7 @@ const PolygonMarker = React.memo(({
   color,
   fillColor,
   boundaryColor,
+  borderWidth,
   opacity,
   labelText,
   interactive = true,
@@ -846,6 +836,7 @@ const PolygonMarker = React.memo(({
   color: string;
   fillColor?: string;
   boundaryColor?: string;
+  borderWidth?: number;
   opacity?: number;
   labelText?: string;
   interactive?: boolean;
@@ -855,7 +846,9 @@ const PolygonMarker = React.memo(({
   onFeatureSelect: (f: GeoFeature) => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
   allowAttributeEdit?: boolean;
-}) => (
+}) => {
+  const baseWeight = Math.max(0.5, Number(borderWidth ?? 1.5));
+  return (
   <Polygon
     interactive={interactive}
     positions={feature.geometry.coordinates[0].map((coord: [number, number]) => [coord[1], coord[0]])}
@@ -864,7 +857,7 @@ const PolygonMarker = React.memo(({
       color: isSelected ? '#3b82f6' : boundaryColor || color,
       fillColor: fillColor || color,
       fillOpacity: opacity ?? 0.4,
-      weight: isSelected ? 3 : 1
+      weight: isSelected ? baseWeight + 2 : baseWeight
     }}
     eventHandlers={{}}
   >
@@ -922,7 +915,8 @@ const PolygonMarker = React.memo(({
       </div>
     </Popup>}
   </Polygon>
-));
+  );
+});
 
 PolygonMarker.displayName = 'PolygonMarker';
 
@@ -1149,6 +1143,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const [showEnumeratorLocation, setShowEnumeratorLocation] = useState(true);
   const [enumeratorLocationFocusKey, setEnumeratorLocationFocusKey] = useState(0);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
+  const layerControlContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showLayerPanel) return;
+    const handleOutsideClick = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (layerControlContainerRef.current && target && !layerControlContainerRef.current.contains(target)) {
+        setShowLayerPanel(false);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutsideClick, true);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsideClick, true);
+    };
+  }, [showLayerPanel]);
   const [baseMap, setBaseMap] = useState<'osm' | 'satellite' | 'hybrid'>(defaultBaseMap);
   const [mapZoom, setMapZoom] = useState(0);
   useEffect(() => {
@@ -1425,7 +1434,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         zoom={7}
         zoomControl={false}
         attributionControl={false}
-        maxZoom={22}
+        maxZoom={30}
         className="w-full h-full"
       >
         <MapZoomListener onZoomChange={setMapZoom} />
@@ -1440,7 +1449,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             maxNativeZoom={19}
-            maxZoom={22}
+            maxZoom={30}
           />
         )}
         {baseMap === 'satellite' && (
@@ -1448,7 +1457,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             attribution='Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             maxNativeZoom={19}
-            maxZoom={22}
+            maxZoom={30}
           />
         )}
         {baseMap === 'hybrid' && (
@@ -1457,7 +1466,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             url="https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
             subdomains={['mt0', 'mt1', 'mt2', 'mt3']}
             maxNativeZoom={20}
-            maxZoom={22}
+            maxZoom={30}
           />
         )}
 
@@ -1488,6 +1497,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               data={zoneLayer.data}
               color={style.boundaryColor}
               fillColor={style.fillColor}
+              borderWidth={style.borderWidth}
               opacity={style.opacity}
               labelsVisible={style.labelsVisible}
               labelField={style.labelField}
@@ -1510,6 +1520,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               data={zoneBoundaries}
               color={fallbackZoneStyle.boundaryColor}
               fillColor={fallbackZoneStyle.fillColor}
+              borderWidth={fallbackZoneStyle.borderWidth}
               opacity={fallbackZoneStyle.opacity}
               labelsVisible={fallbackZoneStyle.labelsVisible}
               labelField={fallbackZoneStyle.labelField}
@@ -1539,6 +1550,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
           const fillColor = layerStyle?.fillColor || color;
           const boundaryColor = layerStyle?.boundaryColor || color;
+          const borderWidth = layerStyle?.borderWidth;
           const opacity = layerStyle?.opacity;
           const labelField = layerStyle?.labelField;
           const labelText = layerStyle?.labelsVisible && mapZoom >= featureLabelMinZoom(feature)
@@ -1562,6 +1574,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 isPulsing={isPulsing}
                 color={fillColor}
                 boundaryColor={boundaryColor}
+                borderWidth={borderWidth}
                 opacity={opacity}
                 labelText={labelText}
                 interactive={surveySelectable}
@@ -1588,6 +1601,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 isSelected={isSelected}
                 color={fillColor}
                 boundaryColor={boundaryColor}
+                borderWidth={borderWidth}
                 opacity={opacity}
                 labelText={labelText}
                 interactive={surveySelectable}
@@ -1610,6 +1624,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 color={fillColor}
                 fillColor={fillColor}
                 boundaryColor={boundaryColor}
+                borderWidth={borderWidth}
                 opacity={opacity}
                 labelText={labelText}
                 interactive={surveySelectable}
@@ -1733,7 +1748,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
       </MapContainer>
 
       {/* Click-to-open layer panel */}
-      <div className="absolute top-4 right-4 z-[1000] flex flex-col items-end gap-2">
+      <div ref={layerControlContainerRef} className="absolute top-4 right-4 z-[1000] flex flex-col items-end gap-2">
         <button
           onClick={() => setShowLayerPanel((v) => !v)}
           className="p-3 rounded-xl shadow-lg bg-white text-blue-600 hover:bg-blue-50 transition-all"
@@ -1761,37 +1776,38 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               </div>
             </div>
             <div className="border-t pt-2">
-              <div className="flex items-center justify-between gap-2 font-medium text-slate-700 mb-2">
-                <label className="flex items-center gap-2 cursor-pointer min-w-0 flex-1">
-                  <input
-                    type="checkbox"
-                    checked={showLandmarks}
-                    disabled={!defaultShowLandmarks}
-                    onChange={(e) => setShowLandmarks(e.target.checked)}
-                  />
-                  <span className="truncate">Landmarks</span>
-                </label>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => bumpLandmarkScale(-0.1)}
-                    className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-                    title="Smaller landmark dots"
-                    disabled={!defaultShowLandmarks || landmarkIconScale <= 0.6}
-                  >
-                    <Minus size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => bumpLandmarkScale(0.1)}
-                    className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-                    title="Larger landmark dots"
-                    disabled={!defaultShowLandmarks || landmarkIconScale >= 2.4}
-                  >
-                    <Plus size={14} />
-                  </button>
+              {defaultShowLandmarks && (
+                <div className="flex items-center justify-between gap-2 font-medium text-slate-700 mb-2">
+                  <label className="flex items-center gap-2 cursor-pointer min-w-0 flex-1">
+                    <input
+                      type="checkbox"
+                      checked={showLandmarks}
+                      onChange={(e) => setShowLandmarks(e.target.checked)}
+                    />
+                    <span className="truncate">Landmarks</span>
+                  </label>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => bumpLandmarkScale(-0.1)}
+                      className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                      title="Smaller landmark dots"
+                      disabled={landmarkIconScale <= 0.6}
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => bumpLandmarkScale(0.1)}
+                      className="h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                      title="Larger landmark dots"
+                      disabled={landmarkIconScale >= 2.4}
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
               {hasWardLayer && (
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
                   <input type="checkbox" checked={showWards} onChange={(e) => setShowWards(e.target.checked)} />
