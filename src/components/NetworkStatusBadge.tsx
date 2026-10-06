@@ -19,9 +19,11 @@ import React from 'react';
 import { CloudOff, RefreshCw, Wifi } from 'lucide-react';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 
-export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
-  className = ''
+export const NetworkStatusBadge: React.FC<{ className?: string; compactOnMobile?: boolean }> = ({
+  className = '',
+  compactOnMobile = false,
 }) => {
+  const textClassName = compactOnMobile ? 'hidden sm:inline' : '';
   const { online, syncing, pendingCount, retryPendingUploads } = useOnlineStatus();
 
   if (online && !syncing && pendingCount === 0) return null;
@@ -33,7 +35,7 @@ export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
         title="You're offline. Drafts and submissions are saved locally and will sync automatically when the connection returns."
       >
         <CloudOff size={12} className="shrink-0" />
-        <span>{pendingCount > 0 ? `Offline · ${pendingCount} queued` : 'Offline · saving locally'}</span>
+        <span className={textClassName}>{pendingCount > 0 ? `Offline · ${pendingCount} queued` : 'Offline · saving locally'}</span>
       </div>
     );
   }
@@ -60,6 +62,7 @@ export const NetworkStatusBadge: React.FC<{ className?: string }> = ({
 export const NetworkStatusBadgeAlways: React.FC<{ className?: string }> = ({
   className = ''
 }) => {
+  const textClassName = '';
   const { online, syncing, pendingCount, retryPendingUploads } = useOnlineStatus();
 
   if (!online) {
@@ -81,7 +84,7 @@ export const NetworkStatusBadgeAlways: React.FC<{ className?: string }> = ({
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200 ${className} ${syncing ? 'opacity-80 cursor-default' : 'hover:bg-sky-200 transition-colors'}`}
       >
         <RefreshCw size={12} className={`shrink-0 ${syncing ? 'animate-spin' : ''}`} />
-        <span>{syncing ? `Syncing (${pendingCount})` : `Retry uploads (${pendingCount})`}</span>
+        <span className={textClassName}>{syncing ? `Syncing (${pendingCount})` : `Retry uploads (${pendingCount})`}</span>
       </button>
     );
   }

@@ -1362,7 +1362,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       const { savedId, queued } = await persistResponse('submitted');
       invalidateDwellingIdCache(questionnaire.id);
       invalidateResponseIdCache(questionnaire.id);
-      onSubmit?.({ ...(responseData as any), id: savedId } as QuestionnaireResponse);
+      onSubmit?.({
+        ...(responseData as any),
+        id: savedId,
+        status: queued ? 'queued' : 'submitted'
+      } as QuestionnaireResponse);
       const offline = await isDeviceOffline();
       const pendingCount = countPendingResponses();
       alert(

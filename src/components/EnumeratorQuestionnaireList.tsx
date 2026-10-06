@@ -59,6 +59,9 @@ interface EnumeratorQuestionnaireListProps {
   strictGeofence?: boolean;
   /** Open the sole assigned questionnaire immediately from the map CTA. */
   startImmediately?: boolean;
+  /** Render only the questionnaire search/list inside another page layout. */
+  embedded?: boolean;
+  onResponseSummaryChange?: (summary: { total: number; draft: number; submitted: number; queued: number; reviewed: number }) => void;
 }
 
 /**
@@ -102,11 +105,14 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   projectMapLayerStylesByProject = {},
   strictGeofence = false,
   startImmediately = false,
+  embedded = false,
+  onResponseSummaryChange,
 }) => {
   const { user } = useAuth();
   const [questionnaires, setQuestionnaires] = useState<Questionnaire[]>([]);
   const [projects, setProjects] = useState<Record<string, Project>>({});
   const [responseStats, setResponseStats] = useState<Record<string, QuestionnaireStats>>({});
+  const recentlySavedResponsesRef = useRef<Record<string, QuestionnaireResponse>>({});
   const [responseStatsLoaded, setResponseStatsLoaded] = useState(false);
   const autoStartConsumed = useRef(false);
   const [loading, setLoading] = useState(true);
@@ -136,7 +142,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   } = useQuestionnaireSurveyLocations({
     mode: user?.uid ? 'enumerator' : 'idle',
     userUid: user?.uid,
-    enabled: strictGeofence && showAssignedZoneMap && (geofenceZones?.length || 0) > 0,
+    enabled: !embedded && strictGeofence && showAssignedZoneMap && (geofenceZones?.length || 0) > 0,
     projectId: assignedZoneProjectId,
   });
 
@@ -257,8 +263,23 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       try {
         // Bucket by questionnaireId.
         const result = await geosurveyApi.listResponses({ respondentId: user.uid });
-        const buckets: Record<string, QuestionnaireResponse[]> = {};
+        const responsesById = new Map<string, QuestionnaireResponse>();
         for (const data of result.items as unknown as QuestionnaireResponse[]) {
+          if (data.id) responsesById.set(data.id, data);
+        }
+        for (const [id, recent] of Object.entries(recentlySavedResponsesRef.current)) {
+          const serverVersion = responsesById.get(id);
+          const recentResponse = recent as QuestionnaireResponse;
+          const savedResponse = serverVersion as QuestionnaireResponse | undefined;
+          if (!savedResponse || responseTime(recentResponse) > responseTime(savedResponse)) {
+            responsesById.set(id, recentResponse);
+          } else {
+            delete recentlySavedResponsesRef.current[id];
+          }
+        }
+
+        const buckets: Record<string, QuestionnaireResponse[]> = {};
+        for (const data of responsesById.values()) {
           const qid = data.questionnaireId;
           if (!qid) continue;
           (buckets[qid] = buckets[qid] || []).push(data);
@@ -351,8 +372,12 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
       queued += s.queued;
       reviewed += s.reviewed;
     }
-    return { draft, submitted, queued, reviewed };
+    return { total: draft + submitted + queued + reviewed, draft, submitted, queued, reviewed };
   }, [responseStats]);
+
+  useEffect(() => {
+    onResponseSummaryChange?.(totals);
+  }, [onResponseSummaryChange, totals]);
 
   /**
    * Clicking a questionnaire card opens the "My Responses" panel so the
@@ -365,6 +390,36 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
    */
   const openQuestionnaire = (q: Questionnaire) => {
     setResponsesPanel(q);
+  };
+
+  const handleResponseSubmitted = (response: QuestionnaireResponse) => {
+    const questionnaireId = response.questionnaireId || opening?.questionnaire.id;
+    if (!questionnaireId || !response.id) return;
+    const saved: QuestionnaireResponse = {
+      ...response,
+      questionnaireId,
+      respondentId: response.respondentId || user?.uid || '',
+      status: response.status || 'submitted',
+      updatedAt: response.updatedAt || new Date().toISOString(),
+    };
+    recentlySavedResponsesRef.current[saved.id] = saved;
+    setResponseStats((current) => {
+      const prior = current[questionnaireId] || EMPTY_STATS;
+      const all = [saved, ...prior.all.filter((item) => item.id !== saved.id)]
+        .sort((a, b) => responseTime(b) - responseTime(a));
+      const draft = all.filter((item) => item.status === 'draft');
+      return {
+        ...current,
+        [questionnaireId]: {
+          all,
+          draft: draft.length,
+          submitted: all.filter((item) => item.status === 'submitted').length,
+          queued: all.filter((item) => item.status === 'queued').length,
+          reviewed: all.filter((item) => item.status === 'reviewed').length,
+          latestDraft: draft[0] || null,
+        },
+      };
+    });
   };
 
   const handleDeleteDraft = async (r: QuestionnaireResponse) => {
@@ -394,8 +449,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   };
 
   return (
-    <div className="qc-panel-scroll flex flex-col min-h-[100dvh] bg-gradient-to-br from-emerald-50/40 to-teal-50/30">
-      <header className="bg-white/85 backdrop-blur border-b border-slate-200 shadow-sm pt-safe-top">
+    <div className={embedded ? 'w-full bg-white' : 'qc-panel-scroll flex flex-col min-h-[100dvh] bg-gradient-to-br from-emerald-50/40 to-teal-50/30'}>
+      {!embedded && <header className="bg-white/85 backdrop-blur border-b border-slate-200 shadow-sm pt-safe-top">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
           {onBack && (
             <button
@@ -463,10 +518,10 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             </button>
           )}
         </div>
-      </header>
+      </header>}
 
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-5 sm:py-7">
-        {strictGeofence &&
+      <main className={embedded ? 'w-full px-3 py-4 sm:px-5' : 'flex-1 max-w-5xl w-full mx-auto px-4 py-5 sm:py-7'}>
+        {strictGeofence && !embedded &&
           (showAssignedZoneMap ? (
             <EnumeratorAssignedZoneMap
               zones={geofenceZones || []}
@@ -496,20 +551,18 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             </div>
           ))}
 
-        <div className="flex items-center gap-3 flex-wrap mb-4">
-          <div className="relative flex-1 min-w-[220px]">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search questionnaires by title, description, or project…"
-              className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-            />
-          </div>
+        <div className="relative mb-4 w-full sm:w-[calc((100%-0.75rem)/2)]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search questionnaires by title, description, or project…"
+            className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-24 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+          />
           <button
             onClick={() => setRefreshTick((t) => t + 1)}
-            className="text-xs font-semibold px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1.5"
+            className="absolute right-1.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-1.5 rounded-md bg-white px-2 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
             title="Refresh"
           >
             <RefreshCw size={13} /> Refresh
@@ -562,7 +615,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           </div>
         )}
       </main>
-      <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />
+      {!embedded && <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />}
 
       {/* My Responses panel — a per-questionnaire response list scoped to
           the signed-in enumerator. Sits at z-[1002], below the form so
@@ -615,7 +668,8 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
               // (or abandoned) while the form was open.
               setRefreshTick((t) => t + 1);
             }}
-            onSubmit={() => {
+            onSubmit={(response) => {
+              handleResponseSubmitted(response);
               setOpening(null);
               setRefreshTick((t) => t + 1);
             }}
@@ -637,6 +691,7 @@ const QuestionnaireCard: React.FC<{
 }> = ({ questionnaire: q, stats, onOpen }) => {
   const inactive = q.isActive === false;
   const hasDraft = stats.draft > 0 && !!stats.latestDraft;
+  const questionCount = (q.questions || []).filter((question) => question.type !== 'section').length;
   const cta = inactive
     ? 'Inactive'
     : hasDraft
@@ -649,7 +704,7 @@ const QuestionnaireCard: React.FC<{
     <button
       onClick={onOpen}
       disabled={inactive}
-      className={`group text-left bg-white rounded-xl border shadow-sm hover:shadow-md transition-all p-4 flex flex-col gap-2 ${
+      className={`group text-left bg-white rounded-xl border shadow-sm hover:shadow-md transition-all p-4 flex items-center gap-4 ${
         inactive
           ? 'border-slate-200 opacity-60 cursor-not-allowed'
           : hasDraft
@@ -657,88 +712,74 @@ const QuestionnaireCard: React.FC<{
             : 'border-slate-200 hover:border-emerald-300'
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-bold text-slate-900 line-clamp-2 leading-snug">
-            {q.title || '(untitled)'}
-          </h3>
-          {q.version && (
-            <p className="text-[10px] text-slate-400 mt-0.5">v{q.version}</p>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-bold text-slate-900 line-clamp-2 leading-snug">
+              {q.title || '(untitled)'}
+            </h3>
+            {q.version && (
+              <p className="text-[10px] text-slate-400 mt-0.5">v{q.version}</p>
+            )}
+          </div>
+          {inactive && (
+            <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded shrink-0">
+              Inactive
+            </span>
           )}
         </div>
-        {inactive ? (
-          <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded shrink-0">
-            Inactive
-          </span>
-        ) : (
-          <ChevronRight
-            size={16}
-            className={`shrink-0 transition-all ${
-              hasDraft
-                ? 'text-amber-500 group-hover:text-amber-600 group-hover:translate-x-0.5'
-                : 'text-slate-300 group-hover:text-emerald-600 group-hover:translate-x-0.5'
-            }`}
-          />
+
+        {q.description && (
+          <p className="text-[11px] text-slate-500 line-clamp-2">{q.description}</p>
         )}
+
+        {/* Counts update from the loaded questionnaire definition; section markers aren't respondent questions. */}
+        <div className="flex items-center flex-wrap gap-1.5">
+          <StatusPill
+            tone="slate"
+            icon={<FileText size={11} />}
+            label={`${questionCount} question${questionCount === 1 ? '' : 's'}`}
+          />
+          {stats.draft > 0 && (
+            <StatusPill
+              tone="amber"
+              icon={<Save size={11} />}
+              label={`${stats.draft} draft${stats.draft === 1 ? '' : 's'} • edit later`}
+            />
+          )}
+          {stats.submitted > 0 && (
+            <StatusPill
+              tone="emerald"
+              icon={<CheckCircle2 size={11} />}
+              label={`${stats.submitted} submitted`}
+            />
+          )}
+          {stats.reviewed > 0 && (
+            <StatusPill
+              tone="indigo"
+              icon={<ShieldCheck size={11} />}
+              label={`${stats.reviewed} reviewed`}
+            />
+          )}
+        </div>
+
+        {hasDraft && (() => {
+          const saved = tsToDate(stats.latestDraft?.updatedAt) || tsToDate(stats.latestDraft?.submittedAt);
+          return saved ? <p className="text-[10px] font-medium text-amber-600/80">Saved {formatRelative(saved)}</p> : null;
+        })()}
       </div>
 
-      {q.description && (
-        <p className="text-[11px] text-slate-500 line-clamp-2">{q.description}</p>
-      )}
-
-      {/* Status row — shows pills only for non-zero categories so a fresh
-          card stays clean. The draft pill includes an explanatory hint
-          ("edit later") so enumerators know it can be resumed. */}
-      <div className="flex items-center flex-wrap gap-1.5 mt-1">
-        <StatusPill
-          tone="slate"
-          icon={<FileText size={11} />}
-          label={`${q.questions?.length || 0} question${q.questions?.length === 1 ? '' : 's'}`}
-        />
-        {stats.draft > 0 && (
-          <StatusPill
-            tone="amber"
-            icon={<Save size={11} />}
-            label={`${stats.draft} draft${stats.draft === 1 ? '' : 's'} • edit later`}
-          />
-        )}
-        {stats.submitted > 0 && (
-          <StatusPill
-            tone="emerald"
-            icon={<CheckCircle2 size={11} />}
-            label={`${stats.submitted} submitted`}
-          />
-        )}
-        {stats.reviewed > 0 && (
-          <StatusPill
-            tone="indigo"
-            icon={<ShieldCheck size={11} />}
-            label={`${stats.reviewed} reviewed`}
-          />
-        )}
-      </div>
-
-      {/* Call-to-action footer */}
       {!inactive && (
-        <div
-          className={`mt-1 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${
-            hasDraft ? 'text-amber-700' : 'text-emerald-700'
+        <span
+          className={`inline-flex min-h-11 min-w-36 shrink-0 items-center justify-center gap-2 self-center rounded-lg px-5 text-xs font-bold uppercase tracking-wide text-white shadow-sm transition-colors ${
+            hasDraft
+              ? 'bg-amber-600 group-hover:bg-amber-700'
+              : 'bg-emerald-600 group-hover:bg-emerald-700'
           }`}
         >
           {cta}
-          {hasDraft &&
-            (() => {
-              const saved =
-                tsToDate(stats.latestDraft?.updatedAt) ||
-                tsToDate(stats.latestDraft?.submittedAt);
-              if (!saved) return null;
-              return (
-                <span className="font-normal normal-case text-amber-600/80 lowercase">
-                  · saved {formatRelative(saved)}
-                </span>
-              );
-            })()}
-        </div>
+          <ChevronRight size={15} />
+        </span>
       )}
     </button>
   );
@@ -913,16 +954,9 @@ const MyResponsesPanel: React.FC<{
               <p className="text-sm font-semibold text-slate-800">
                 You haven't started this survey yet
               </p>
-              <p className="text-xs text-slate-500 mt-1 mb-4">
-                Tap below to start your first response. You can save a draft at
-                any time and come back to finish later.
+              <p className="text-xs text-slate-500 mt-1">
+                Use the button in the header to start your first response. You can save a draft and come back to finish later.
               </p>
-              <button
-                onClick={onStartNew}
-                className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold px-4 py-2 rounded-lg"
-              >
-                <Plus size={15} /> Start your first response
-              </button>
             </div>
           ) : (
             <div className="text-center text-slate-500 py-12 text-sm">

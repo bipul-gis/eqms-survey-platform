@@ -8,6 +8,7 @@ import { Questionnaire, QuestionnaireResponse } from '../types';
 import { patchShapefileZipUtf8Dbf } from './dbfUtf8';
 import {
   addPhotoAttachmentsToZip,
+  buildResponsesCsvFromTable,
   buildResponsesShpFieldMappingCsv,
   buildResponsesTable,
   responsePointForShp,
@@ -102,6 +103,10 @@ export async function downloadResponsesShpZipFromBundle(
 
   const zip = await JSZip.loadAsync(await blob.arrayBuffer());
   zip.file(`${baseName}_field_mapping.csv`, mappingCsv);
+  // SHP/DBF fields have short names and fixed-width cells. Include the full
+  // UTF-8 table as a companion so no long answer or original question label
+  // is lost when users work with the GIS layer.
+  zip.file(`${baseName}_all_fields.csv`, buildResponsesCsvFromTable(bundle));
   addPhotoAttachmentsToZip(zip, photoAttachments);
   blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
 

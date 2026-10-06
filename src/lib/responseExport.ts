@@ -293,18 +293,37 @@ export const responsePointForShp = (r: QuestionnaireResponse): [number, number] 
   return [ln, la];
 };
 
-const buildResponsesExportColumns = (questions: Question[]): ResponsesExportColumn[] => {
-  const cols: ResponsesExportColumn[] = [];
-  for (const qq of questions) {
-    if (qq.type === 'matrix' && Array.isArray(qq.rows) && qq.rows.length > 0) {
-      for (const row of qq.rows) {
-        cols.push({ kind: 'matrixRow', question: qq, row });
+/** Include legacy matrix rows still present in saved answers after form edits. */
+const buildResponsesExportColumnsForRows = (
+  questions: Question[],
+  responses: QuestionnaireResponse[]
+): ResponsesExportColumn[] => {
+  const columns: ResponsesExportColumn[] = [];
+  for (const question of questions) {
+    if (question.type !== 'matrix') {
+      columns.push({ kind: 'question', question });
+      continue;
+    }
+    const declared = Array.isArray(question.rows) ? question.rows : [];
+    const declaredSet = new Set(declared);
+    const savedRows = new Set<string>();
+    for (const response of responses) {
+      const answer = response.responses?.[question.id];
+      if (!answer || typeof answer !== 'object' || Array.isArray(answer)) continue;
+      for (const row of Object.keys(answer as Record<string, unknown>)) {
+        if (!declaredSet.has(row)) savedRows.add(row);
       }
-    } else {
-      cols.push({ kind: 'question', question: qq });
+    }
+    const rows = [...declared, ...[...savedRows].sort((a, b) => a.localeCompare(b))];
+    if (rows.length === 0) {
+      columns.push({ kind: 'question', question });
+      continue;
+    }
+    for (const row of rows) {
+      columns.push({ kind: 'matrixRow', question, row });
     }
   }
-  return cols;
+  return columns;
 };
 
 const responsesExportColumnBaseHeader = (col: ResponsesExportColumn): string => {
@@ -454,6 +473,14 @@ const csvEscape = (v: unknown): string => {
   return s;
 };
 
+/** Serialize an already-built export table for inclusion in companion ZIPs. */
+export const buildResponsesCsvFromTable = (table: ResponsesTable): string => {
+  const csv = [table.header, ...table.rows]
+    .map((row) => row.map(csvEscape).join(','))
+    .join('\r\n');
+  return '\uFEFF' + csv;
+};
+
 /**
  * Tabular representation of a set of responses — same columns, same cell
  * stringification rules used by the CSV export. Pulled out so the admin UI
@@ -505,7 +532,7 @@ export const planResponsesExport = (
     getExportOrderedQuestions(q),
     responses
   );
-  const columns = buildResponsesExportColumns(questions);
+  const columns = buildResponsesExportColumnsForRows(questions, responses);
   const preHeaders = buildSystemAndEnumHeaders(q);
   const columnHeaders = buildUniqueColumnHeaders(columns, questions, preHeaders);
   const header = [...preHeaders, ...columnHeaders];
@@ -705,7 +732,7 @@ export const buildResponsesExportFieldDescriptors = (
 ): ResponsesExportFieldDescriptor[] => {
   const enumFields = q.enumeratorInfo?.fields || [];
   const questions = mergeQuestionsWithResponseKeys(getExportOrderedQuestions(q), responses);
-  const exportColumns = buildResponsesExportColumns(questions);
+  const exportColumns = buildResponsesExportColumnsForRows(questions, responses);
   const out: ResponsesExportFieldDescriptor[] = [];
 
   for (const f of SYSTEM_EXPORT_FIELDS) {
@@ -811,13 +838,7 @@ export const buildResponsesCsv = (
   responses: QuestionnaireResponse[],
   options?: BuildResponsesTableOptions
 ): string => {
-  const { header, rows } = buildResponsesTable(q, responses, options);
-  const csv = [header, ...rows]
-    .map((row) => row.map(csvEscape).join(','))
-    .join('\r\n');
-
-  // UTF-8 BOM so Excel opens it with the right encoding for non-ASCII text.
-  return '\uFEFF' + csv;
+  return buildResponsesCsvFromTable(buildResponsesTable(q, responses, options));
 };
 
 /** Add collected photo files under `photos/` inside a JSZip archive. */
@@ -844,9 +865,7 @@ export const downloadResponsesCsvFromTable = async (
   q: Questionnaire,
   table: ResponsesTableWithPhotos
 ): Promise<ResponsesCsvExportResult> => {
-  const csv =
-    '\uFEFF' +
-    [table.header, ...table.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
+  const csv = buildResponsesCsvFromTable(table);
 
   const baseName = `${slugify(q.title)}_responses`;
   const JSZip = (await import('jszip')).default;

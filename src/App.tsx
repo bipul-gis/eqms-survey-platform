@@ -84,6 +84,17 @@ const AppPreloader: React.FC<{ label?: string }> = ({ label = 'Preparing Geosurv
   </div>
 );
 
+const SummaryCount: React.FC<{ label: string; count: number; tone?: string }> = ({
+  label,
+  count,
+  tone = 'text-slate-800',
+}) => (
+  <div className="flex items-center justify-between gap-2 text-[11px]">
+    <span className="text-slate-500">{label}</span>
+    <span className={`font-bold tabular-nums ${tone}`}>{count.toLocaleString()}</span>
+  </div>
+);
+
 const ScreenFallback = AppPreloader;
 import {
   MapPin,
@@ -426,6 +437,32 @@ const AppContent: React.FC = () => {
   const [selectedFeature, setSelectedFeature] = useState<GeoFeature | null>(null);
   const [pendingSurveyFeature, setPendingSurveyFeature] = useState<GeoFeature | null>(null);
   const [featureFocusRequestKey, setFeatureFocusRequestKey] = useState(0);
+  const mapViewRef = useRef<{ center: [number, number]; zoom: number } | null>(null);
+  const interactionMapViewRef = useRef<{ center: [number, number]; zoom: number } | null>(null);
+  const mapViewRestoreKeyRef = useRef(0);
+  const [mapViewRestoreRequest, setMapViewRestoreRequest] = useState<{
+    key: number;
+    view: { center: [number, number]; zoom: number };
+  } | null>(null);
+  const handleMapViewChange = useCallback((view: { center: [number, number]; zoom: number }) => {
+    mapViewRef.current = view;
+  }, []);
+  const captureMapViewBeforeInteraction = useCallback(() => {
+    if (interactionMapViewRef.current) return;
+    const view = mapViewRef.current;
+    interactionMapViewRef.current = view
+      ? { center: [view.center[0], view.center[1]], zoom: view.zoom }
+      : null;
+  }, []);
+  const clearMapViewInteractionSnapshot = useCallback(() => {
+    interactionMapViewRef.current = null;
+  }, []);
+  const restoreMapViewAfterInteraction = useCallback(() => {
+    const view = interactionMapViewRef.current;
+    clearMapViewInteractionSnapshot();
+    if (!view) return;
+    setMapViewRestoreRequest({ key: ++mapViewRestoreKeyRef.current, view });
+  }, [clearMapViewInteractionSnapshot]);
   const [isAddingFeature, setIsAddingFeature] = useState<'point' | 'line' | 'polygon' | null>(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [userManagementTab, setUserManagementTab] = useState<
@@ -944,6 +981,16 @@ const AppContent: React.FC = () => {
   );
   const enumeratorCombinedTasks = isApprovedEnumerator && enumeratorHasGeoTasks && enumeratorHasQTasks;
   const [enumeratorMapCollapsed, setEnumeratorMapCollapsed] = useState(false);
+  const [enumeratorQuestionnaireSummary, setEnumeratorQuestionnaireSummary] = useState({
+    total: 0,
+    draft: 0,
+    submitted: 0,
+    queued: 0,
+    reviewed: 0,
+  });
+  const handleEnumeratorResponseSummaryChange = useCallback((summary: typeof enumeratorQuestionnaireSummary) => {
+    setEnumeratorQuestionnaireSummary(summary);
+  }, []);
 
   const [enumeratorMode, setEnumeratorMode] = useState<
     'home' | 'geospatial' | 'questionnaire'
@@ -2412,10 +2459,16 @@ const AppContent: React.FC = () => {
 
   const handleMapFeatureSelect = useCallback((feature: GeoFeature) => {
     if (movingFeatureRef.current) return;
+    captureMapViewBeforeInteraction();
     setSelectedFeature(feature);
     setFeatureFocusRequestKey((k) => k + 1);
     setActiveTab('map');
-  }, []);
+  }, [captureMapViewBeforeInteraction]);
+
+  const handleSurveyActionRequest = useCallback((feature: GeoFeature) => {
+    captureMapViewBeforeInteraction();
+    setPendingSurveyFeature(feature);
+  }, [captureMapViewBeforeInteraction]);
 
   const handleCreateFeatureFromEditor = async (payload: { attributes: Record<string, any>; status: 'pending' | 'verified' | 'rejected' }) => {
     if (!user || !selectedFeature) return;
@@ -2639,6 +2692,7 @@ const AppContent: React.FC = () => {
   /** Launch questionnaire survey directly linked to a geospatial feature */
   const handleStartQuestionnaireForFeature = useCallback(
     (feature: GeoFeature) => {
+      captureMapViewBeforeInteraction();
       const attributes = feature.attributes || {};
       const layerName = String(attributes.__layerName || attributes.layerName || (feature as any).layerName || (attributes.projectId || (feature as any).projectId ? 'Unassigned layer' : '')).trim();
       const layerKey = String(attributes.__surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
@@ -2698,7 +2752,7 @@ const AppContent: React.FC = () => {
         setFeatureQuestionnairePickerOpen(true);
       }
     },
-    [projectQuestionnaires, currentProject, enumeratorMapProjects]
+    [projectQuestionnaires, currentProject, enumeratorMapProjects, captureMapViewBeforeInteraction]
   );
 
   if (authLoading) return <AppPreloader label="Starting secure workspace" />;
@@ -3442,14 +3496,14 @@ const AppContent: React.FC = () => {
     <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col bg-slate-50 font-sans text-slate-800">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 shadow-sm z-[1001] shrink-0 pt-[env(safe-area-inset-top,0px)]">
-        <div className="h-16 px-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="h-16 px-3 sm:px-4 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <div>
-            <h1 className="text-lg font-bold text-slate-900 leading-tight flex items-center gap-2">
+            <h1 className="text-base sm:text-lg font-bold text-slate-900 leading-tight flex items-center gap-1.5 sm:gap-2 whitespace-nowrap">
               <img
                 src="/eqms-logo.png"
                 alt="EQMS"
-                className="h-7 w-auto select-none"
+                className="h-6 sm:h-7 w-auto select-none"
                 draggable={false}
               />
               <span>Geosurvey</span>
@@ -3457,11 +3511,11 @@ const AppContent: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <NetworkStatusBadge />
-          <div className={`${isAdmin ? 'hidden md:flex' : 'flex'} items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-full border border-slate-100`}>
+        <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+          <NetworkStatusBadge compactOnMobile />
+          <div title={enumeratorSyncUi.label} className={`${isAdmin ? 'hidden md:flex' : 'flex'} items-center gap-2 px-2 sm:px-3 py-1.5 bg-slate-50 rounded-full border border-slate-100`}>
             <div className={`w-2 h-2 rounded-full ${enumeratorSyncUi.dotClass}`}></div>
-            <span className="text-xs font-medium text-slate-600">{enumeratorSyncUi.label}</span>
+            <span className="hidden sm:inline text-xs font-medium text-slate-600">{enumeratorSyncUi.label}</span>
           </div>
           {assignedWardsForFilter.length > 0 && !isAdmin && (
             <div
@@ -3617,7 +3671,7 @@ const AppContent: React.FC = () => {
               <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 py-1.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <MapIcon size={16} className="shrink-0 text-blue-600" />
-                  <span className="truncate text-xs font-bold text-slate-800">Survey map · Admin layers</span>
+                  <span className="truncate text-xs font-bold text-slate-800">Survey map</span>
                   <span className="hidden text-[10px] text-slate-500 sm:inline">Tap a survey feature to continue</span>
                 </div>
                 <button
@@ -3630,8 +3684,9 @@ const AppContent: React.FC = () => {
                 </button>
               </div>
             )}
-            <div className={`relative min-h-0 ${enumeratorCombinedTasks ? (enumeratorMapCollapsed ? 'h-0 overflow-hidden' : 'h-[65dvh] max-h-[680px] min-h-[320px] shrink-0') : 'flex-1'}`}>
+            <div className={`relative min-h-0 ${enumeratorCombinedTasks ? (enumeratorMapCollapsed ? 'h-0 overflow-hidden' : 'flex h-[65dvh] max-h-[680px] min-h-[320px] shrink-0 gap-3') : 'flex-1'}`}>
             <MapComponent 
+              className={enumeratorCombinedTasks ? 'min-w-0 flex-1' : undefined}
               key={`${mapProjectId || zoneLayer?.id || 'map'}:${enumeratorMapCollapsed}`}
               features={visibleFeatures}
               activeSurveyLayerKeys={mapActiveSurveyLayerKeys}
@@ -3647,11 +3702,13 @@ const AppContent: React.FC = () => {
                 !isAdmin && !geospatialMapMode && !mapProjectId ? assignedWardsForFilter : undefined
               }
               onFeatureSelect={handleMapFeatureSelect}
+              onMapViewChange={handleMapViewChange}
+              mapViewRestoreRequest={mapViewRestoreRequest}
               onRequestMoveFeature={startMoveFeature}
               onCancelMoveFeature={cancelMoveFeature}
               onLandmarkPointSelect={handleLandmarkPointSelect}
               onFillQuestionnaire={handleStartQuestionnaireForFeature}
-              onSurveyActionRequest={setPendingSurveyFeature}
+              onSurveyActionRequest={handleSurveyActionRequest}
               selectedFeatureId={movingFeature?.id ?? selectedFeature?.id}
               featureFocusRequestKey={featureFocusRequestKey}
               movingFeatureId={movingFeature?.id || null}
@@ -3675,6 +3732,30 @@ const AppContent: React.FC = () => {
               projectId={mapProjectId}
               importedExtentRequest={importedExtentRequest}
             />
+            {enumeratorCombinedTasks && (
+              <aside className="absolute bottom-3 right-3 z-[800] flex max-h-[48%] w-44 shrink-0 flex-col gap-3 overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-2.5 shadow-lg backdrop-blur lg:static lg:z-auto lg:max-h-none lg:w-56 lg:p-3 lg:shadow-sm">
+                <div>
+                  <h2 className="text-xs font-bold uppercase tracking-wide text-slate-800">Survey summary</h2>
+                  <p className="mt-1 text-[10px] text-slate-500">Geospatial survey</p>
+                  <div className="mt-2 space-y-2">
+                    <SummaryCount label="Total features" count={visibleFeatures.length} />
+                    <SummaryCount label="Pending" count={enumeratorTaskStats.pending} tone="text-amber-700" />
+                    <SummaryCount label="Completed" count={enumeratorTaskStats.verified} tone="text-green-700" />
+                    <SummaryCount label="New added" count={enumeratorTaskStats.newAdded} tone="text-violet-700" />
+                  </div>
+                </div>
+                <div className="border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-semibold text-slate-600">Questionnaire responses</p>
+                  <div className="mt-2 space-y-2">
+                    <SummaryCount label="Total" count={enumeratorQuestionnaireSummary.total} />
+                    <SummaryCount label="Draft" count={enumeratorQuestionnaireSummary.draft} tone="text-amber-700" />
+                    <SummaryCount label="Submitted" count={enumeratorQuestionnaireSummary.submitted} tone="text-green-700" />
+                    <SummaryCount label="Queued" count={enumeratorQuestionnaireSummary.queued} tone="text-sky-700" />
+                    <SummaryCount label="Reviewed" count={enumeratorQuestionnaireSummary.reviewed} tone="text-indigo-700" />
+                  </div>
+                </div>
+              </aside>
+            )}
             {/* Cover the map until the project's zone SHP is resolved, so the
                 default basemap view never flashes before fitting to zones. */}
             {geospatialMapMode && zonesLoading && (
@@ -3746,23 +3827,17 @@ const AppContent: React.FC = () => {
               </div>
             )}
             </div>
-            {enumeratorCombinedTasks && (
-              <section className="shrink-0 border-t border-slate-200 bg-white px-3 py-2 sm:px-5">
-                <div className="mx-auto flex max-w-3xl flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-                  <div>
-                    <h2 className="text-xs font-bold text-slate-900">Questionnaire Survey</h2>
-                    <p className="mt-0.5 text-[10px] text-slate-500">
-                      {userProfile?.assignedQuestionnaireIds?.length || 0} questionnaire(s) assigned. Start or continue a regular questionnaire survey.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setEnumeratorMode('questionnaire')}
-                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm hover:bg-emerald-700"
-                  >
-                    <ClipboardList size={15} /> Start Questionnaire Survey
-                  </button>
-                </div>
+            {enumeratorCombinedTasks && userProfile && (
+              <section className="shrink-0 border-t border-slate-200 bg-white">
+                <EnumeratorQuestionnaireList
+                  userProfile={userProfile}
+                  geofenceZones={zonePolygons}
+                  projectMapLayerStyles={mapProjectLayerStyles}
+                  projectMapLayerStylesByProject={mapProjectLayerStylesByProject}
+                  strictGeofence={questionnaireStrictGeofence}
+                  embedded
+                  onResponseSummaryChange={handleEnumeratorResponseSummaryChange}
+                />
               </section>
             )}
             </>
@@ -3910,6 +3985,7 @@ const AppContent: React.FC = () => {
                                             <td className="px-4 py-3">
                                               <button
                                                 onClick={() => {
+                                                  captureMapViewBeforeInteraction();
                                                   setSelectedFeature(f);
                                                   setActiveTab('map');
                                                 }}
@@ -4055,6 +4131,7 @@ const AppContent: React.FC = () => {
                   onClick={() => {
                     setFeatureQuestionnairePickerOpen(false);
                     setLinkedSurveyFeature(null);
+                    clearMapViewInteractionSnapshot();
                   }}
                   className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
                 >
@@ -4106,6 +4183,7 @@ const AppContent: React.FC = () => {
                   onClick={() => {
                     setFeatureQuestionnairePickerOpen(false);
                     setLinkedSurveyFeature(null);
+                    clearMapViewInteractionSnapshot();
                   }}
                   className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition"
                 >
@@ -4125,6 +4203,7 @@ const AppContent: React.FC = () => {
             <PanelSuspense
               label="Loading form…"
               onClose={() => {
+                restoreMapViewAfterInteraction();
                 setSelectedQuestionnaire(null);
                 setLinkedSurveyFeature(null);
               }}
@@ -4133,6 +4212,7 @@ const AppContent: React.FC = () => {
                 questionnaire={selectedQuestionnaire}
                 projectId={selectedQuestionnaire.projectId}
                 onClose={() => {
+                  restoreMapViewAfterInteraction();
                   setSelectedQuestionnaire(null);
                   setLinkedSurveyFeature(null);
                 }}
@@ -4142,6 +4222,7 @@ const AppContent: React.FC = () => {
                 linkedFeature={linkedSurveyFeature || undefined}
                 variant="fullscreen"
                 onSubmit={() => {
+                  restoreMapViewAfterInteraction();
                   setSelectedQuestionnaire(null);
                   setLinkedSurveyFeature(null);
                 }}
@@ -4164,7 +4245,7 @@ const AppContent: React.FC = () => {
               <div className="mt-4 grid gap-2">
                 {action !== 'questionnaire' && <button type="button" onClick={() => { const feature = pendingSurveyFeature; setPendingSurveyFeature(null); handleMapFeatureSelect(feature); }} className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700">Edit attributes</button>}
                 {action !== 'edit' && <button type="button" onClick={() => { const feature = pendingSurveyFeature; setPendingSurveyFeature(null); handleStartQuestionnaireForFeature(feature); }} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">Fill questionnaire survey</button>}
-                <button type="button" onClick={() => setPendingSurveyFeature(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
+                <button type="button" onClick={() => { setPendingSurveyFeature(null); clearMapViewInteractionSnapshot(); }} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
               </div>
             </div>
           </div>
@@ -4178,6 +4259,7 @@ const AppContent: React.FC = () => {
             <PanelSuspense
               label="Loading editor…"
               onClose={() => {
+                restoreMapViewAfterInteraction();
                 setSelectedFeature(null);
                 setMovingFeature(null);
               }}
@@ -4189,6 +4271,7 @@ const AppContent: React.FC = () => {
                 categoryOptions={categoryOptionsForEditor}
                 taskWardFreeze={editorTaskWardFreeze}
                 onClose={() => {
+                  restoreMapViewAfterInteraction();
                   setSelectedFeature(null);
                   setMovingFeature(null);
                 }}

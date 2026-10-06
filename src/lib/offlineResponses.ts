@@ -169,7 +169,9 @@ async function readOfflineQueueDb(): Promise<OfflinePendingResponse[]> {
 
 async function persistOfflineQueueEntry(entry: OfflinePendingResponse): Promise<void> {
   const db = await openOfflineQueueDb();
-  if (!db) return;
+  if (!db) {
+    throw new Error('IndexedDB is unavailable; offline response cannot be stored durably');
+  }
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(OFFLINE_QUEUE_STORE_NAME, 'readwrite');
     const store = tx.objectStore(OFFLINE_QUEUE_STORE_NAME);
@@ -281,6 +283,9 @@ export function enqueueOfflineResponse(
 }
 
 export async function persistQueuedResponse(entry: OfflinePendingResponse): Promise<void> {
+  // IndexedDB is the durable source of truth for queued answers, especially
+  // photo payloads which are deliberately omitted from the localStorage index.
+  // Never acknowledge an offline save when this write did not complete.
   await persistOfflineQueueEntry(entry);
   await hydratePendingQueue();
   setPendingQueue([...getPendingResponses().filter((p) => p.id !== entry.id), entry], false);

@@ -430,6 +430,10 @@ export const geosurveyApi = {
         await persistQueuedResponse(queued);
       } catch (e) {
         console.warn('geosurveyApi: failed to persist queued response payload', e);
+        // A manifest alone cannot restore photo data (and may itself exceed
+        // localStorage quota). Surface the failure so the form does not claim
+        // this response is safely stored on the device.
+        throw new Error('Could not save this response on the device. Free up storage and try again.');
       }
       return queued as Record<string, unknown>;
     };

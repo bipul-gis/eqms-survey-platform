@@ -247,6 +247,7 @@ L.Icon.Default.mergeOptions({
 });
 
 interface MapComponentProps {
+  className?: string;
   features: GeoFeature[];
   /** Project scope used to persist map layer visibility preferences. */
   projectId?: string;
@@ -318,6 +319,12 @@ interface MapComponentProps {
     key: number;
     extent: { south: number; west: number; north: number; east: number };
   } | null;
+  /** Captures and restores the current map viewport around survey/editor overlays. */
+  onMapViewChange?: (view: { center: [number, number]; zoom: number }) => void;
+  mapViewRestoreRequest?: {
+    key: number;
+    view: { center: [number, number]; zoom: number };
+  } | null;
 }
 
 export interface SurveyLocationMarker {
@@ -342,6 +349,42 @@ const MapEvents = ({ onClick }: { onClick: (lat: number, lng: number) => void })
       onClick(e.latlng.lat, e.latlng.lng);
     },
   });
+  return null;
+};
+
+const MapViewBridge = ({
+  onMapViewChange,
+  restoreRequest,
+}: {
+  onMapViewChange?: MapComponentProps['onMapViewChange'];
+  restoreRequest?: MapComponentProps['mapViewRestoreRequest'];
+}) => {
+  const map = useMap();
+  const lastRestoreKeyRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!onMapViewChange) return;
+    const reportView = () => {
+      const center = map.getCenter();
+      onMapViewChange({ center: [center.lat, center.lng], zoom: map.getZoom() });
+    };
+    reportView();
+    map.on('moveend', reportView);
+    map.on('zoomend', reportView);
+    return () => {
+      map.off('moveend', reportView);
+      map.off('zoomend', reportView);
+    };
+  }, [map, onMapViewChange]);
+
+  useEffect(() => {
+    if (!restoreRequest || lastRestoreKeyRef.current === restoreRequest.key) return;
+    const { center, zoom } = restoreRequest.view;
+    if (!center.every(Number.isFinite) || !Number.isFinite(zoom)) return;
+    map.setView(center, zoom, { animate: false });
+    lastRestoreKeyRef.current = restoreRequest.key;
+  }, [map, restoreRequest]);
+
   return null;
 };
 
@@ -1075,6 +1118,7 @@ const SurveyLocationCircle: React.FC<{ point: SurveyLocationMarker }> = React.me
 SurveyLocationCircle.displayName = 'SurveyLocationCircle';
 
 export const MapComponent: React.FC<MapComponentProps> = ({ 
+  className,
   features, 
   projectId,
   wards = null,
@@ -1112,6 +1156,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   defaultBaseMap = 'osm',
   defaultShowZones = true,
   importedExtentRequest = null,
+  onMapViewChange,
+  mapViewRestoreRequest = null,
 }) => {
   const { location, requestLocation } = useGeoLocation();
   const { user, userProfile } = useAuth();
@@ -1424,7 +1470,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   }, [zoneBoundaries, mapLayerSettings, projectMapLayerStylesByProject, projectId]);
 
   return (
-    <div className="relative w-full h-full">
+    <div className={`relative h-full ${className || 'w-full'}`}>
       <MapContainer 
         center={[23.7, 90.4]}
         zoom={7}
@@ -1440,6 +1486,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {combinedImportedZoneData && (
           <FitToZoneBoundaries data={combinedImportedZoneData} fitKey={zoneFitKey} />
         )}
+        <MapViewBridge onMapViewChange={onMapViewChange} restoreRequest={mapViewRestoreRequest} />
         {baseMap === 'osm' && (
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -1756,7 +1803,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         >
           <Layers size={20} />
         </button>
-        {isAdminUser && showEnumeratorLocation && (
+        {(isAdminUser || isEnumeratorUser) && showEnumeratorLocation && (
           <button
             type="button"
             onClick={() => {

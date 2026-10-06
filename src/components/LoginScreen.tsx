@@ -452,7 +452,7 @@ export const LoginScreen: React.FC = () => {
                       }}
                       className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                     />
-                    Remember username &amp; password
+                    Remember me
                   </label>
                   <button
                     type="button"
