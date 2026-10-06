@@ -105,8 +105,6 @@ const surveyLayerKeyMatches = (keys: string[], key: string) => {
   return keys.some((candidate) => normalize(candidate) === expected);
 };
 
-const featureLabelZoomCache = new WeakMap<object, number>();
-const SMALL_FEATURE_MIN_ZOOM = 17;
 const labelHaloShadow = (color: string) => [
   `-1.5px -1.5px 0 ${color}`, `0 -1.5px 0 ${color}`, `1.5px -1.5px 0 ${color}`,
   `-1.5px 0 0 ${color}`, `1.5px 0 0 ${color}`,
@@ -114,10 +112,6 @@ const labelHaloShadow = (color: string) => [
 ].join(', ');
 const safeLabelColor = (color: string, fallback: string) => /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
 const escapeTooltipText = (text: string) => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
-const featureLabelMinZoom = (feature: { type?: string; geometry?: { coordinates?: unknown } }): number => {
-  return feature.type === 'point' ? SMALL_FEATURE_MIN_ZOOM : 19;
-};
-
 const MapZoomListener: React.FC<{ onZoomChange: (zoom: number) => void }> = ({ onZoomChange }) => {
   const map = useMap();
   useEffect(() => {
@@ -136,6 +130,7 @@ const ScaleAwareZoneLayer: React.FC<{
   borderWidth?: number;
   opacity: number;
   labelsVisible: boolean;
+  labelsFromZoom: number;
   labelField: string;
   labelColor: string;
   haloColor: string;
@@ -145,7 +140,7 @@ const ScaleAwareZoneLayer: React.FC<{
   projectId?: string;
   interactive: boolean;
   onFeatureSelect?: (feature: GeoFeature) => void;
-}> = ({ data, color, fillColor, borderWidth, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, layerName, surveyLayerKey, projectId, interactive, onFeatureSelect }) => {
+}> = ({ data, color, fillColor, borderWidth, opacity, labelsVisible, labelsFromZoom, labelField, labelColor, haloColor, fontSize, layerName, surveyLayerKey, projectId, interactive, onFeatureSelect }) => {
   const map = useMap();
   const geoJsonRef = useRef<L.GeoJSON | null>(null);
   const strokeWidth = Math.max(0.5, Number(borderWidth ?? 2));
@@ -170,7 +165,7 @@ const ScaleAwareZoneLayer: React.FC<{
         const content = `<span style="color:${textColor};font-size:${safeSize}px;text-shadow:${labelHaloShadow(outlineColor)}">${escapeTooltipText(text)}</span>`;
         if (!layer.getTooltip()) layer.bindTooltip(content, { permanent: true, direction: 'center', className: 'zone-label', opacity: 1 });
         else layer.setTooltipContent(content);
-        const visible = labelsVisible && !!text && zoom >= featureLabelMinZoom({ type: 'polygon', geometry: feature.geometry as any });
+        const visible = labelsVisible && !!text && zoom >= labelsFromZoom;
         if (visible) layer.openTooltip();
         else layer.closeTooltip();
         layer.off('click');
@@ -194,7 +189,7 @@ const ScaleAwareZoneLayer: React.FC<{
     updateLabels();
     map.on('zoomend', updateLabels);
     return () => { map.off('zoomend', updateLabels); };
-  }, [map, data, color, fillColor, strokeWidth, opacity, labelsVisible, labelField, labelColor, haloColor, fontSize, interactive, onFeatureSelect, layerName, surveyLayerKey, projectId]);
+  }, [map, data, color, fillColor, strokeWidth, opacity, labelsVisible, labelsFromZoom, labelField, labelColor, haloColor, fontSize, interactive, onFeatureSelect, layerName, surveyLayerKey, projectId]);
 
   return <GeoJSON key={`${layerName}:${interactive ? 'active' : 'inactive'}:${color}:${fillColor}:${strokeWidth}:${opacity}:${labelField}:${labelsVisible}:${labelColor}:${haloColor}:${fontSize}`} ref={geoJsonRef as any} data={data} style={() => ({ color, weight: strokeWidth, fillColor, fillOpacity: opacity, interactive })} onEachFeature={(_feature, layer) => {
     if (!layer.getTooltip()) layer.bindTooltip('', { permanent: true, direction: 'center', className: 'zone-label', opacity: 1 });
@@ -1492,6 +1487,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {importedZoneLayers?.map((zoneLayer) => {
           if (zoneLayerVisibility[zoneLayer.id] === false) return null;
           const style = getLayerStyle('zone', zoneLayer.id, zoneLayer.projectId);
+          if (mapZoom < style.showFromZoom) return null;
           return (
           <React.Fragment key={`zone-layer-${zoneLayer.id}`}>
             <ScaleAwareZoneLayer
@@ -1501,6 +1497,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               borderWidth={style.borderWidth}
               opacity={style.opacity}
               labelsVisible={style.labelsVisible}
+              labelsFromZoom={style.labelsFromZoom}
               labelField={style.labelField}
               labelColor={style.labelColor}
               haloColor={style.haloColor}
@@ -1517,13 +1514,14 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {(!importedZoneLayers?.length) && showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
           <>
             <FitToZoneBoundaries data={zoneBoundaries} fitKey={zoneFitKey} />
-            <ScaleAwareZoneLayer
+            {mapZoom >= fallbackZoneStyle.showFromZoom && <ScaleAwareZoneLayer
               data={zoneBoundaries}
               color={fallbackZoneStyle.boundaryColor}
               fillColor={fallbackZoneStyle.fillColor}
               borderWidth={fallbackZoneStyle.borderWidth}
               opacity={fallbackZoneStyle.opacity}
               labelsVisible={fallbackZoneStyle.labelsVisible}
+              labelsFromZoom={fallbackZoneStyle.labelsFromZoom}
               labelField={fallbackZoneStyle.labelField}
               labelColor={fallbackZoneStyle.labelColor}
               haloColor={fallbackZoneStyle.haloColor}
@@ -1533,14 +1531,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               projectId={projectId}
               interactive={surveyLayerKeyMatches(activeSurveyLayerKeys, `zone:${String(zoneBoundaries.features[0]?.properties?.__layerId || '')}`)}
               onFeatureSelect={onSurveyActionRequest}
-            />
+            />}
           </>
         )}
 
         {/* Existing Features */}
-        {features.filter(isFeatureLayerVisible).filter((feature) => (
-          feature.type !== 'point' || mapZoom >= SMALL_FEATURE_MIN_ZOOM
-        )).map(feature => {
+        {features.filter(isFeatureLayerVisible).map(feature => {
           const isSelected = feature.id === selectedFeatureId;
           const isMoveTarget = feature.id === movingFeatureId;
           const isPulsing = feature.id === pulseFeatureId;
@@ -1551,12 +1547,13 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === `feature:${layerName}`.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
           const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || projectId || '');
           const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
+          if (layerStyle && mapZoom < layerStyle.showFromZoom) return null;
           const fillColor = layerStyle?.fillColor || color;
           const boundaryColor = layerStyle?.boundaryColor || color;
           const borderWidth = layerStyle?.borderWidth;
           const opacity = layerStyle?.opacity;
           const labelField = layerStyle?.labelField;
-          const labelText = layerStyle?.labelsVisible && mapZoom >= featureLabelMinZoom(feature)
+          const labelText = layerStyle?.labelsVisible && mapZoom >= layerStyle.labelsFromZoom
             ? String((labelField ? feature.attributes?.[labelField] : undefined) ?? feature.attributes?.name ?? feature.attributes?.Name ?? feature.attributes?.label ?? '')
             : '';
 
@@ -1647,7 +1644,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {/* Landmark points from CCC_all_Landmark.geojson (read-only visual layer).
             Hide a GeoJSON point when a matching Firestore feature exists so users
             always interact with the live/editable record after first edit/create. */}
-        {showLandmarks && mapZoom >= SMALL_FEATURE_MIN_ZOOM && landmarkPoints
+        {showLandmarks && landmarkPoints
           .filter((p) =>
             staticLandmarkMatchesAssignedWards(
               p.lng,
@@ -1684,18 +1681,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             both green/red feature markers and amber landmark dots. Status
             tints the outline so reviewers can tell drafts apart from
             submitted/reviewed responses at a glance. */}
-        {showSurveyLocations && mapZoom >= SMALL_FEATURE_MIN_ZOOM && Array.isArray(surveyLocations) && surveyLocations.map((p) => (
+        {showSurveyLocations && Array.isArray(surveyLocations) && surveyLocations.map((p) => (
           <SurveyLocationCircle key={`survey_loc_${p.id}`} point={p} />
         ))}
 
         {/* Live GPS overlay:
             - Admins / point-add mode: accuracy circle + icon
             - Enumerator "My Current Location" toggle: icon only */}
-        {location && (isAdminUser || showPointAddBuffer) && (
+        {location && ((isAdminUser && showEnumeratorLocation) || showPointAddBuffer) && (
           <>
             <FocusOnUserForPointAdd enabled={showPointAddBuffer} location={location} />
             <FocusOnEnumeratorLocation
-              enabled={isEnumeratorUser && showEnumeratorLocation}
+              enabled={(isEnumeratorUser || isAdminUser) && showEnumeratorLocation}
               location={location}
               focusRequestKey={enumeratorLocationFocusKey}
             />
@@ -1759,6 +1756,20 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         >
           <Layers size={20} />
         </button>
+        {isAdminUser && showEnumeratorLocation && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!location) requestLocation();
+              setEnumeratorLocationFocusKey((key) => key + 1);
+            }}
+            className="rounded-xl bg-white p-3 text-blue-600 shadow-lg transition-all hover:bg-blue-50"
+            title="Move map to my current location"
+            aria-label="Move map to my current location"
+          >
+            <LocateFixed size={20} />
+          </button>
+        )}
         {showLayerPanel && (
           <div className="w-56 bg-white rounded-xl shadow-xl border border-slate-200 p-3 text-xs space-y-3">
             <div>
@@ -1876,7 +1887,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   </span>
                 </label>
               )}
-              {!isAdminUser && isEnumeratorUser && (
+              {(isAdminUser || isEnumeratorUser) && (
                 <label className="mt-2 flex items-center gap-2 cursor-pointer font-medium text-slate-700">
                   <input
                     type="checkbox"
@@ -1910,10 +1921,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                   {distinctImportedLayers.map((lyr) => {
                     const isVisible = layerVisibility[lyr.name] !== false;
+                    const legendStyle = getLayerStyle('feature', lyr.name, projectId);
+                    const legendBorderWidth = Math.max(1, Number(legendStyle.borderWidth ?? 2));
                     return (
                       <div key={lyr.name} className="rounded-lg hover:bg-slate-50">
-                      <div className="flex items-center justify-between gap-2 p-1.5 text-xs">
-                        <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                      <div className="flex items-center gap-2 p-1.5 text-xs">
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
                           <input
                             type="checkbox"
                             checked={isVisible}
@@ -1926,27 +1939,24 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                             }}
                             className="rounded text-sky-600 focus:ring-sky-500"
                           />
-                          <span className={`truncate font-medium ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            {lyr.types.map((type) => (
+                              <span key={type} title={`${type} legend`} aria-label={`${type} legend`} className="flex h-5 w-5 items-center justify-center">
+                                {type === 'point' ? (
+                                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: legendStyle.fillColor, border: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                ) : type === 'line' ? (
+                                  <span className="block w-4" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                ) : (
+                                  <span className="h-3 w-4 rounded-[2px]" style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, border: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                          <span className={`min-w-0 whitespace-normal break-words font-medium leading-tight ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
                             {lyr.name}
                           </span>
                         </label>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {lyr.types.map((t) => (
-                            <span
-                              key={t}
-                              className={`text-[9px] px-1 py-0.2 rounded font-semibold uppercase ${
-                                t === 'point'
-                                  ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                                  : t === 'line'
-                                  ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                                  : 'bg-teal-50 text-teal-700 border border-teal-200'
-                              }`}
-                            >
-                              {t}
-                            </span>
-                          ))}
-                          <span className="text-[10px] text-slate-400">({lyr.count})</span>
-                        </div>
+                        <span className="text-right text-[10px] text-slate-400">({lyr.count})</span>
                       </div>
                       </div>
                     );

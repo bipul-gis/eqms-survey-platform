@@ -8,6 +8,8 @@ export interface MapLayerStyle {
   haloColor: string;
   fontSize: number;
   borderWidth?: number;
+  showFromZoom: number;
+  labelsFromZoom: number;
 }
 
 export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
@@ -20,6 +22,8 @@ export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
   haloColor: '#ffffff',
   fontSize: 11,
   borderWidth: 2,
+  showFromZoom: 0,
+  labelsFromZoom: 17,
 };
 
 const prefix = 'eqms.mapLayerSettings:';

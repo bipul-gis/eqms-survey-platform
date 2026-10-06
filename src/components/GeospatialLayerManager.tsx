@@ -98,7 +98,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const [activeSurveyKeys, setActiveSurveyKeys] = useState(activeSurveyLayerKeys);
   const [layerActions, setLayerActions] = useState(surveyLayerActions);
   const [linkedQuestionFields, setLinkedQuestionFields] = useState(surveyLayerQuestionFields);
-  const style: MapLayerStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(selected ? styles[selected.key] : {}) };
+  const style: MapLayerStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(selected?.kind === 'zone' ? { labelsVisible: true } : {}), ...(selected ? styles[selected.key] : {}) };
   const [rows, setRows] = useState<Array<{ id: string; properties: Record<string, unknown> }>>([]);
   const [showAttributeTable, setShowAttributeTable] = useState(false);
   const [attributeSearchQuery, setAttributeSearchQuery] = useState('');
@@ -164,13 +164,17 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     );
   }, [rows, attributeSearchQuery]);
 
-  const changeStyle = (patch: Partial<MapLayerStyle>) => {
-    if (!selected) return;
-    const next = { ...style, ...patch };
-    const updated = { ...styles, [selected.key]: next };
+  const changeLayerStyle = (key: string, patch: Partial<MapLayerStyle>) => {
+    const currentStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(styles[key] || {}) };
+    const next = { ...currentStyle, ...patch };
+    const updated = { ...styles, [key]: next };
     setStyles(updated);
-    writeMapLayerStyle(projectId, selected.key, next);
+    writeMapLayerStyle(projectId, key, next);
     void onLayerStylesChanged(updated).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  };
+
+  const changeStyle = (patch: Partial<MapLayerStyle>) => {
+    if (selected) changeLayerStyle(selected.key, patch);
   };
 
   const toggleSurveyLayer = async (layerName: string) => {
@@ -288,11 +292,12 @@ export const GeospatialLayerManager: React.FC<Props> = ({
           <aside className="max-h-64 sm:max-h-72 shrink-0 overflow-y-auto border-b border-slate-200 p-3 bg-slate-50/50">
             <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">Project layers ({managedLayers.length})</p>
             <div className="space-y-1">
-              {managedLayers.map((item) => (
+              {managedLayers.map((item) => {
+                return (
                 <div key={item.key} className={`flex items-center gap-2 rounded-lg border px-2 py-2 ${selected?.key === item.key ? 'border-sky-300 bg-sky-50' : 'border-transparent hover:bg-slate-50'}`}>
                   <button type="button" onClick={() => { setSelectedKey(item.key); setError(null); }} className="min-w-0 flex-1 text-left">
                     <span className="flex items-center gap-2">
-                      <span className="h-3.5 w-3.5 shrink-0 rounded-sm border" style={{ backgroundColor: styles[item.key]?.fillColor || DEFAULT_MAP_LAYER_STYLE.fillColor, borderColor: styles[item.key]?.boundaryColor || DEFAULT_MAP_LAYER_STYLE.boundaryColor, opacity: styles[item.key]?.opacity ?? DEFAULT_MAP_LAYER_STYLE.opacity }} />
+                      <span className="h-3.5 w-3.5 shrink-0 rounded-sm border" style={{ backgroundColor: (styles[item.key]?.opacity ?? DEFAULT_MAP_LAYER_STYLE.opacity) === 0 ? 'transparent' : (styles[item.key]?.fillColor || DEFAULT_MAP_LAYER_STYLE.fillColor), borderColor: styles[item.key]?.boundaryColor || DEFAULT_MAP_LAYER_STYLE.boundaryColor, borderWidth: `${Math.max(1, Number(styles[item.key]?.borderWidth ?? DEFAULT_MAP_LAYER_STYLE.borderWidth ?? 2))}px`, opacity: 1 }} />
                       <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{item.name}</span>
                     </span>
                     <span className="block pl-5 text-[10px] text-slate-500">{item.kind === 'zone' ? 'Boundary SHP' : 'Map feature layer'} · {item.count.toLocaleString()} records</span>
@@ -309,7 +314,8 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   </label>
                   <button type="button" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} disabled={busy} onClick={() => void removeLayer(item)} className="shrink-0 rounded p-1.5 text-red-600 hover:bg-red-50 disabled:opacity-40"><Trash2 size={14} /></button>
                 </div>
-              ))}
+                );
+              })}
               {managedLayers.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">No uploaded map layers in this project.</p>}
             </div>
           </aside>
@@ -321,7 +327,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
               </div>
               {busy && <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-red-100"><div className="h-full w-1/3 animate-pulse rounded-full bg-red-500" /></div>}
               <section className="mb-4 rounded-xl border border-slate-200 p-3">
-                <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Layer display</h4>
+                <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Layer management</h4>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="flex items-center justify-between">
@@ -377,8 +383,17 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   </div>
                   <label className="text-[10px] font-semibold text-slate-600">Fill opacity · {Math.round(style.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={style.opacity} onChange={(e) => changeStyle({ opacity: Number(e.target.value) })} className="mt-2 block w-full" /></label>
                   <label className="text-[10px] font-semibold text-slate-600">Label field<select value={style.labelField} onChange={(e) => changeStyle({ labelField: e.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-2 py-2 text-xs"><option value="">Use layer default</option>{columns.map((field) => <option key={field} value={field}>{field}</option>)}</select></label>
+                  <label className="flex items-center gap-2 text-[10px] font-semibold text-slate-600">
+                    <input type="checkbox" checked={style.showFromZoom > 0} onChange={(e) => changeStyle({ showFromZoom: e.target.checked ? 17 : 0 })} />
+                    <span className="flex-1">Show features only from zoom</span>
+                    {style.showFromZoom > 0 && <input aria-label="Show features from zoom level" type="number" min="0" max="30" step="1" value={style.showFromZoom} onChange={(e) => changeStyle({ showFromZoom: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
+                  </label>
                   <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(6rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
-                    <label className="flex items-center gap-1.5 whitespace-nowrap text-[10px] font-semibold text-slate-700"><input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />Show map labels</label>
+                    <label className="flex items-center gap-2 whitespace-nowrap text-[10px] font-semibold text-slate-600">
+                      <input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />
+                      <span>Show labels only from zoom</span>
+                      {style.labelsVisible && <input aria-label="Show labels from zoom level" type="number" min="0" max="30" step="1" value={style.labelsFromZoom} onChange={(e) => changeStyle({ labelsFromZoom: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
+                    </label>
                     <label title="Label text color" className="flex items-center gap-1 text-[9px] text-slate-500">Text<input aria-label="Label text color" type="color" value={style.labelColor} onChange={(e) => changeStyle({ labelColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
                     <label title="Label halo color" className="flex items-center gap-1 text-[9px] text-slate-500">Halo<input aria-label="Label halo color" type="color" value={style.haloColor} onChange={(e) => changeStyle({ haloColor: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-slate-200 p-0.5" /></label>
                     <label title="Label font size in pixels (e.g. 11, 11.5, 12)" className="flex items-center gap-1 text-[9px] text-slate-600 font-medium">
@@ -405,7 +420,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                     </label>
                   </div>
                 </div>
-                <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices through the project server. Labels appear as you zoom in, based on feature size.</p>
+                <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices. Set each threshold independently; zoom 0 keeps that content visible at every zoom.</p>
               </section>
               <section>
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 transition hover:border-slate-300">
