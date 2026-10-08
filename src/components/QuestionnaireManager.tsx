@@ -1228,6 +1228,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   );
   const [bulkLogicQuestionIds, setBulkLogicQuestionIds] = useState<Set<string>>(new Set());
   const [showBulkLogicEditor, setShowBulkLogicEditor] = useState(false);
+  const [bulkLogicDraft, setBulkLogicDraft] = useState<LogicRule | null>(null);
+  const [bulkLogicAppliedCount, setBulkLogicAppliedCount] = useState(0);
   const [rightTab, setRightTab] = useState<'properties' | 'logic' | 'validation'>('properties');
   const [showPreview, setShowPreview] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -1293,6 +1295,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     [questions, bulkLogicQuestionIds]
   );
   const toggleBulkLogicQuestion = (id: string) => {
+    setBulkLogicAppliedCount(0);
     setBulkLogicQuestionIds((previous) => {
       const next = new Set(previous);
       if (next.has(id)) next.delete(id);
@@ -1300,11 +1303,26 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       return next;
     });
   };
-  const updateBulkLogic = (patch: Partial<Question>) => {
+  const openBulkLogicEditor = () => {
+    if (showBulkLogicEditor) {
+      setShowBulkLogicEditor(false);
+      return;
+    }
+    const startingLogic = bulkLogicQuestions[0]?.logic;
+    setBulkLogicDraft(startingLogic
+      ? JSON.parse(JSON.stringify(startingLogic)) as LogicRule
+      : blankLogic());
+    setBulkLogicAppliedCount(0);
+    setShowBulkLogicEditor(true);
+  };
+  const applyBulkLogic = () => {
+    if (!bulkLogicDraft || bulkLogicQuestions.length < 2) return;
     const ids = new Set(bulkLogicQuestions.map((question) => question.id));
+    const sharedLogic = JSON.parse(JSON.stringify(bulkLogicDraft)) as LogicRule;
     setQuestions((previous) => previous.map((question) => ids.has(question.id)
-      ? { ...question, ...patch }
+      ? { ...question, logic: sharedLogic }
       : question));
+    setBulkLogicAppliedCount(ids.size);
   };
 
   // ----- Question mutation helpers -----------------------------------------
@@ -1776,12 +1794,12 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
               </span>
               <div className="flex items-center gap-2">
                 {bulkLogicQuestions.length > 0 && (
-                  <button type="button" onClick={() => setBulkLogicQuestionIds(new Set())} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Clear</button>
+                  <button type="button" onClick={() => { setBulkLogicQuestionIds(new Set()); setBulkLogicAppliedCount(0); }} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Clear</button>
                 )}
                 <button
                   type="button"
                   disabled={bulkLogicQuestions.length < 2}
-                  onClick={() => setShowBulkLogicEditor((open) => !open)}
+                  onClick={openBulkLogicEditor}
                   className="rounded bg-blue-600 px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {showBulkLogicEditor ? 'Close shared logic' : 'Apply shared logic'}
@@ -1790,8 +1808,28 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
             </div>
             {showBulkLogicEditor && bulkLogicQuestions.length >= 2 && (
               <div className="rounded-lg border border-blue-200 bg-white p-3">
-                <p className="mb-2 text-xs font-semibold text-slate-700">The same display rule will be applied to all selected questions.</p>
-                <LogicPanel question={bulkLogicQuestions[0]} allQuestions={questions} onUpdate={updateBulkLogic} />
+                <p className="mb-2 text-xs font-semibold text-slate-700">Edit one shared rule, then apply it to all selected questions.</p>
+                <LogicPanel
+                  question={{ ...bulkLogicQuestions[0], logic: bulkLogicDraft ?? blankLogic() }}
+                  allQuestions={questions}
+                  showDefaultRules={false}
+                  onUpdate={(patch) => {
+                    if (patch.logic) {
+                      setBulkLogicDraft(patch.logic);
+                      setBulkLogicAppliedCount(0);
+                    }
+                  }}
+                />
+                <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                  <span className="text-[11px] text-slate-500">
+                    {bulkLogicAppliedCount > 0
+                      ? `Applied to ${bulkLogicAppliedCount} selected questions.`
+                      : `${bulkLogicQuestions.length} questions will receive this rule.`}
+                  </span>
+                  <button type="button" onClick={applyBulkLogic} disabled={bulkLogicQuestions.length < 2 || !bulkLogicDraft} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                    Apply logic to {bulkLogicQuestions.length} questions
+                  </button>
+                </div>
               </div>
             )}
             <div className="bg-white rounded-xl border border-slate-200 p-5">
@@ -4177,8 +4215,9 @@ const LogicQuestionPicker: React.FC<{
 const LogicPanel: React.FC<{
   question: Question;
   allQuestions: Question[];
+  showDefaultRules?: boolean;
   onUpdate: (patch: Partial<Question>) => void;
-}> = ({ question, allQuestions, onUpdate }) => {
+}> = ({ question, allQuestions, showDefaultRules = true, onUpdate }) => {
   const logic: LogicRule = question.logic || blankLogic();
 
   const setLogic = (patch: Partial<LogicRule>) => onUpdate({ logic: { ...logic, ...patch } });
@@ -4338,13 +4377,15 @@ const LogicPanel: React.FC<{
           "Default value rules" decides what the answer should be when
           the question is visible. Both live in the same tab so admins
           discover them together. */}
-      <div className="mt-5 pt-5 border-t border-slate-200">
-        <DefaultRulesPanel
-          question={question}
-          allQuestions={allQuestions}
-          onUpdate={onUpdate}
-        />
-      </div>
+      {showDefaultRules && (
+        <div className="mt-5 pt-5 border-t border-slate-200">
+          <DefaultRulesPanel
+            question={question}
+            allQuestions={allQuestions}
+            onUpdate={onUpdate}
+          />
+        </div>
+      )}
     </div>
   );
 };
