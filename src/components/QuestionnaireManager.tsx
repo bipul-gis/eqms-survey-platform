@@ -714,34 +714,10 @@ export const QuestionnaireManager: React.FC<QuestionnaireManagerProps> = ({
         const currentQuestions = Array.isArray(oldSystemSeed.questions)
           ? oldSystemSeed.questions
           : [];
-        const alreadyCurrent =
-          oldSystemSeed.version === seeded.version &&
-          currentQuestions.length === seeded.questions.length &&
-          currentQuestions.every((question, index) => {
-            if (!question || typeof question !== 'object') return false;
-            const current = question as Question;
-            const expected = seeded.questions[index];
-            if (
-              String(current.id || '') !== expected?.id ||
-              current.type !== expected?.type ||
-              current.questionTranslations?.en !== expected?.questionTranslations?.en ||
-              current.questionTranslations?.bn !== expected?.questionTranslations?.bn
-            ) return false;
-            const currentOptions = ensureOptionShape(current.options);
-            const expectedOptions = ensureOptionShape(expected.options);
-            return (
-              currentOptions.length === expectedOptions.length &&
-              currentOptions.every((option, optionIndex) => {
-                const expectedOption = expectedOptions[optionIndex];
-                return (
-                  option.value === expectedOption.value &&
-                  option.labelTranslations?.en === expectedOption.labelTranslations?.en &&
-                  option.labelTranslations?.bn === expectedOption.labelTranslations?.bn
-                );
-              })
-            );
-          });
-        if (alreadyCurrent) {
+        // This questionnaire is editable after its initial seed. Never replace
+        // a populated document with the template on load: extra questions,
+        // formulas, labels, and other admin edits must survive reloads.
+        if (currentQuestions.length > 0) {
           setQuestionnaires(filtered);
           return;
         }
