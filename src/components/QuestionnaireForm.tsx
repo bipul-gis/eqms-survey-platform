@@ -1139,11 +1139,30 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   const buildResponseData = (
     status: 'draft' | 'submitted'
   ): Omit<QuestionnaireResponse, 'id'> => {
+    // A computed field is normally synchronized into React state by an effect.
+    // Submit can happen before that effect commits, so resolve the same values
+    // into this payload synchronously to ensure the saved response is complete.
+    const responseSnapshot = { ...responses };
+    const computedQuestions = visibleQuestions.filter(
+      (question) => question.type === 'computed' && question.computed
+    );
+    for (let pass = 0; pass < computedQuestions.length; pass += 1) {
+      let changed = false;
+      for (const question of computedQuestions) {
+        const value = evaluateComputed(question.computed, responseSnapshot, runtimeQuestions).value;
+        const normalized = value === null ? '' : value;
+        if (responseSnapshot[question.id] !== normalized) {
+          responseSnapshot[question.id] = normalized;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
     const base: Record<string, any> = {
       questionnaireId: questionnaire.id,
       projectId,
       respondentId: user!.uid,
-      responses,
+      responses: responseSnapshot,
       status
     };
     if (userProfile?.email) base.respondentEmail = userProfile.email;
@@ -1312,7 +1331,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     }
   };
 
-  const persistResponse = async (status: 'draft' | 'submitted'): Promise<{ savedId: string; queued: boolean }> => {
+  const persistResponse = async (status: 'draft' | 'submitted'): Promise<{
+    savedId: string;
+    queued: boolean;
+    responseData: Omit<QuestionnaireResponse, 'id'>;
+  }> => {
     const existingId = draftDocIdRef.current;
     let responseData = buildResponseData(status);
     responseData = await applyDwellingIdBeforeSave(responseData, status, existingId);
@@ -1340,7 +1363,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           /* ignore */
         }
       }
-      return { savedId, queued };
+      return { savedId, queued, responseData };
     } catch (error) {
       if (!existingId) clearRememberedDraftDocId();
       throw error;
@@ -1412,8 +1435,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     setSubmitError(null);
     setSaveState('submitting');
     try {
-      const responseData = buildResponseData('submitted');
-      const { savedId, queued } = await persistResponse('submitted');
+      const { savedId, queued, responseData } = await persistResponse('submitted');
       invalidateDwellingIdCache(questionnaire.id);
       invalidateResponseIdCache(questionnaire.id);
       onSubmit?.({

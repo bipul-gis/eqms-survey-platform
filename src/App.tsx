@@ -117,6 +117,7 @@ import {
   LayoutGrid,
   ClipboardList,
   ChevronRight,
+  ChevronDown,
   Folder,
   Trash2,
   Loader2,
@@ -981,6 +982,7 @@ const AppContent: React.FC = () => {
   );
   const enumeratorCombinedTasks = isApprovedEnumerator && enumeratorHasGeoTasks && enumeratorHasQTasks;
   const [enumeratorMapCollapsed, setEnumeratorMapCollapsed] = useState(false);
+  const [enumeratorSummaryExpanded, setEnumeratorSummaryExpanded] = useState(false);
   const [enumeratorQuestionnaireSummary, setEnumeratorQuestionnaireSummary] = useState({
     total: 0,
     draft: 0,
@@ -3732,30 +3734,6 @@ const AppContent: React.FC = () => {
               projectId={mapProjectId}
               importedExtentRequest={importedExtentRequest}
             />
-            {enumeratorCombinedTasks && (
-              <aside className="absolute bottom-3 right-3 z-[800] flex max-h-[48%] w-44 shrink-0 flex-col gap-3 overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-2.5 shadow-lg backdrop-blur lg:static lg:z-auto lg:max-h-none lg:w-56 lg:p-3 lg:shadow-sm">
-                <div>
-                  <h2 className="text-xs font-bold uppercase tracking-wide text-slate-800">Survey summary</h2>
-                  <p className="mt-1 text-[10px] text-slate-500">Geospatial survey</p>
-                  <div className="mt-2 space-y-2">
-                    <SummaryCount label="Total features" count={visibleFeatures.length} />
-                    <SummaryCount label="Pending" count={enumeratorTaskStats.pending} tone="text-amber-700" />
-                    <SummaryCount label="Completed" count={enumeratorTaskStats.verified} tone="text-green-700" />
-                    <SummaryCount label="New added" count={enumeratorTaskStats.newAdded} tone="text-violet-700" />
-                  </div>
-                </div>
-                <div className="border-t border-slate-100 pt-3">
-                  <p className="text-[10px] font-semibold text-slate-600">Questionnaire responses</p>
-                  <div className="mt-2 space-y-2">
-                    <SummaryCount label="Total" count={enumeratorQuestionnaireSummary.total} />
-                    <SummaryCount label="Draft" count={enumeratorQuestionnaireSummary.draft} tone="text-amber-700" />
-                    <SummaryCount label="Submitted" count={enumeratorQuestionnaireSummary.submitted} tone="text-green-700" />
-                    <SummaryCount label="Queued" count={enumeratorQuestionnaireSummary.queued} tone="text-sky-700" />
-                    <SummaryCount label="Reviewed" count={enumeratorQuestionnaireSummary.reviewed} tone="text-indigo-700" />
-                  </div>
-                </div>
-              </aside>
-            )}
             {/* Cover the map until the project's zone SHP is resolved, so the
                 default basemap view never flashes before fitting to zones. */}
             {geospatialMapMode && zonesLoading && (
@@ -3827,6 +3805,41 @@ const AppContent: React.FC = () => {
               </div>
             )}
             </div>
+            {enumeratorCombinedTasks && (
+              <section className="shrink-0 border-b border-slate-200 bg-white px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => setEnumeratorSummaryExpanded((expanded) => !expanded)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1 text-left"
+                  aria-expanded={enumeratorSummaryExpanded}
+                  aria-controls="enumerator-survey-summary"
+                >
+                  <span className="min-w-0">
+                    <span className="block text-xs font-bold text-slate-800">Survey summary</span>
+                    <span className="block truncate text-[10px] text-slate-500">
+                      {visibleFeatures.length.toLocaleString()} map features · {enumeratorQuestionnaireSummary.total.toLocaleString()} responses
+                    </span>
+                  </span>
+                  <ChevronDown
+                    size={16}
+                    className={`shrink-0 text-slate-500 transition-transform ${enumeratorSummaryExpanded ? 'rotate-180' : ''}`}
+                  />
+                </button>
+                {enumeratorSummaryExpanded && (
+                  <div id="enumerator-survey-summary" className="grid grid-cols-2 gap-x-6 gap-y-1.5 px-1 pb-2 pt-1 sm:grid-cols-3 lg:grid-cols-5">
+                    <SummaryCount label="Total features" count={visibleFeatures.length} />
+                    <SummaryCount label="Pending" count={enumeratorTaskStats.pending} tone="text-amber-700" />
+                    <SummaryCount label="Completed" count={enumeratorTaskStats.verified} tone="text-green-700" />
+                    <SummaryCount label="New added" count={enumeratorTaskStats.newAdded} tone="text-violet-700" />
+                    <SummaryCount label="Questionnaire responses" count={enumeratorQuestionnaireSummary.total} />
+                    <SummaryCount label="Draft" count={enumeratorQuestionnaireSummary.draft} tone="text-amber-700" />
+                    <SummaryCount label="Submitted" count={enumeratorQuestionnaireSummary.submitted} tone="text-green-700" />
+                    <SummaryCount label="Queued" count={enumeratorQuestionnaireSummary.queued} tone="text-sky-700" />
+                    <SummaryCount label="Reviewed" count={enumeratorQuestionnaireSummary.reviewed} tone="text-indigo-700" />
+                  </div>
+                )}
+              </section>
+            )}
             {enumeratorCombinedTasks && userProfile && (
               <section className="shrink-0 border-t border-slate-200 bg-white">
                 <EnumeratorQuestionnaireList
