@@ -2521,7 +2521,6 @@ const PropertiesPanel: React.FC<{
               .includes(repeatQuestionSearch.trim().toLocaleLowerCase()))
         );
         const updateRepeatMembers = (ids: Set<string>) => {
-          if (!question.repeatSection) return;
           onUpdate({
             repeatSection: {
               ...question.repeatSection,
@@ -2536,11 +2535,16 @@ const PropertiesPanel: React.FC<{
           >
             <select
               value={question.repeatSection?.countQuestionId || ''}
-              onChange={(event) => onUpdate({
-                repeatSection: event.target.value
-                  ? { countQuestionId: event.target.value, questionIds: selectedIds }
-                  : undefined
-              })}
+              onChange={(event) => {
+                const questionIds = allQuestions
+                  .filter((candidate) => selectedSet.has(candidate.id) && candidate.id !== event.target.value)
+                  .map((candidate) => candidate.id);
+                onUpdate({
+                  repeatSection: event.target.value || questionIds.length > 0
+                    ? { countQuestionId: event.target.value || undefined, questionIds }
+                    : undefined
+                });
+              }}
               className={inputCls}
             >
               <option value="">Do not repeat</option>
@@ -2550,24 +2554,26 @@ const PropertiesPanel: React.FC<{
                 </option>
               ))}
             </select>
-            {question.repeatSection && countCandidates.length === 0 && (
+            {countCandidates.length === 0 && (
               <p className="mt-1 text-[10px] text-amber-700">Add a count question before this section. Use a number, scale, computed, numeric text, rating, select, or radio question.</p>
             )}
-            {question.repeatSection && countCandidates.length > 0 && (
-              <>
-                <p className="mt-1 text-[10px] text-slate-500">The linked response is treated as a whole number, capped at 100 repeats.</p>
-                <input
-                  type="search"
-                  value={repeatQuestionSearch}
-                  onChange={(event) => setRepeatQuestionSearch(event.target.value)}
-                  className={`${inputCls} mt-2`}
-                  placeholder="Search all questions to add to this repeat set"
-                  aria-label="Search questions in the repeat set"
-                />
-                <div className="mt-1 max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white">
-                  {memberCandidates.length === 0 ? (
-                    <p className="px-2.5 py-2 text-[11px] text-slate-400">No matching questions available.</p>
-                  ) : memberCandidates.map((candidate) => (
+            {question.repeatSection?.countQuestionId ? (
+              <p className="mt-1 text-[10px] text-slate-500">The linked response is treated as a whole number, capped at 100 repeats.</p>
+            ) : (
+              <p className="mt-1 text-[10px] text-slate-500">Select a count question above to activate this set. The repeatable-question list is available now.</p>
+            )}
+            <input
+              type="search"
+              value={repeatQuestionSearch}
+              onChange={(event) => setRepeatQuestionSearch(event.target.value)}
+              className={`${inputCls} mt-2`}
+              placeholder="Search all questions to add to this repeat set"
+              aria-label="Search questions in the repeat set"
+            />
+            <div className="mt-1 max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white">
+              {memberCandidates.length === 0 ? (
+                <p className="px-2.5 py-2 text-[11px] text-slate-400">No matching questions available.</p>
+              ) : memberCandidates.map((candidate) => (
                     <label key={candidate.id} className="flex cursor-pointer items-start gap-2 border-b border-slate-100 px-2.5 py-2 last:border-b-0 hover:bg-violet-50">
                       <input
                         type="checkbox"
@@ -2586,10 +2592,8 @@ const PropertiesPanel: React.FC<{
                       <span className="min-w-0 flex-1 text-xs text-slate-700">{candidate.question || candidate.key || candidate.id}</span>
                     </label>
                   ))}
-                </div>
-                <p className="mt-1 text-[10px] text-slate-500">{selectedIds.length} question{selectedIds.length === 1 ? '' : 's'} selected. Add questions from other sections here; their original positions are skipped.</p>
-              </>
-            )}
+            </div>
+            <p className="mt-1 text-[10px] text-slate-500">{selectedIds.length} question{selectedIds.length === 1 ? '' : 's'} selected. Add questions from other sections here; their original positions are skipped.</p>
           </Field>
         );
       })()}
