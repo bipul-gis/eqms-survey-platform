@@ -482,7 +482,7 @@ export interface Question {
    */
   parentId?: string;
   /** Repeat the section beginning at this section break using a count answer. */
-  repeatSection?: { countQuestionId: string };
+  repeatSection?: { countQuestionId: string; questionIds?: string[] };
   /** Runtime-only source metadata used for expanded repeat instances. */
   repeatSourceId?: string;
   /** Runtime-only one-based repeat index. */

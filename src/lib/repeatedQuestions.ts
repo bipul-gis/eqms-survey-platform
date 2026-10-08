@@ -6,14 +6,21 @@ const repeatedId = (id: string, index: number) => `${id}__repeat_${index}`;
 export const isRepeatCountQuestionCandidate = (question: Question): boolean =>
   ['number', 'scale', 'rating', 'computed', 'text', 'select', 'radio'].includes(question.type);
 
+export const repeatGroupMemberIds = (questions: Question[], sectionIndex: number): string[] => {
+  const section = questions[sectionIndex];
+  if (!section || section.type !== 'section' || !section.repeatSection) return [];
+  if (section.repeatSection.questionIds) return section.repeatSection.questionIds;
+  let end = sectionIndex + 1;
+  while (end < questions.length && questions[end].type !== 'section') end += 1;
+  return questions.slice(sectionIndex + 1, end).filter((question) => question.type !== 'section').map((question) => question.id);
+};
+
 export const getRepeatedQuestionSourceIds = (questions: Question[]): Set<string> => {
   const ids = new Set<string>();
   for (let index = 0; index < questions.length; index += 1) {
     if (questions[index].type !== 'section' || !questions[index].repeatSection?.countQuestionId) continue;
-    let end = index + 1;
-    while (end < questions.length && questions[end].type !== 'section') end += 1;
-    for (const question of questions.slice(index, end)) ids.add(question.id);
-    index = end - 1;
+    ids.add(questions[index].id);
+    for (const id of repeatGroupMemberIds(questions, index)) ids.add(id);
   }
   return ids;
 };
@@ -24,17 +31,30 @@ export const expandRepeatedQuestions = (
   answers: Record<string, unknown>
 ): Question[] => {
   const expanded: Question[] = [];
+  const memberToSection = new Map<string, string>();
+  for (let index = 0; index < questions.length; index += 1) {
+    const section = questions[index];
+    if (section.type !== 'section' || !section.repeatSection?.countQuestionId) continue;
+    for (const id of repeatGroupMemberIds(questions, index)) {
+      if (!memberToSection.has(id)) memberToSection.set(id, section.id);
+    }
+  }
   for (let index = 0; index < questions.length;) {
     const start = questions[index];
     if (start.type !== 'section' || !start.repeatSection?.countQuestionId) {
-      expanded.push(start);
+      if (!memberToSection.has(start.id)) expanded.push(start);
       index += 1;
       continue;
     }
 
-    let end = index + 1;
-    while (end < questions.length && questions[end].type !== 'section') end += 1;
-    const block = questions.slice(index, end);
+    const memberIds = new Set(repeatGroupMemberIds(questions, index));
+    if (start.repeatSection.questionIds && memberIds.size === 0) {
+      expanded.push(start);
+      index += 1;
+      continue;
+    }
+    const members = questions.filter((candidate) => memberIds.has(candidate.id));
+    const block = [start, ...members];
     const rawCount = answers[start.repeatSection.countQuestionId];
     const countValue = typeof rawCount === 'string' ? Number(rawCount.trim()) : Number(rawCount);
     const count = Number.isFinite(countValue)
@@ -85,7 +105,7 @@ export const expandRepeatedQuestions = (
         expanded.push(clone);
       }
     }
-    index = end;
+    index += 1;
   }
   return expanded;
 };

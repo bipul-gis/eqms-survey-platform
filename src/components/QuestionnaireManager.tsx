@@ -27,7 +27,7 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
-import { expandRepeatedQuestions, isRepeatCountQuestionCandidate } from '../lib/repeatedQuestions';
+import { expandRepeatedQuestions, isRepeatCountQuestionCandidate, repeatGroupMemberIds } from '../lib/repeatedQuestions';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import {
@@ -2437,6 +2437,7 @@ const PropertiesPanel: React.FC<{
 }> = ({ question, allQuestions, surveyFieldOptions, onUpdate }) => {
   const typeDef = QUESTION_TYPE_BY_KEY[question.type];
   const linkedFieldValue = question.featureAttributeLink ? JSON.stringify(question.featureAttributeLink) : '';
+  const [repeatQuestionSearch, setRepeatQuestionSearch] = useState('');
 
   return (
         <div>
@@ -2501,16 +2502,43 @@ const PropertiesPanel: React.FC<{
           .slice(0, Math.max(0, sectionIndex))
           .filter(isRepeatCountQuestionCandidate);
         const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
+        const selectedIds = repeatGroupMemberIds(allQuestions, sectionIndex)
+          .filter((id) => id !== question.repeatSection?.countQuestionId);
+        const selectedSet = new Set(selectedIds);
+        const assignedElsewhere = new Set<string>();
+        allQuestions.forEach((candidate, candidateIndex) => {
+          if (candidate.id === question.id || !candidate.repeatSection) return;
+          repeatGroupMemberIds(allQuestions, candidateIndex).forEach((id) => assignedElsewhere.add(id));
+        });
+        const memberCandidates = allQuestions.filter((candidate) =>
+          candidate.type !== 'section' &&
+          candidate.id !== question.id &&
+          candidate.id !== question.repeatSection?.countQuestionId &&
+          (!assignedElsewhere.has(candidate.id) || selectedSet.has(candidate.id)) &&
+          (!repeatQuestionSearch.trim() ||
+            `${questionNumbers.get(candidate.id) || ''} ${candidate.question} ${candidate.key || ''} ${candidate.id}`
+              .toLocaleLowerCase()
+              .includes(repeatQuestionSearch.trim().toLocaleLowerCase()))
+        );
+        const updateRepeatMembers = (ids: Set<string>) => {
+          if (!question.repeatSection) return;
+          onUpdate({
+            repeatSection: {
+              ...question.repeatSection,
+              questionIds: allQuestions.filter((candidate) => ids.has(candidate.id)).map((candidate) => candidate.id)
+            }
+          });
+        };
         return (
           <Field
-            label="Repeat this section"
-            hint="The section and its questions up to the next section break repeat together, one full set at a time. Link a numeric response from an earlier section; single-choice options should use numeric values."
+            label="Repeat question set"
+            hint="Choose the questions to repeat as one set. They can come from anywhere in the questionnaire and will repeat together in form order. Link a numeric count question from an earlier section."
           >
             <select
               value={question.repeatSection?.countQuestionId || ''}
               onChange={(event) => onUpdate({
                 repeatSection: event.target.value
-                  ? { countQuestionId: event.target.value }
+                  ? { countQuestionId: event.target.value, questionIds: selectedIds }
                   : undefined
               })}
               className={inputCls}
@@ -2526,7 +2554,41 @@ const PropertiesPanel: React.FC<{
               <p className="mt-1 text-[10px] text-amber-700">Add a count question before this section. Use a number, scale, computed, numeric text, rating, select, or radio question.</p>
             )}
             {question.repeatSection && countCandidates.length > 0 && (
-              <p className="mt-1 text-[10px] text-slate-500">The linked response is treated as a whole number, capped at 100 repeats.</p>
+              <>
+                <p className="mt-1 text-[10px] text-slate-500">The linked response is treated as a whole number, capped at 100 repeats.</p>
+                <input
+                  type="search"
+                  value={repeatQuestionSearch}
+                  onChange={(event) => setRepeatQuestionSearch(event.target.value)}
+                  className={`${inputCls} mt-2`}
+                  placeholder="Search all questions to add to this repeat set"
+                  aria-label="Search questions in the repeat set"
+                />
+                <div className="mt-1 max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white">
+                  {memberCandidates.length === 0 ? (
+                    <p className="px-2.5 py-2 text-[11px] text-slate-400">No matching questions available.</p>
+                  ) : memberCandidates.map((candidate) => (
+                    <label key={candidate.id} className="flex cursor-pointer items-start gap-2 border-b border-slate-100 px-2.5 py-2 last:border-b-0 hover:bg-violet-50">
+                      <input
+                        type="checkbox"
+                        checked={selectedSet.has(candidate.id)}
+                        onChange={(event) => {
+                          const next = new Set(selectedSet);
+                          if (event.target.checked) next.add(candidate.id);
+                          else next.delete(candidate.id);
+                          updateRepeatMembers(next);
+                        }}
+                        className="mt-0.5"
+                      />
+                      <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-violet-800">
+                        {questionNumbers.get(candidate.id) || '—'}
+                      </span>
+                      <span className="min-w-0 flex-1 text-xs text-slate-700">{candidate.question || candidate.key || candidate.id}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10px] text-slate-500">{selectedIds.length} question{selectedIds.length === 1 ? '' : 's'} selected. Add questions from other sections here; their original positions are skipped.</p>
+              </>
             )}
           </Field>
         );
