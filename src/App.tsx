@@ -663,6 +663,19 @@ const AppContent: React.FC = () => {
       : Object.assign({}, ...enumeratorMapProjects.map((project) => project.surveyLayerActions || {})),
     [isAdmin, enumeratorMapProjects, currentProject?.surveyLayerActions]
   );
+  const selectedFeatureLayerName = selectedFeature
+    ? String(selectedFeature.attributes?.__layerName || selectedFeature.attributes?.layerName || (selectedFeature as any).layerName || (selectedFeature.attributes?.projectId || (selectedFeature as any).projectId ? 'Unassigned layer' : '')).trim()
+    : '';
+  const selectedFeatureSurveyLayerKey = selectedFeatureLayerName ? `feature:${selectedFeatureLayerName}` : '';
+  const selectedFeatureProjectId = String(selectedFeature?.attributes?.projectId || (selectedFeature as any)?.projectId || currentProject?.id || '');
+  const selectedFeatureProject = enumeratorMapProjects.find((project) => project.id === selectedFeatureProjectId) || currentProject;
+  const selectedFeatureSurveyAction = Object.entries(selectedFeatureProject?.surveyLayerActions || {})
+    .find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === selectedFeatureSurveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
+  const selectedFeatureCanFillQuestionnaire = Boolean(
+    selectedFeatureSurveyLayerKey &&
+    selectedFeatureProject?.activeSurveyLayerKeys?.some((key) => key.trim().normalize('NFKC').toLocaleLowerCase() === selectedFeatureSurveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase()) &&
+    selectedFeatureSurveyAction !== 'edit'
+  );
   const [dismissedZonePromptProjectIds, setDismissedZonePromptProjectIds] = useState<string[]>(() => {
     if (typeof window === 'undefined') return [];
     try {
@@ -2700,6 +2713,7 @@ const AppContent: React.FC = () => {
       const layerKey = String(attributes.__surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
       const featureProjectId = String(attributes.projectId || (feature as any).projectId || currentProject?.id || '');
       const featureProject = enumeratorMapProjects.find((project) => project.id === featureProjectId) || currentProject;
+      const requiredQuestionnaireId = layerKey ? featureProject?.surveyLayerQuestionnaireIds?.[layerKey] : undefined;
       const selectedFields = layerKey ? featureProject?.surveyLayerQuestionFields?.[layerKey] || [] : [];
       const linkedAttributes = Object.fromEntries(selectedFields.filter((field) => Object.prototype.hasOwnProperty.call(attributes, field)).map((field) => [field, attributes[field]]));
       setLinkedSurveyFeature({ ...feature, surveyLayerKey: layerKey, attributes: linkedAttributes });
@@ -2744,9 +2758,12 @@ const AppContent: React.FC = () => {
       }
 
       // If exactly one questionnaire in project, open directly
-      const featureQuestionnaires = featureProjectId
+      const projectFeatureQuestionnaires = featureProjectId
         ? projectQuestionnaires.filter((questionnaire) => (questionnaire.projectId || DEFAULT_PROJECT_ID) === featureProjectId)
         : projectQuestionnaires;
+      const featureQuestionnaires = requiredQuestionnaireId
+        ? projectFeatureQuestionnaires.filter((questionnaire) => questionnaire.id === requiredQuestionnaireId)
+        : projectFeatureQuestionnaires;
       if (featureQuestionnaires.length === 1) {
         setSelectedQuestionnaire(featureQuestionnaires[0]);
       } else {
@@ -4083,6 +4100,8 @@ const AppContent: React.FC = () => {
                 activeSurveyLayerKeys={currentProject.activeSurveyLayerKeys || []}
                 surveyLayerActions={currentProject.surveyLayerActions || {}}
                 surveyLayerQuestionFields={currentProject.surveyLayerQuestionFields || {}}
+                surveyLayerQuestionnaireIds={currentProject.surveyLayerQuestionnaireIds || {}}
+                questionnaires={projectQuestionnaires.filter((questionnaire) => (questionnaire.projectId || DEFAULT_PROJECT_ID) === currentProject.id)}
                 projectStyles={currentProject.mapLayerStyles || {}}
                 assignmentLayerId={currentProject.geospatialAssignmentLayerId}
                 assignmentField={currentProject.geospatialAssignmentField}
@@ -4091,8 +4110,8 @@ const AppContent: React.FC = () => {
                 onClose={() => setShowLayerManager(false)}
                 onFeaturesChanged={() => setAdminFeaturesRefreshKey((key) => key + 1)}
                 onZonesChanged={handleZoneLayerChanged}
-                onActiveSurveyLayersChanged={async (layerKeys, actions, questionFields) => {
-                  const { item } = await geosurveyApi.updateGeosurveyProjectSurveyLayers(currentProject.id, layerKeys, actions, questionFields);
+                onActiveSurveyLayersChanged={async (layerKeys, actions, questionFields, questionnaireIds) => {
+                  const { item } = await geosurveyApi.updateGeosurveyProjectSurveyLayers(currentProject.id, layerKeys, actions, questionFields, questionnaireIds);
                   setCurrentProject(item);
                 }}
                 onLayerStylesChanged={async (styles) => {
@@ -4156,9 +4175,9 @@ const AppContent: React.FC = () => {
               </div>
 
               <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
-                {projectQuestionnaires.length === 0 ? (
+                {featureProjectQuestionnaires.length === 0 ? (
                   <div className="text-center py-6 text-slate-400 text-xs">
-                    No active questionnaires found for this project.
+                    No active questionnaire is available for this layer. Check the layer assignment and questionnaire status.
                   </div>
                 ) : (
               featureProjectQuestionnaires.map((q) => (
@@ -4285,6 +4304,7 @@ const AppContent: React.FC = () => {
             >
               <FeatureEditor
                 feature={selectedFeature}
+                layerStyle={selectedFeatureLayerName ? (selectedFeatureProject?.mapLayerStyles?.[`feature:${selectedFeatureLayerName}`] || mapProjectLayerStyles[`feature:${selectedFeatureLayerName}`]) : undefined}
                 allFeatures={features}
                 wardOptions={wardOptionsForEditor}
                 categoryOptions={categoryOptionsForEditor}
@@ -4301,7 +4321,7 @@ const AppContent: React.FC = () => {
                   if (isAdmin) setAdminFeaturesRefreshKey((k) => k + 1);
                   else setEnumeratorFeaturesRefreshKey((k) => k + 1);
                 }}
-                onFillQuestionnaire={handleStartQuestionnaireForFeature}
+                onFillQuestionnaire={selectedFeatureCanFillQuestionnaire ? handleStartQuestionnaireForFeature : undefined}
               />
             </PanelSuspense>
           </div>

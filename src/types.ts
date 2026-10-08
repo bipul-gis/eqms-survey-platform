@@ -169,6 +169,8 @@ export interface Project {
   surveyLayerActions?: Record<string, SurveyLayerAction>;
   /** Layer fields copied into linked questionnaire responses. */
   surveyLayerQuestionFields?: Record<string, string[]>;
+  /** Optional questionnaire chosen for each surveyed map layer. */
+  surveyLayerQuestionnaireIds?: Record<string, string>;
   /** Admin-defined map symbology shared with enumerator devices. */
   mapLayerStyles?: Record<string, import('./lib/mapLayerSettings').MapLayerStyle>;
   /** Polygon boundary layer used to assign enumerator work areas. */

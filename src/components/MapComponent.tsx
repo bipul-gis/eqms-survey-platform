@@ -1520,7 +1520,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {importedZoneLayers?.map((zoneLayer) => {
           if (zoneLayerVisibility[zoneLayer.id] === false) return null;
           const style = getLayerStyle('zone', zoneLayer.id, zoneLayer.projectId);
-          if (mapZoom < style.showFromZoom) return null;
           return (
           <React.Fragment key={`zone-layer-${zoneLayer.id}`}>
             <ScaleAwareZoneLayer
@@ -1547,7 +1546,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {(!importedZoneLayers?.length) && showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
           <>
             <FitToZoneBoundaries data={zoneBoundaries} fitKey={zoneFitKey} />
-            {mapZoom >= fallbackZoneStyle.showFromZoom && <ScaleAwareZoneLayer
+            <ScaleAwareZoneLayer
               data={zoneBoundaries}
               color={fallbackZoneStyle.boundaryColor}
               fillColor={fallbackZoneStyle.fillColor}
@@ -1564,7 +1563,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               projectId={projectId}
               interactive={surveyLayerKeyMatches(activeSurveyLayerKeys, `zone:${String(zoneBoundaries.features[0]?.properties?.__layerId || '')}`)}
               onFeatureSelect={onSurveyActionRequest}
-            />}
+            />
           </>
         )}
 
@@ -1580,7 +1579,6 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === `feature:${layerName}`.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
           const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || projectId || '');
           const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
-          if (layerStyle && mapZoom < layerStyle.showFromZoom) return null;
           const fillColor = layerStyle?.fillColor || color;
           const boundaryColor = layerStyle?.boundaryColor || color;
           const borderWidth = layerStyle?.borderWidth;

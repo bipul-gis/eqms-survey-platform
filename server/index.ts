@@ -313,8 +313,13 @@ app.patch('/api/geosurvey-projects/:id/survey-layers', requireAdmin, async (req,
     res.status(400).json({ error: 'surveyLayerQuestionFields must map layer keys to field name arrays.' });
     return;
   }
+  const rawQuestionnaireIds = req.body?.surveyLayerQuestionnaireIds;
+  if (rawQuestionnaireIds !== undefined && (!rawQuestionnaireIds || typeof rawQuestionnaireIds !== 'object' || Array.isArray(rawQuestionnaireIds) || Object.values(rawQuestionnaireIds).some((id) => typeof id !== 'string'))) {
+    res.status(400).json({ error: 'surveyLayerQuestionnaireIds must map layer keys to questionnaire IDs.' });
+    return;
+  }
   try {
-    const saved = await updateGeosurveyProjectSurveyLayers(req.params.id, raw, rawActions || {}, rawQuestionFields || {});
+    const saved = await updateGeosurveyProjectSurveyLayers(req.params.id, raw, rawActions || {}, rawQuestionFields || {}, rawQuestionnaireIds || {});
     if (!saved) {
       res.status(404).json({ error: 'Project not found or not active in GeoSurvey.' });
       return;

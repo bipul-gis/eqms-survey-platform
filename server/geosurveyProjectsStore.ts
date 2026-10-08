@@ -217,7 +217,8 @@ export async function updateGeosurveyProjectSurveyLayers(
   projectId: string,
   layerKeys: string[],
   layerActions: Record<string, 'edit' | 'questionnaire' | 'both'> = {},
-  questionFields: Record<string, string[]> = {}
+  questionFields: Record<string, string[]> = {},
+  questionnaireIds: Record<string, string> = {}
 ): Promise<GeosurveyProjectRecord | null> {
   const existing = await getGeosurveyProject(projectId);
   if (!existing) return null;
@@ -230,6 +231,7 @@ export async function updateGeosurveyProjectSurveyLayers(
     activeSurveyLayerKeys: normalized,
     surveyLayerActions: Object.fromEntries(Object.entries(layerActions).filter(([, action]) => ['edit', 'questionnaire', 'both'].includes(action))),
     surveyLayerQuestionFields: Object.fromEntries(Object.entries(questionFields).map(([key, fields]) => [key, [...new Set(fields.map((field) => String(field).trim()).filter(Boolean))]])),
+    surveyLayerQuestionnaireIds: Object.fromEntries(Object.entries(questionnaireIds).map(([key, id]) => [String(key).trim(), String(id).trim()]).filter(([key, id]) => key && id)),
   });
   const { rows } = await pool.query(
     `UPDATE geosurvey_projects

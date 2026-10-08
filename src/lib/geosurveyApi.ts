@@ -192,10 +192,10 @@ export const geosurveyApi = {
       }
     ),
 
-  updateGeosurveyProjectSurveyLayers: (projectId: string, activeSurveyLayerKeys: string[], surveyLayerActions: Record<string, 'edit' | 'questionnaire' | 'both'>, surveyLayerQuestionFields: Record<string, string[]>) =>
+  updateGeosurveyProjectSurveyLayers: (projectId: string, activeSurveyLayerKeys: string[], surveyLayerActions: Record<string, 'edit' | 'questionnaire' | 'both'>, surveyLayerQuestionFields: Record<string, string[]>, surveyLayerQuestionnaireIds: Record<string, string>) =>
     apiFetch<{ item: import('../types').Project }>(
       `/api/geosurvey-projects/${projectId}/survey-layers`,
-      { method: 'PATCH', body: JSON.stringify({ activeSurveyLayerKeys, surveyLayerActions, surveyLayerQuestionFields }) }
+      { method: 'PATCH', body: JSON.stringify({ activeSurveyLayerKeys, surveyLayerActions, surveyLayerQuestionFields, surveyLayerQuestionnaireIds }) }
     ),
 
   updateGeosurveyProjectMapLayerStyles: (projectId: string, mapLayerStyles: Record<string, import('../lib/mapLayerSettings').MapLayerStyle>, geospatialAssignmentLayerId?: string | null, geospatialAssignmentField?: string | null) =>

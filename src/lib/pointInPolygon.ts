@@ -133,6 +133,56 @@ function distanceToGeometryBoundaryMeters(
   return nearest;
 }
 
+/** Distance from a WGS84 point to a GeoJSON geometry in meters (zero if inside a polygon). */
+export function distanceToGeometryMeters(
+  lng: number,
+  lat: number,
+  geometry: { type?: string; coordinates?: unknown } | null | undefined
+): number {
+  if (!Number.isFinite(lng) || !Number.isFinite(lat) || !geometry?.type || geometry.coordinates == null) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (pointInGeometry(lng, lat, geometry)) return 0;
+  if (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') {
+    return distanceToGeometryBoundaryMeters(lng, lat, geometry);
+  }
+  const coordinates = geometry.coordinates;
+  const points: number[][] = [];
+  const walk = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    if (typeof value[0] === 'number' && typeof value[1] === 'number') points.push(value as number[]);
+    else value.forEach(walk);
+  };
+  walk(coordinates);
+  if (geometry.type === 'Point') {
+    if (!points.length) return Number.POSITIVE_INFINITY;
+    const earthRadiusMeters = 6_371_008.8;
+    const radians = Math.PI / 180;
+    const dLat = (points[0][1] - lat) * radians;
+    const dLng = (points[0][0] - lng) * radians;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * radians) * Math.cos(points[0][1] * radians) * Math.sin(dLng / 2) ** 2;
+    return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+  if (geometry.type === 'LineString' || geometry.type === 'MultiLineString' || geometry.type === 'MultiPoint') {
+    if (geometry.type === 'MultiPoint' || geometry.type === 'LineString') {
+      if (geometry.type === 'MultiPoint') return Math.min(...points.map((point) => distanceToSegmentMeters(lng, lat, point, point)));
+      return points.length === 1 ? distanceToSegmentMeters(lng, lat, points[0], points[0]) : Math.min(...points.slice(1).map((point, index) => distanceToSegmentMeters(lng, lat, points[index], point)));
+    }
+    const lines = coordinates as unknown[];
+    return Math.min(...lines.map((line) => {
+      const linePoints: number[][] = [];
+      const collect = (value: unknown) => {
+        if (!Array.isArray(value)) return;
+        if (typeof value[0] === 'number' && typeof value[1] === 'number') linePoints.push(value as number[]);
+        else value.forEach(collect);
+      };
+      collect(line);
+      return linePoints.length === 1 ? distanceToSegmentMeters(lng, lat, linePoints[0], linePoints[0]) : Math.min(...linePoints.slice(1).map((point, index) => distanceToSegmentMeters(lng, lat, linePoints[index], point)));
+    }));
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 /** Finds an assigned zone containing the point or within the allowed distance outside its edge. */
 export function findZoneWithinDistance<
   T extends { geometry: unknown; assignValue?: string | null },

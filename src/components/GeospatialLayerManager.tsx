@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Layers, Trash2, X, Loader2, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import type { GeoFeature, SurveyLayerAction, ZoneLayer, ZonePolygon } from '../types';
+import type { Questionnaire } from '../types';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import {
@@ -16,6 +17,8 @@ interface Props {
   activeSurveyLayerKeys: string[];
   surveyLayerActions: Record<string, SurveyLayerAction>;
   surveyLayerQuestionFields: Record<string, string[]>;
+  surveyLayerQuestionnaireIds: Record<string, string>;
+  questionnaires: Questionnaire[];
   projectStyles: Record<string, MapLayerStyle>;
   assignmentLayerId?: string | null;
   assignmentField?: string | null;
@@ -24,7 +27,7 @@ interface Props {
   onClose: () => void;
   onFeaturesChanged: () => void;
   onZonesChanged: () => void;
-  onActiveSurveyLayersChanged: (layerKeys: string[], actions: Record<string, SurveyLayerAction>, questionFields: Record<string, string[]>) => Promise<void>;
+  onActiveSurveyLayersChanged: (layerKeys: string[], actions: Record<string, SurveyLayerAction>, questionFields: Record<string, string[]>, questionnaireIds: Record<string, string>) => Promise<void>;
   onLayerStylesChanged: (styles: Record<string, MapLayerStyle>) => Promise<void>;
   onAssignmentLayerChanged: (layerId: string | null, field: string | null) => Promise<void>;
 }
@@ -54,6 +57,8 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   activeSurveyLayerKeys,
   surveyLayerActions,
   surveyLayerQuestionFields,
+  surveyLayerQuestionnaireIds,
+  questionnaires,
   projectStyles,
   assignmentLayerId,
   assignmentField,
@@ -98,6 +103,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const [activeSurveyKeys, setActiveSurveyKeys] = useState(activeSurveyLayerKeys);
   const [layerActions, setLayerActions] = useState(surveyLayerActions);
   const [linkedQuestionFields, setLinkedQuestionFields] = useState(surveyLayerQuestionFields);
+  const [linkedQuestionnaireIds, setLinkedQuestionnaireIds] = useState(surveyLayerQuestionnaireIds);
   const style: MapLayerStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(selected?.kind === 'zone' ? { labelsVisible: true } : {}), ...(selected ? styles[selected.key] : {}) };
   const featureZoomDraftKey = selected ? `${selected.key}:showFromZoom` : '';
   const labelZoomDraftKey = selected ? `${selected.key}:labelsFromZoom` : '';
@@ -116,6 +122,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   useEffect(() => setActiveSurveyKeys(activeSurveyLayerKeys), [activeSurveyLayerKeys]);
   useEffect(() => setLayerActions(surveyLayerActions), [surveyLayerActions]);
   useEffect(() => setLinkedQuestionFields(surveyLayerQuestionFields), [surveyLayerQuestionFields]);
+  useEffect(() => setLinkedQuestionnaireIds(surveyLayerQuestionnaireIds), [surveyLayerQuestionnaireIds]);
   useEffect(() => setStyles((current) => ({ ...current, ...projectStyles })), [projectStyles]);
   useEffect(() => {
     if (!projectId || migratedProjectStylesRef.current === projectId) return;
@@ -235,7 +242,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     setError(null);
     setSavingSurveyLayer(true);
     try {
-      await onActiveSurveyLayersChanged(next, layerActions, linkedQuestionFields);
+      await onActiveSurveyLayersChanged(next, layerActions, linkedQuestionFields, linkedQuestionnaireIds);
     } catch (e) {
       setActiveSurveyKeys(activeSurveyKeys);
       setError(e instanceof Error ? e.message : String(e));
@@ -251,7 +258,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     setSavingSurveyLayer(true);
     setError(null);
     try {
-      await onActiveSurveyLayersChanged(activeSurveyKeys, next, linkedQuestionFields);
+      await onActiveSurveyLayersChanged(activeSurveyKeys, next, linkedQuestionFields, linkedQuestionnaireIds);
     } catch (e) {
       setLayerActions(layerActions);
       setError(e instanceof Error ? e.message : String(e));
@@ -269,9 +276,27 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     setSavingSurveyLayer(true);
     setError(null);
     try {
-      await onActiveSurveyLayersChanged(activeSurveyKeys, layerActions, next);
+      await onActiveSurveyLayersChanged(activeSurveyKeys, layerActions, next, linkedQuestionnaireIds);
     } catch (e) {
       setLinkedQuestionFields(linkedQuestionFields);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSurveyLayer(false);
+    }
+  };
+
+  const changeLayerQuestionnaire = async (layerKey: string, questionnaireId: string) => {
+    if (savingSurveyLayer) return;
+    const next = { ...linkedQuestionnaireIds };
+    if (questionnaireId) next[layerKey] = questionnaireId;
+    else delete next[layerKey];
+    setLinkedQuestionnaireIds(next);
+    setSavingSurveyLayer(true);
+    setError(null);
+    try {
+      await onActiveSurveyLayersChanged(activeSurveyKeys, layerActions, linkedQuestionFields, next);
+    } catch (e) {
+      setLinkedQuestionnaireIds(linkedQuestionnaireIds);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSavingSurveyLayer(false);
@@ -296,9 +321,12 @@ export const GeospatialLayerManager: React.FC<Props> = ({
           delete nextActions[target.surveyKey];
           const nextQuestionFields = { ...linkedQuestionFields };
           delete nextQuestionFields[target.surveyKey];
-          await onActiveSurveyLayersChanged(next, nextActions, nextQuestionFields);
+          const nextQuestionnaireIds = { ...linkedQuestionnaireIds };
+          delete nextQuestionnaireIds[target.surveyKey];
+          await onActiveSurveyLayersChanged(next, nextActions, nextQuestionFields, nextQuestionnaireIds);
           setLayerActions(nextActions);
           setLinkedQuestionFields(nextQuestionFields);
+          setLinkedQuestionnaireIds(nextQuestionnaireIds);
           setActiveSurveyKeys(next);
         }
         onFeaturesChanged();
@@ -309,9 +337,12 @@ export const GeospatialLayerManager: React.FC<Props> = ({
         delete nextActions[target.surveyKey];
         const nextQuestionFields = { ...linkedQuestionFields };
         delete nextQuestionFields[target.surveyKey];
-        await onActiveSurveyLayersChanged(next, nextActions, nextQuestionFields);
+        const nextQuestionnaireIds = { ...linkedQuestionnaireIds };
+        delete nextQuestionnaireIds[target.surveyKey];
+        await onActiveSurveyLayersChanged(next, nextActions, nextQuestionFields, nextQuestionnaireIds);
         setLayerActions(nextActions);
         setLinkedQuestionFields(nextQuestionFields);
+        setLinkedQuestionnaireIds(nextQuestionnaireIds);
         setActiveSurveyKeys(next);
       }
       if (selectedKey === target.key) setSelectedKey('');
@@ -372,6 +403,14 @@ export const GeospatialLayerManager: React.FC<Props> = ({
             <main className="min-h-0 flex-1 overflow-y-auto p-3">
               {error && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
               {busy && <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-red-100"><div className="h-full w-1/3 animate-pulse rounded-full bg-red-500" /></div>}
+              {activeSurveyKeys.includes(selected.surveyKey) && <section className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/40 p-3">
+                <label className="block text-[10px] font-bold uppercase tracking-wide text-emerald-900" htmlFor="layer-questionnaire">Questionnaire for this layer</label>
+                <select id="layer-questionnaire" value={linkedQuestionnaireIds[selected.surveyKey] || ''} disabled={busy || savingSurveyLayer} onChange={(event) => void changeLayerQuestionnaire(selected.surveyKey, event.target.value)} className="mt-2 w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs text-slate-800 disabled:opacity-50">
+                  <option value="">Let enumerator choose</option>
+                  {questionnaires.map((questionnaire) => <option key={questionnaire.id} value={questionnaire.id}>{questionnaire.title || questionnaire.id}</option>)}
+                </select>
+                <p className="mt-1 text-[10px] text-slate-500">Choose which active project questionnaire opens from this map layer.</p>
+              </section>}
               <section className="mb-4 rounded-xl border border-slate-200 p-3">
                 <button type="button" aria-expanded={showLayerManagement} onClick={() => setShowLayerManagement((shown) => !shown)} className="flex w-full items-center gap-2 text-left text-[10px] font-bold uppercase tracking-wide text-slate-600">
                   {showLayerManagement ? <ChevronDown size={14} /> : <ChevronRight size={14} />}Layer management
@@ -432,11 +471,6 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   </div>
                   <label className="text-[10px] font-semibold text-slate-600">Fill opacity · {Math.round(style.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={style.opacity} onChange={(e) => changeStyle({ opacity: Number(e.target.value) })} className="mt-2 block w-full" /></label>
                   <label className="text-[10px] font-semibold text-slate-600">Label field<select value={style.labelField} onChange={(e) => changeStyle({ labelField: e.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-2 py-2 text-xs"><option value="">Use layer default</option>{columns.map((field) => <option key={field} value={field}>{field}</option>)}</select></label>
-                  <label className="flex items-center gap-2 text-[10px] font-semibold text-slate-600">
-                    <input type="checkbox" checked={style.showFromZoom > 0} onChange={(e) => changeStyle({ showFromZoom: e.target.checked ? 17 : 0 })} />
-                    <span className="flex-1">Show features only from zoom</span>
-                    {style.showFromZoom > 0 && <input aria-label="Show features from zoom level" type="number" min="0" max="30" step="1" value={zoomDrafts[featureZoomDraftKey] ?? style.showFromZoom} onChange={(e) => setZoomDrafts((current) => ({ ...current, [featureZoomDraftKey]: e.target.value }))} onBlur={() => commitZoomDraft(featureZoomDraftKey, 'showFromZoom', style.showFromZoom)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} className="h-8 w-14 rounded-lg border border-slate-200 px-2 text-xs font-semibold" />}
-                  </label>
                   <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(6rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
                     <label className="flex items-center gap-2 whitespace-nowrap text-[10px] font-semibold text-slate-600">
                       <input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />

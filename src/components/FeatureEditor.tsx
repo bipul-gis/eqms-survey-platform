@@ -20,6 +20,8 @@ import { formatChangeAtReadable } from '../lib/formatChangeAt';
 import { appendAdminRm } from '../lib/adminRm';
 import { stampsForUpdatedBy } from '../lib/featureUpdatedBy';
 import { updateFeature } from '../lib/featuresApi';
+import { DEFAULT_MAP_LAYER_STYLE, type MapLayerStyle } from '../lib/mapLayerSettings';
+import { distanceToGeometryMeters } from '../lib/pointInPolygon';
 
 // Match the attribute order in MapComponent popup (FID / Zone hidden but still stored on save)
 const LANDMARK_ATTRIBUTE_ORDER = ['name', 'Category', 'Type', 'Ownership', 'Ward_Name'] as const;
@@ -127,6 +129,9 @@ const getOrderedAttributes = (
   return [...ordered, ...extra] as Array<[string, any]>;
 };
 
+const normalizeEditorHex = (value: string | undefined, fallback: string) =>
+  value && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+
 interface FeatureEditorProps {
   feature: GeoFeature;
   allFeatures?: GeoFeature[];
@@ -143,6 +148,7 @@ interface FeatureEditorProps {
   onPersistSuccess?: () => void;
   /** Triggered when the user wants to fill/link a questionnaire for this geospatial feature */
   onFillQuestionnaire?: (feature: GeoFeature) => void;
+  layerStyle?: MapLayerStyle;
 }
 
 export const FeatureEditor: React.FC<FeatureEditorProps> = ({
@@ -157,9 +163,10 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   onCreateFeature,
   onPersistSuccess,
   onFillQuestionnaire,
+  layerStyle,
 }) => {
   const { user, userProfile } = useAuth();
-  const { location } = useGeoLocation();
+  const { location, requestLocation } = useGeoLocation();
   const [attributes, setAttributes] = useState<Record<string, any>>(feature.attributes);
   const [status, setStatus] = useState<FeatureStatus>(feature.status);
   const [isSaving, setIsSaving] = useState(false);
@@ -228,14 +235,20 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     setCustomOwnership(ownership && !dynamicOwnershipOptions.includes(ownership) ? ownership : '');
   }, [feature, dynamicOwnershipOptions, dynamicTypeOptionsByCategory, mergedCategoryOptions]);
 
+  useEffect(() => {
+    if (!isAdmin && !isNewFeature) requestLocation();
+  }, [feature.id, isAdmin, isNewFeature, requestLocation]);
+
   const setAttributeValue = (key: string, value: string) => {
     const nextValue = POSITIVE_INTEGER_ONLY_FIELDS.has(key)
       ? value.replace(/[^\d]/g, '')
       : value;
     setAttributes((prev) => {
       const nextAttributes = { ...prev, [key]: nextValue };
-      if (!isNewFeature) {
-        setStatus('verified');
+    if (!isNewFeature) {
+        // Default changed records to Verified, while allowing the user to
+        // explicitly choose Pending or Rejected before saving.
+        setStatus((current) => current === feature.status || current === 'verified' ? 'verified' : current);
       } else if (feature.type === 'point') {
         const draftFeature: GeoFeature = { ...feature, attributes: nextAttributes };
         setStatus(isLandmarkPointFormComplete(draftFeature) ? 'verified' : 'pending');
@@ -250,6 +263,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   const [showAddAttr, setShowAddAttr] = useState(false);
 
   const selectedCategory = String(attributes?.Category ?? '').trim();
+  const editorStyle = { ...DEFAULT_MAP_LAYER_STYLE, ...(layerStyle || {}) };
   const typeOptions = dynamicTypeOptionsByCategory[selectedCategory] || [];
 
   const validateOtherInputs = () => {
@@ -312,6 +326,23 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
 
   const handleSave = async () => {
     if (!user) return;
+    if (!isAdmin && !isNewFeature) {
+      if (!location || !Number.isFinite(location.lat) || !Number.isFinite(location.lng)) {
+        requestLocation();
+        alert('Current GPS location is required to edit this feature. Enable location and try again.');
+        return;
+      }
+      if (!Number.isFinite(location.accuracy) || location.accuracy > 50) {
+        requestLocation();
+        alert(`GPS accuracy must be 50 m or better before editing. Current accuracy: ${Math.round(location.accuracy)} m.`);
+        return;
+      }
+      const distance = distanceToGeometryMeters(location.lng, location.lat, feature.geometry);
+      if (distance > 50) {
+        alert(`You must be within 50 m of the selected feature to save attribute edits. Current distance: ${Math.round(distance)} m.`);
+        return;
+      }
+    }
     // Admin-only: allow downgrading a record back to `pending` without enforcing attribute completeness.
     // Enumerators (and any verified action) must still pass validation.
     const isAdminDowngradeToPending =
@@ -324,9 +355,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
     try {
       const nextStatus: FeatureStatus = isNewFeature
         ? (feature.type === 'point' && isLandmarkPointFormComplete({ ...feature, attributes }) ? 'verified' : 'pending')
-        : isDirty
-          ? 'verified'
-          : status;
+        : status;
       const verificationJustApplied =
         !isNewFeature && nextStatus === 'verified' && feature.status !== 'verified';
       const shouldStampChangeMeta = !isNewFeature && (isDirty || verificationJustApplied);
@@ -397,6 +426,18 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   };
 
   const handleReject = async () => {
+    if (!isAdmin) {
+      if (!location || !Number.isFinite(location.lat) || !Number.isFinite(location.lng) || !Number.isFinite(location.accuracy) || location.accuracy > 50) {
+        requestLocation();
+        alert('A current GPS location with accuracy of 50 m or better is required to reject this feature.');
+        return;
+      }
+      const distance = distanceToGeometryMeters(location.lng, location.lat, feature.geometry);
+      if (distance > 50) {
+        alert(`You must be within 50 m of the selected feature to reject it. Current distance: ${Math.round(distance)} m.`);
+        return;
+      }
+    }
     if (!window.confirm('Are you sure you want to reject this feature?')) return;
     try {
       if (!user) return;
@@ -463,7 +504,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Status</label>
           {!isNewFeature && (
             <p className="text-[10px] text-gray-500 mb-2 leading-snug">
-              Any change to attributes below switches to <span className="font-semibold text-green-700">Verified</span>. Saving after an attribute edit always stores Verified. Use Pending only when you did not change attributes, or use Reject for rejection.
+              Attribute edits default to <span className="font-semibold text-green-700">Verified</span>. You can choose Pending or Rejected before saving.
             </p>
           )}
           <div className="grid grid-cols-3 gap-2">
@@ -509,6 +550,12 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
               </button>
             )}
           </div>
+
+          {layerStyle && <div className="mb-3 flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2.5 py-2">
+            <span className="h-5 w-5 shrink-0 rounded border" style={{ backgroundColor: normalizeEditorHex(editorStyle.fillColor, DEFAULT_MAP_LAYER_STYLE.fillColor), borderColor: normalizeEditorHex(editorStyle.boundaryColor, DEFAULT_MAP_LAYER_STYLE.boundaryColor), opacity: editorStyle.opacity }} />
+            <span className="text-[10px] text-gray-600">Layer symbology</span>
+            <span className="ml-auto flex items-center gap-1 text-[9px] text-gray-500"><i className="h-2.5 w-2.5 rounded-full border" style={{ backgroundColor: normalizeEditorHex(editorStyle.labelColor, DEFAULT_MAP_LAYER_STYLE.labelColor) }} />Label <i className="ml-1 h-2.5 w-2.5 rounded-full border" style={{ backgroundColor: normalizeEditorHex(editorStyle.haloColor, DEFAULT_MAP_LAYER_STYLE.haloColor) }} />Halo</span>
+          </div>}
 
           {showAddAttr && (
             <div className="mb-3 p-2 bg-blue-50/70 border border-blue-100 rounded-lg flex items-center gap-2">
