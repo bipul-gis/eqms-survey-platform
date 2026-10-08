@@ -4058,6 +4058,57 @@ const OPERATORS: { value: LogicOperator; label: string; takesValue: boolean }[] 
   { value: 'isNotEmpty',   label: 'is not empty',    takesValue: false }
 ];
 
+const LogicQuestionPicker: React.FC<{
+  questions: Question[];
+  questionNumbers: Map<string, string>;
+  value: string;
+  onChange: (id: string) => void;
+}> = ({ questions, questionNumbers, value, onChange }) => {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matches = questions.filter((question) => {
+    const number = questionNumbers.get(question.id) ?? '';
+    const label = question.question || question.key || question.id;
+    return !normalizedQuery || `${number} ${label} ${question.key ?? ''} ${question.id}`
+      .toLocaleLowerCase().includes(normalizedQuery);
+  });
+  const selected = questions.find((question) => question.id === value);
+
+  return (
+    <div className="flex-1 min-w-0 space-y-1">
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        className="w-full text-xs px-1.5 py-1 border border-slate-200 rounded bg-white"
+        placeholder="Search by question number or text…"
+        aria-label="Search display logic questions"
+      />
+      <div className="max-h-36 overflow-y-auto rounded border border-slate-200 bg-white">
+        {matches.length === 0 ? (
+          <p className="px-2 py-1.5 text-[10px] text-slate-400">No matching questions.</p>
+        ) : matches.map((question) => (
+          <button
+            key={question.id}
+            type="button"
+            onClick={() => onChange(question.id)}
+            className={`flex w-full items-center gap-2 border-b border-slate-100 px-2 py-1.5 text-left last:border-b-0 hover:bg-violet-50 ${question.id === value ? 'bg-violet-50' : ''}`}
+          >
+            <span className="shrink-0 rounded bg-violet-100 px-1 py-0.5 font-mono text-[9px] font-semibold text-violet-800">
+              {questionNumbers.get(question.id) ?? '—'}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[11px] text-slate-700">
+              {question.question || question.key || question.id}
+            </span>
+            {question.key && <span className="max-w-24 truncate font-mono text-[9px] text-slate-400">{question.key}</span>}
+          </button>
+        ))}
+      </div>
+      {selected && <p className="truncate text-[9px] text-slate-400">Selected: {questionNumbers.get(selected.id) || ''} {selected.question}</p>}
+    </div>
+  );
+};
+
 const LogicPanel: React.FC<{
   question: Question;
   allQuestions: Question[];
@@ -4069,6 +4120,10 @@ const LogicPanel: React.FC<{
 
   const referenceable = allQuestions.filter(
     (q) => q.id !== question.id && q.type !== 'section'
+  );
+  const questionNumbers = useMemo(
+    () => buildQuestionNumbering(allQuestions).questionNumbers,
+    [allQuestions]
   );
 
   const addCondition = () => {
@@ -4147,17 +4202,12 @@ const LogicPanel: React.FC<{
                   className="border border-slate-200 rounded-md p-2 bg-slate-50 space-y-1"
                 >
                   <div className="flex items-center gap-1">
-                    <select
+                    <LogicQuestionPicker
+                      questions={referenceable}
+                      questionNumbers={questionNumbers}
                       value={cond.questionId}
-                      onChange={(e) => updateCond(cond.id, { questionId: e.target.value })}
-                      className="flex-1 text-xs px-1.5 py-1 border border-slate-200 rounded bg-white"
-                    >
-                      {referenceable.map((q) => (
-                        <option key={q.id} value={q.id}>
-                          {q.question.slice(0, 40) || `(unnamed) ${q.id}`}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(id) => updateCond(cond.id, { questionId: id })}
+                    />
                   <button
                       onClick={() => removeCond(cond.id)}
                       className="p-1 text-red-400 hover:text-red-600"
