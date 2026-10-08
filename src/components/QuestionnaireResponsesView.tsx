@@ -12,6 +12,8 @@ import { assignedSlumsForProject, formatAssignedSlumLabels } from '../lib/assign
 import { assignedZoneValuesFromProfile, zonesToGeoJson } from '../lib/assignedZones';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
+import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { buildQuestionNumbering } from '../lib/questionNumbering';
 import { useAuth } from './AuthProvider';
 import { Map as MapIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import type { SurveyLocationMarker } from './MapComponent';
@@ -1763,9 +1765,12 @@ const ResponseDetailDialog: React.FC<{
   onDelete
 }) => {
   const enumFields = questionnaire.enumeratorInfo?.fields || [];
-  const questions = (questionnaire.questions || []).filter(
-    (q) => q.type !== 'section'
+  const allQuestions = normalizeQuestionnaireSectionQuestions(
+    questionnaire.questions || [],
+    questionnaire.sections || []
   );
+  const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
+  const questions = allQuestions.filter((q) => q.type !== 'section');
 
   return (
     <div className="fixed inset-0 z-[1008] bg-slate-900/60 flex items-center justify-center p-4">
@@ -1899,13 +1904,15 @@ const ResponseDetailDialog: React.FC<{
               <div className="border border-slate-200 rounded-lg overflow-hidden">
                 <table className="w-full text-sm">
                   <tbody>
-                    {questions.map((q, i) => (
+                    {questions.map((q) => (
                       <tr
                         key={q.id}
                         className="border-t first:border-t-0 border-slate-100"
                       >
                         <th className="text-left text-xs font-semibold text-slate-600 align-top bg-slate-50 px-3 py-2 w-2/5">
-                          <span className="text-slate-400 mr-1">Q{i + 1}.</span>
+                          <span className="text-slate-400 mr-1">
+                            {questionNumbers.get(q.id) || 'Q'}.
+                          </span>
                           {q.question || q.key || q.id}
                           {q.type === 'responseId' && (
                             <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1 py-0.5">

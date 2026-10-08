@@ -1593,10 +1593,12 @@ export const RuntimeQuestion: React.FC<{
 
   if (question.type === 'section') {
     return (
-      <div className="border-t-2 border-indigo-200 pt-3">
-        <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Section</div>
-        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language, question.questionTranslations)}</h4>
-        {question.description && <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>}
+      <div className="rounded-lg border-l-4 border-indigo-500 bg-gradient-to-r from-indigo-50 to-sky-50 px-4 py-3">
+        <div className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
+          Section {numberLabel || ''}
+        </div>
+        <h4 className="text-base font-bold text-indigo-950">{getLocalizedText(question.question, language, question.questionTranslations)}</h4>
+        {question.description && <p className="text-xs text-indigo-800/80 mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>}
       </div>
     );
   }

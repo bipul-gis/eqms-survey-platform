@@ -71,6 +71,7 @@ import {
 } from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer } from '../lib/choiceAnswers';
 import {
   matrixAllRowsAnswered,
@@ -533,6 +534,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       questionnaire.sections || []
     ),
     [questionnaire.questions, questionnaire.sections]
+  );
+  const numbering = useMemo(
+    () => buildQuestionNumbering(surveyQuestions),
+    [surveyQuestions]
   );
 
   // Visible questions respect display logic AND the consent gate.
@@ -1620,28 +1625,11 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           <p className="text-sm text-slate-500 italic">No questions to show.</p>
         ) : (
           <>
-            {/* Hierarchical render: top-level questions first, each
-                followed by their sub-questions inline (indented). The
-                numbering pre-computed here mirrors what the builder
-                shows (Q 1, then 1.a / 1.b under Q 1). */}
+            {/* Show stable section.question numbering; logic-gated questions
+                receive nested letters beneath their controlling question. */}
             {(() => {
-              type Slot = { q: Question; label: string; depth: 0 | 1 };
-              const slots: Slot[] = [];
-              let topNum = 0;
-              for (const q of visibleQuestions) {
-                if (q.parentId) continue;
-                if (q.type !== 'section') topNum += 1;
-                slots.push({ q, label: String(topNum), depth: 0 });
-                if (q.type === 'section') continue;
-                const children = visibleQuestions.filter(
-                  (c) => c.parentId === q.id && c.type !== 'section'
-                );
-                children.forEach((c, ci) => {
-                  const letter = String.fromCharCode(97 + ci);
-                  slots.push({ q: c, label: `${topNum}.${letter}`, depth: 1 });
-                });
-              }
-              return slots.map(({ q, label, depth }) => {
+              const slots = buildVisibleQuestionSlots(visibleQuestions, numbering);
+              return slots.map(({ question: q, label, depth }) => {
                 const link = q.featureAttributeLink;
                 const linkedLayerMatches = Boolean(
                   link &&
@@ -1676,7 +1664,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                     >
                       <RuntimeQuestion
                         index={0}
-                        numberLabel={q.type === 'section' ? '' : label}
+                        numberLabel={label}
                         question={q}
                         value={responses[q.id]}
                         onChange={(v) => handleAnswer(q.id, v)}

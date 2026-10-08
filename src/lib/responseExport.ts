@@ -22,6 +22,8 @@ import {
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
 import { formatPhotoAnswerLabel, collectResponsePhotoAttachment, type ExportPhotoAttachment } from './photoAnswers';
+import { normalizeQuestionnaireSectionQuestions } from './questionnaireSections';
+import { buildQuestionNumbering } from './questionNumbering';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -224,7 +226,10 @@ type ResponsesExportColumn =
  * omitted — they carry no answers.
  */
 export const getExportOrderedQuestions = (questionnaire: Questionnaire): Question[] => {
-  const all = questionnaire.questions || [];
+  const all = normalizeQuestionnaireSectionQuestions(
+    questionnaire.questions || [],
+    questionnaire.sections || []
+  );
   const ordered: Question[] = [];
   const seen = new Set<string>();
 
@@ -326,14 +331,19 @@ const buildResponsesExportColumnsForRows = (
   return columns;
 };
 
-const responsesExportColumnBaseHeader = (col: ResponsesExportColumn): string => {
+const responsesExportColumnBaseHeader = (
+  col: ResponsesExportColumn,
+  questionNumbers: Map<string, string>
+): string => {
+  const number = questionNumbers.get(col.question.id);
   if (col.kind === 'question') {
     const qq = col.question;
-    return qq.question || qq.key || qq.id;
+    const label = qq.question || qq.key || qq.id;
+    return number ? `${number}. ${label}` : label;
   }
   const qq = col.question;
   const base = qq.question || qq.key || qq.id;
-  return `${base} — ${col.row}`;
+  return `${number ? `${number}. ` : ''}${base} — ${col.row}`;
 };
 
 /**
@@ -384,7 +394,8 @@ const buildUniqueColumnHeaders = (
   reserved: Iterable<string>
 ): string[] => {
   const branchingId = inferBranchingPrefixQuestionId(allQuestions);
-  const base = cols.map(responsesExportColumnBaseHeader);
+  const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
+  const base = cols.map((col) => responsesExportColumnBaseHeader(col, questionNumbers));
   const counts = new Map<string, number>();
   for (const b of base) counts.set(b, (counts.get(b) || 0) + 1);
   const seen = new Set<string>(reserved);

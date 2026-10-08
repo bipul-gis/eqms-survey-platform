@@ -28,6 +28,7 @@ import {
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import {
   collapseAccidentalResponseIdQuestions,
   formatResponseId,
@@ -1804,13 +1805,14 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                 // for questions, Section N for dividers) and `parent.a /
                 // .b / …` for children.
                 const rendered: React.ReactNode[] = [];
-                let qNum = 0;
-                let secNum = 0;
+                const numbering = buildQuestionNumbering(questions);
                 const topLevelOrder = questions.filter((x) => !x.parentId);
                 questions.forEach((q, idx) => {
                   if (q.parentId) return; // children handled inline
                   const isSection = q.type === 'section';
-                  const displayNumber = isSection ? ++secNum : ++qNum;
+                  const displayNumber = isSection
+                    ? String(numbering.sectionNumbers.get(q.id) ?? 1)
+                    : numbering.questionNumbers.get(q.id) ?? '';
                   const childrenWithIdx = questions
                     .map((c, ci) => ({ c, ci }))
                     .filter((x) => x.c.parentId === q.id);
@@ -1820,7 +1822,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                       key={q.id}
                       index={idx}
                       displayNumber={displayNumber}
-                      displayLabel={String(displayNumber)}
+                      displayLabel={displayNumber}
                       depth={0}
                       question={q}
                       allQuestions={questions}
@@ -1848,13 +1850,13 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                     />
                   );
                   childrenWithIdx.forEach(({ c, ci }, childOrder) => {
-                    const letter = String.fromCharCode(97 + childOrder); // a, b, c…
+                    const childLabel = numbering.questionNumbers.get(c.id) || displayNumber;
                     rendered.push(
                       <QuestionCard
                         key={c.id}
                         index={ci}
                         displayNumber={displayNumber}
-                        displayLabel={`${displayNumber}.${letter}`}
+                        displayLabel={childLabel}
                         depth={1}
                         question={c}
                         allQuestions={questions}
@@ -1989,7 +1991,7 @@ interface QuestionCardProps {
   /** Position in the raw `questions` array (used for move buttons). */
   index: number;
   /** Numeric position of the top-level question this card belongs to. */
-  displayNumber: number;
+  displayNumber: string;
   /** Pre-formatted label shown on the chip ("3" for parents, "3.a" for children). */
   displayLabel: string;
   /** 0 = top level, 1 = sub-question. */
@@ -2057,22 +2059,22 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
       onClick={onSelect}
       className={`bg-white rounded-xl border-2 transition-all cursor-pointer ${
         selected ? 'border-blue-500 shadow-md' : 'border-slate-200 hover:border-slate-300'
-      } ${isSection ? 'bg-indigo-50/30' : ''} ${
+      } ${isSection ? 'ml-3 border-l-4 border-l-indigo-500 border-indigo-200 bg-gradient-to-r from-indigo-50 via-white to-sky-50 shadow-sm' : ''} ${
         isChild ? 'ml-8 border-l-4 border-l-blue-300' : ''
       }`}
     >
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 bg-slate-50/60 rounded-t-xl">
-        <GripVertical size={14} className="text-slate-300" />
+      <div className={`flex items-center gap-2 px-4 py-2 border-b rounded-t-xl ${isSection ? 'border-indigo-200 bg-indigo-100/80' : 'border-slate-100 bg-slate-50/60'}`}>
+        {!isSection && <GripVertical size={14} className="text-slate-300" />}
         <span
           className={`text-[10px] font-bold uppercase tracking-wider ${
-            isChild ? 'text-blue-600' : 'text-slate-500'
+            isSection ? 'text-indigo-800' : isChild ? 'text-blue-600' : 'text-slate-500'
           }`}
         >
           {isSection
             ? `Section ${displayNumber}`
             : isChild
               ? `Sub Q ${displayLabel}`
-              : `Q${displayLabel}`}
+              : `Q ${displayLabel}`}
         </span>
         {typeDef && (
           <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
@@ -2203,8 +2205,8 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
         </div>
       </div>
 
-      <div className="p-4 space-y-2">
-        <div className="text-sm font-semibold text-slate-900 py-1 whitespace-pre-wrap">
+        <div className={`p-4 space-y-2 ${isSection ? 'pl-5' : ''}`}>
+        <div className={`text-sm font-semibold py-1 whitespace-pre-wrap ${isSection ? 'text-indigo-950' : 'text-slate-900'}`}>
           {formatAdminLocalizedText(question.question, question.questionTranslations) ||
             (isSection ? 'Untitled section' : 'Untitled question')}
         </div>
@@ -4799,6 +4801,7 @@ const PreviewDialog: React.FC<{
   const questionsUnlocked = !consentGate.enabled || consentGranted;
 
   const visibleQuestions = questions.filter((q) => evaluateLogic(q.logic, answers));
+  const numbering = useMemo(() => buildQuestionNumbering(questions), [questions]);
 
   // Mirror the live form's auto-fill / lock behaviour so admins testing
   // rules in preview see the same outcome enumerators will. Same loop-
@@ -5006,23 +5009,8 @@ const PreviewDialog: React.FC<{
                 <p className="text-sm text-slate-500 italic">Nothing to preview yet.</p>
               ) : (
                 (() => {
-                  type Slot = { q: Question; label: string; depth: 0 | 1 };
-                  const slots: Slot[] = [];
-                  let topNum = 0;
-                  for (const q of visibleQuestions) {
-                    if (q.parentId) continue;
-                    if (q.type !== 'section') topNum += 1;
-                    slots.push({ q, label: String(topNum), depth: 0 });
-                    if (q.type === 'section') continue;
-                    const children = visibleQuestions.filter(
-                      (c) => c.parentId === q.id && c.type !== 'section'
-                    );
-                    children.forEach((c, ci) => {
-                      const letter = String.fromCharCode(97 + ci);
-                      slots.push({ q: c, label: `${topNum}.${letter}`, depth: 1 });
-                    });
-                  }
-                  return slots.map(({ q, label, depth }) => {
+                  const slots = buildVisibleQuestionSlots(visibleQuestions, numbering);
+                  return slots.map(({ question: q, label, depth }) => {
                     const linkedQuestionLocked = Boolean(q.featureAttributeLink) && !isSurveyDateQuestion(q);
                     const locked = lockedQuestionIds.has(q.id) || linkedQuestionLocked;
                     return (
@@ -5037,7 +5025,7 @@ const PreviewDialog: React.FC<{
                       >
                         <PreviewQuestion
                           index={0}
-                          numberLabel={q.type === 'section' ? '' : label}
+                          numberLabel={label}
                           question={q}
                           value={answers[q.id]}
                           onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
@@ -5200,11 +5188,13 @@ const PreviewQuestion: React.FC<{
 
   if (question.type === 'section') {
     return (
-      <div className="border-t-2 border-indigo-200 pt-3">
-        <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Section</div>
-        <h4 className="text-base font-bold text-slate-900">{getLocalizedText(question.question, language, question.questionTranslations)}</h4>
+      <div className="rounded-lg border-l-4 border-indigo-500 bg-gradient-to-r from-indigo-50 to-sky-50 px-4 py-3">
+        <div className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
+          Section {numberLabel || ''}
+        </div>
+        <h4 className="text-base font-bold text-indigo-950">{getLocalizedText(question.question, language, question.questionTranslations)}</h4>
         {question.description && (
-          <p className="text-xs text-slate-500 mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>
+          <p className="text-xs text-indigo-800/80 mt-1">{getLocalizedText(question.description, language, question.descriptionTranslations)}</p>
         )}
       </div>
     );
