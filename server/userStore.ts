@@ -235,6 +235,12 @@ export async function isUserBlocked(uid: string, email: string): Promise<boolean
   return Boolean(emailCheck.rowCount);
 }
 
+/** Admin-created accounts explicitly restore a previously tombstoned email. */
+export async function clearDeletedEmailBlock(email: string): Promise<void> {
+  const emailKey = encodeURIComponent(email.trim().toLowerCase());
+  await pool.query('DELETE FROM deleted_user_emails WHERE email_key = $1', [emailKey]);
+}
+
 export async function blockDeletedUser(
   uid: string,
   email: string,

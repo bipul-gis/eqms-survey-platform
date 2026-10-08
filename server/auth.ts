@@ -13,6 +13,7 @@ import {
 } from './authStore';
 import {
   createUser,
+  clearDeletedEmailBlock,
   findUserByEmail,
   findUserById,
   isUserBlocked,
@@ -133,6 +134,7 @@ export async function adminCreateEnumerator(
     status: 'approved',
   });
   await setUserPassword(user.id, input.password);
+  await clearDeletedEmailBlock(email);
   return userToProfile(user);
 }
 
