@@ -15,7 +15,7 @@ import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../
 import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
 import { useLandmarkGeoJsonPoints } from '../hooks/useLandmarkGeoJsonPoints';
 import { NEW_POINT_ADD_PROXIMITY_METERS } from '../lib/newPointProximity';
-import { DEFAULT_MAP_LAYER_STYLE, mapLayerStyleKey, readMapLayerSettings, subscribeMapLayerSettings } from '../lib/mapLayerSettings';
+import { DEFAULT_MAP_LAYER_STYLE, mapLayerStyleKey, mapPopupAttributeEntries, readMapLayerSettings, subscribeMapLayerSettings, type MapPopupSettings } from '../lib/mapLayerSettings';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
 const MAP_LAYER_VISIBILITY_PREFIX = 'eqms.mapLayerVisibility:';
@@ -619,7 +619,8 @@ const PointMarker = React.memo(({
   onCancelMoveFeature,
   onFillQuestionnaire,
   allowAttributeEdit = true,
-  allowMoveActions = true
+  allowMoveActions = true,
+  popupSettings
 }: {
   feature: GeoFeature;
   isSelected: boolean;
@@ -643,8 +644,13 @@ const PointMarker = React.memo(({
   onFillQuestionnaire?: (f: GeoFeature) => void;
   allowAttributeEdit?: boolean;
   allowMoveActions?: boolean;
+  popupSettings?: MapPopupSettings;
 }) => {
   const baseWeight = Math.max(0.5, Number(borderWidth ?? 2));
+  const popupSource = feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload' || feature.attributes?.projectId
+    ? feature.attributes || {}
+    : normalizeLandmarkAttributesForDisplay(feature.attributes || {}, feature.type);
+  const popupAttributes = mapPopupAttributeEntries(popupSource, popupSettings);
   return (
   <CircleMarker
     interactive={interactive}
@@ -680,12 +686,7 @@ const PointMarker = React.memo(({
         <div className="max-h-48 overflow-auto border border-gray-100 rounded">
           <table className="w-full text-[10px]">
             <tbody>
-              {(feature.attributes?.__source === 'geojson_upload' || feature.attributes?.projectId
-                ? Object.entries(feature.attributes || {})
-                    .filter(([k]) => !k.startsWith('_') && !k.startsWith('__'))
-                    .slice(0, 15)
-                : normalizeLandmarkAttributesForDisplay(feature.attributes || {}, feature.type)
-              ).map(([k, v]) => (
+              {popupAttributes.map(([k, v]) => (
                 <tr key={k} className="border-b border-gray-100 last:border-b-0">
                   <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                   <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -764,6 +765,7 @@ const LineMarker = React.memo(({
   onFeatureSelect,
   onFillQuestionnaire,
   allowAttributeEdit = true,
+  popupSettings,
 }: {
   feature: GeoFeature;
   isSelected: boolean;
@@ -779,8 +781,10 @@ const LineMarker = React.memo(({
   onFeatureSelect: (f: GeoFeature) => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
   allowAttributeEdit?: boolean;
+  popupSettings?: MapPopupSettings;
 }) => {
   const baseWeight = Math.max(0.5, Number(borderWidth ?? 3));
+  const popupAttributes = mapPopupAttributeEntries(feature.attributes || {}, popupSettings);
   return (
   <Polyline
     interactive={interactive}
@@ -810,10 +814,7 @@ const LineMarker = React.memo(({
         <div className="max-h-40 overflow-auto border border-gray-100 rounded mb-2">
           <table className="w-full text-[10px]">
             <tbody>
-              {Object.entries(feature.attributes || {})
-                .filter(([k]) => !k.startsWith('_') && !k.startsWith('__'))
-                .slice(0, 10)
-                .map(([k, v]) => (
+              {popupAttributes.map(([k, v]) => (
                   <tr key={k} className="border-b border-gray-100 last:border-b-0">
                     <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                     <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -869,6 +870,7 @@ const PolygonMarker = React.memo(({
   onFeatureSelect,
   onFillQuestionnaire,
   allowAttributeEdit = true,
+  popupSettings,
 }: {
   feature: GeoFeature;
   isSelected: boolean;
@@ -885,8 +887,10 @@ const PolygonMarker = React.memo(({
   onFeatureSelect: (f: GeoFeature) => void;
   onFillQuestionnaire?: (f: GeoFeature) => void;
   allowAttributeEdit?: boolean;
+  popupSettings?: MapPopupSettings;
 }) => {
   const baseWeight = Math.max(0.5, Number(borderWidth ?? 1.5));
+  const popupAttributes = mapPopupAttributeEntries(feature.attributes || {}, popupSettings);
   return (
   <Polygon
     interactive={interactive}
@@ -917,10 +921,7 @@ const PolygonMarker = React.memo(({
         <div className="max-h-40 overflow-auto border border-gray-100 rounded mb-2">
           <table className="w-full text-[10px]">
             <tbody>
-              {Object.entries(feature.attributes || {})
-                .filter(([k]) => !k.startsWith('_') && !k.startsWith('__'))
-                .slice(0, 10)
-                .map(([k, v]) => (
+              {popupAttributes.map(([k, v]) => (
                   <tr key={k} className="border-b border-gray-100 last:border-b-0">
                     <td className="px-2 py-1 font-semibold text-gray-600 bg-gray-50">{k}</td>
                     <td className="px-2 py-1 text-gray-700">{String(v ?? '')}</td>
@@ -1636,6 +1637,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 onFillQuestionnaire={surveySelectable && surveyAction !== 'edit' ? onFillQuestionnaire : undefined}
                 allowAttributeEdit={surveyAction !== 'questionnaire'}
                 allowMoveActions={!isImportedLayerFeature}
+                popupSettings={layerStyle}
               />
             );
           }
@@ -1658,6 +1660,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 onFeatureSelect={handleFeatureSelect}
                 onFillQuestionnaire={surveySelectable && surveyAction !== 'edit' ? onFillQuestionnaire : undefined}
                 allowAttributeEdit={surveyAction !== 'questionnaire'}
+                popupSettings={layerStyle}
               />
             );
           }
@@ -1681,6 +1684,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 onFeatureSelect={handleFeatureSelect}
                 onFillQuestionnaire={surveySelectable && surveyAction !== 'edit' ? onFillQuestionnaire : undefined}
                 allowAttributeEdit={surveyAction !== 'questionnaire'}
+                popupSettings={layerStyle}
               />
             );
           }

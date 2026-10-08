@@ -105,6 +105,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const [showAttributeTable, setShowAttributeTable] = useState(false);
   const [attributeSearchQuery, setAttributeSearchQuery] = useState('');
   const [showAllRows, setShowAllRows] = useState(false);
+  const [popupLabelDrafts, setPopupLabelDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [savingSurveyLayer, setSavingSurveyLayer] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,6 +130,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     setShowAttributeTable(false);
     setAttributeSearchQuery('');
     setShowAllRows(false);
+    setPopupLabelDrafts({});
   }, [selected?.key]);
 
   useEffect(() => {
@@ -155,6 +157,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
     rows.forEach((row) => Object.keys(row.properties).forEach((field) => fields.add(field)));
     return [...fields].sort((a, b) => a.localeCompare(b));
   }, [selected, rows]);
+  const popupFields = columns.filter((field) => !field.startsWith('_') && !field.startsWith('__'));
 
   const filteredRows = useMemo(() => {
     const query = attributeSearchQuery.trim().toLowerCase();
@@ -178,6 +181,30 @@ export const GeospatialLayerManager: React.FC<Props> = ({
 
   const changeStyle = (patch: Partial<MapLayerStyle>) => {
     if (selected) changeLayerStyle(selected.key, patch);
+  };
+
+  const changePopupFieldVisibility = (field: string, visible: boolean) => {
+    const hidden = new Set(style.popupHiddenFields || []);
+    if (visible) hidden.delete(field);
+    else hidden.add(field);
+    changeStyle({ popupHiddenFields: [...hidden] });
+  };
+
+  const commitPopupFieldLabel = (field: string) => {
+    if (!selected) return;
+    const draftKey = `${selected.key}:${field}`;
+    const draft = popupLabelDrafts[draftKey];
+    if (draft === undefined) return;
+    const labels = { ...(style.popupFieldLabels || {}) };
+    const label = draft.trim();
+    if (!label || label === field) delete labels[field];
+    else labels[field] = label;
+    changeStyle({ popupFieldLabels: labels });
+    setPopupLabelDrafts((current) => {
+      const next = { ...current };
+      delete next[draftKey];
+      return next;
+    });
   };
 
   const commitZoomDraft = (draftKey: string, field: 'showFromZoom' | 'labelsFromZoom', currentValue: number) => {
@@ -439,6 +466,52 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   </div>
                 </div>
                 <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices. Set each threshold independently; zoom 0 keeps that content visible at every zoom.</p>
+              </section>
+              <section>
+                <div className="mb-4 rounded-xl border border-violet-200 bg-violet-50/40 p-3">
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <div>
+                      <h4 className="text-[10px] font-bold uppercase tracking-wide text-violet-800">Feature click popup</h4>
+                      <p className="mt-0.5 text-[10px] text-slate-500">Choose which attributes appear and set the labels users see. All fields show by default.</p>
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <button type="button" onClick={() => changeStyle({ popupHiddenFields: [] })} className="rounded border border-violet-200 bg-white px-2 py-1 text-[9px] font-semibold text-violet-700 hover:bg-violet-100">Show all</button>
+                      <button type="button" onClick={() => changeStyle({ popupHiddenFields: [...popupFields] })} className="rounded border border-violet-200 bg-white px-2 py-1 text-[9px] font-semibold text-violet-700 hover:bg-violet-100">Hide all</button>
+                    </div>
+                  </div>
+                  {popupFields.length > 0 ? (
+                    <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-violet-100 bg-white p-2">
+                      {popupFields.map((field) => {
+                        const draftKey = `${selected.key}:${field}`;
+                        const visible = !(style.popupHiddenFields || []).includes(field);
+                        return (
+                          <div key={field} className={`grid grid-cols-[auto_minmax(0,1fr)_minmax(7rem,1.1fr)] items-center gap-2 rounded px-1.5 py-1 ${visible ? '' : 'bg-slate-50 opacity-70'}`}>
+                            <input
+                              type="checkbox"
+                              aria-label={`Show ${field} in feature popup`}
+                              checked={visible}
+                              onChange={(event) => changePopupFieldVisibility(field, event.target.checked)}
+                              className="h-3.5 w-3.5 accent-violet-600"
+                            />
+                            <span className="truncate text-[10px] font-medium text-slate-600" title={field}>{field}</span>
+                            <input
+                              type="text"
+                              aria-label={`Popup label for ${field}`}
+                              value={popupLabelDrafts[draftKey] ?? style.popupFieldLabels?.[field] ?? field}
+                              onChange={(event) => setPopupLabelDrafts((current) => ({ ...current, [draftKey]: event.target.value }))}
+                              onBlur={() => commitPopupFieldLabel(field)}
+                              onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+                              placeholder={field}
+                              className="h-7 min-w-0 rounded border border-slate-200 px-2 text-[10px] text-slate-800 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="rounded-lg border border-violet-100 bg-white p-2 text-[10px] text-slate-400">No attributes found for this layer.</p>
+                  )}
+                </div>
               </section>
               <section>
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 transition hover:border-slate-300">

@@ -10,7 +10,13 @@ export interface MapLayerStyle {
   borderWidth?: number;
   showFromZoom: number;
   labelsFromZoom: number;
+  /** Popup fields omitted by default when explicitly hidden by an admin. */
+  popupHiddenFields?: string[];
+  /** Popup field names keyed by their source attribute. */
+  popupFieldLabels?: Record<string, string>;
 }
+
+export type MapPopupSettings = Pick<MapLayerStyle, 'popupHiddenFields' | 'popupFieldLabels'>;
 
 export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
   fillColor: '#f59e0b',
@@ -25,6 +31,17 @@ export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
   showFromZoom: 0,
   labelsFromZoom: 17,
 };
+
+export function mapPopupAttributeEntries(
+  attributes: Record<string, unknown>,
+  settings?: MapPopupSettings
+): Array<[string, unknown]> {
+  const hidden = new Set(settings?.popupHiddenFields || []);
+  const labels = settings?.popupFieldLabels || {};
+  return Object.entries(attributes || {})
+    .filter(([field]) => !field.startsWith('_') && !field.startsWith('__') && !hidden.has(field))
+    .map(([field, value]) => [labels[field]?.trim() || field, value]);
+}
 
 const prefix = 'eqms.mapLayerSettings:';
 const eventName = 'eqms-map-layer-settings-updated';
