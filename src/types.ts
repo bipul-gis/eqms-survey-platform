@@ -219,6 +219,8 @@ export type QuestionType =
  * - `count_nonempty`: integer count of operands that have any answer
  *   (handy for "how many household members are employed" totals).
  * - `count_nonzero`: integer count of answered operands other than numeric 0.
+ * - `count_repeat_nonzero_matching`: count repeated numeric answers above 0
+ *   whose same-repeat match question equals the configured value.
  * - `concat`: string concatenation of operand answers, joined by the
  *   configured separator (defaults to a single space).
  * - `expression`: free arithmetic expression with `{{questionId}}`
@@ -234,6 +236,7 @@ export type ComputedOperation =
   | 'max'
   | 'count_nonempty'
   | 'count_nonzero'
+  | 'count_repeat_nonzero_matching'
   | 'concat'
   | 'expression';
 
@@ -247,6 +250,10 @@ export interface ComputedSpec {
    * the computed value as those answers change.
    */
   operandQuestionIds: string[];
+  /** Related repeat question used by `count_repeat_nonzero_matching`. */
+  repeatMatchQuestionId?: string;
+  /** Required answer value on `repeatMatchQuestionId` for a repeat to count. */
+  repeatMatchValue?: string;
   /**
    * Free-form arithmetic expression for `operation === 'expression'`.
    * Use `{{questionId}}` or `{{questionKey}}` placeholders. Only `+`,

@@ -71,6 +71,7 @@ import {
 } from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { configureHouseholdIncomeEarnerCounts } from '../lib/householdIncomeEarnerCounts';
 import { expandRepeatedQuestions, getRepeatedQuestionSourceIds } from '../lib/repeatedQuestions';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer } from '../lib/choiceAnswers';
@@ -533,10 +534,10 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
 
   // Drop accidental plain Response ID duplicates (same key, no logic).
   const surveyQuestions = useMemo(
-    () => normalizeQuestionnaireSectionQuestions(
+    () => configureHouseholdIncomeEarnerCounts(normalizeQuestionnaireSectionQuestions(
       collapseAccidentalResponseIdQuestions(questionnaire.questions || []),
       questionnaire.sections || []
-    ),
+    )),
     [questionnaire.questions, questionnaire.sections]
   );
   const numbering = useMemo(

@@ -29,6 +29,7 @@ import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
 import { expandRepeatedQuestions, isRepeatCountQuestionCandidate, repeatGroupMemberIds } from '../lib/repeatedQuestions';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { configureHouseholdIncomeEarnerCounts } from '../lib/householdIncomeEarnerCounts';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import {
   collapseAccidentalResponseIdQuestions,
@@ -1159,10 +1160,10 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     }
   );
   const [questions, setQuestions] = useState<Question[]>(() => {
-    const src = normalizeQuestionnaireSectionQuestions(
+    const src = configureHouseholdIncomeEarnerCounts(normalizeQuestionnaireSectionQuestions(
       collapseAccidentalResponseIdQuestions(questionnaire?.questions || []),
       questionnaire?.sections || []
-    );
+    ));
     return src.map((q) => ({
       ...q,
       options: ensureOptionShape(q.options),
@@ -2805,6 +2806,7 @@ const COMPUTED_OPERATIONS: { value: ComputedOperation; label: string; hint: stri
   { value: 'max',            label: 'Maximum',               hint: 'Largest non-empty value' },
   { value: 'count_nonempty', label: 'Count answered',        hint: 'Number of operands that have a value' },
   { value: 'count_nonzero',  label: 'Count answered (exclude 0)', hint: 'Counts filled operands except numeric 0' },
+  { value: 'count_repeat_nonzero_matching', label: 'Count repeat answers by match', hint: 'Counts positive repeated values when a related repeat answer matches' },
   { value: 'concat',         label: 'Join text',             hint: 'Concatenate answers with a separator' },
   { value: 'expression',     label: 'Custom expression',     hint: 'Free formula with {{questionId}} placeholders' }
 ];
@@ -2884,6 +2886,12 @@ const ComputedQuestionEditor: React.FC<{
     [allQuestions]
   );
   const availableOperands = eligible.filter((q) => !operandIds.includes(q.id));
+  const repeatMatchQuestion = allQuestions.find((q) =>
+    q.id === spec.repeatMatchQuestionId || q.key === spec.repeatMatchQuestionId
+  );
+  const repeatMatchOptions = repeatMatchQuestion
+    ? ensureOptionShape(repeatMatchQuestion.options)
+    : [];
 
   const addOperand = (id: string) => {
     if (!id) return;
@@ -2909,8 +2917,11 @@ const ComputedQuestionEditor: React.FC<{
     return q.key ? `${stem} · {{${q.key}}}` : stem;
   };
 
+  const isCountOp = spec.operation === 'count_nonempty' ||
+    spec.operation === 'count_nonzero' ||
+    spec.operation === 'count_repeat_nonzero_matching';
   const isNumericOp =
-    spec.operation !== 'concat' && spec.operation !== 'expression';
+    !isCountOp && spec.operation !== 'concat' && spec.operation !== 'expression';
   const isExpression = spec.operation === 'expression';
   const isConcat = spec.operation === 'concat';
 
@@ -3013,6 +3024,55 @@ const ComputedQuestionEditor: React.FC<{
               />
             </div>
           </Field>
+        )}
+
+        {spec.operation === 'count_repeat_nonzero_matching' && (
+          <>
+            <Field label="Match each repeat by question">
+              <select
+                value={spec.repeatMatchQuestionId || ''}
+                onChange={(event) => setSpec({
+                  repeatMatchQuestionId: event.target.value || undefined,
+                  repeatMatchValue: undefined
+                })}
+                className={inputCls}
+              >
+                <option value="">Select a repeated choice question</option>
+                {allQuestions.filter((candidate) =>
+                  candidate.type === 'select' || candidate.type === 'radio'
+                ).map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {questionNumbers.get(candidate.id) || ''} · {candidate.question || candidate.key || candidate.id}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Count only when match equals">
+              {repeatMatchOptions.length > 0 ? (
+                <select
+                  value={spec.repeatMatchValue || ''}
+                  onChange={(event) => setSpec({ repeatMatchValue: event.target.value || undefined })}
+                  className={inputCls}
+                >
+                  <option value="">Select a matching answer</option>
+                  {repeatMatchOptions.map((option) => (
+                    <option key={option.id} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={spec.repeatMatchValue || ''}
+                  onChange={(event) => setSpec({ repeatMatchValue: event.target.value || undefined })}
+                  className={inputCls}
+                  placeholder="For example: male"
+                />
+              )}
+              <p className="text-[10px] text-slate-400 mt-1">
+                A repeat counts only when its numeric operand is greater than zero and the same repeat has this answer.
+              </p>
+            </Field>
+          </>
         )}
 
         {isConcat && (
@@ -5278,6 +5338,8 @@ const computedOpHumanLabel = (op: ComputedOperation): string => {
       return 'Count of answered';
     case 'count_nonzero':
       return 'Count answered (excluding 0)';
+    case 'count_repeat_nonzero_matching':
+      return 'Count positive repeats by matching answer';
     case 'concat':
       return 'Joined text';
     case 'expression':

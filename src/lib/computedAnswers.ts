@@ -386,6 +386,34 @@ export const evaluateComputed = (
     return { value: count, display: `${spec.prefix ?? ''}${count}${spec.suffix ?? ''}` };
   }
 
+  if (op === 'count_repeat_nonzero_matching') {
+    const matchQuestionId = spec.repeatMatchQuestionId;
+    const expected = (spec.repeatMatchValue ?? '').trim().toLocaleLowerCase();
+    if (!matchQuestionId || !expected) return empty;
+    const repeatedInstances = (questionId: string) => {
+      const source = questions.find((question) =>
+        question.id === questionId || question.key === questionId
+      );
+      const sourceId = source?.repeatSourceId || source?.id || questionId;
+      return questions.filter((question) => question.type !== 'section' && (
+        question.repeatSourceId === sourceId || question.id.startsWith(`${sourceId}__repeat_`)
+      )).filter((question) => question.repeatIndex !== undefined);
+    };
+    let count = 0;
+    for (const operandId of operandIds) {
+      for (const operand of repeatedInstances(operandId)) {
+        const income = coerceAnswerToNumber(answers[operand.id]);
+        if (income === null || income <= 0 || operand.repeatIndex === undefined) continue;
+        const match = repeatedInstances(matchQuestionId).find(
+          (question) => question.repeatIndex === operand.repeatIndex
+        );
+        const value = match ? answers[match.id] : undefined;
+        if (String(value ?? '').trim().toLocaleLowerCase() === expected) count += 1;
+      }
+    }
+    return { value: count, display: `${spec.prefix ?? ''}${count}${spec.suffix ?? ''}` };
+  }
+
   // Pure numeric ops — coerce every operand and skip the empties so a
   // partially-filled form still shows a partial result.
   const numbersByOperand = operandIds.map((id) => resolveAnswerValues(id, answers, questions)
@@ -476,6 +504,8 @@ export const computedOpLabel = (op: ComputedSpec['operation']): string => {
       return 'Count of answered operands';
     case 'count_nonzero':
       return 'Count of answered operands excluding zero';
+    case 'count_repeat_nonzero_matching':
+      return 'Count positive repeat answers matching a related answer';
     case 'concat':
       return 'Concatenate text';
     case 'expression':

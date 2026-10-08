@@ -27,6 +27,7 @@ import { expandRepeatedQuestions } from './repeatedQuestions';
 import { withInferredRepeatCounts } from './repeatedQuestions';
 import { buildQuestionNumbering } from './questionNumbering';
 import { calculateComputedAnswers } from './computedAnswers';
+import { configureHouseholdIncomeEarnerCounts } from './householdIncomeEarnerCounts';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -282,10 +283,10 @@ const getExportQuestionsForResponses = (
   questionnaire: Questionnaire,
   responses: QuestionnaireResponse[]
 ): Question[] => {
-  const base = normalizeQuestionnaireSectionQuestions(
+  const base = configureHouseholdIncomeEarnerCounts(normalizeQuestionnaireSectionQuestions(
     questionnaire.questions || [],
     questionnaire.sections || []
-  );
+  ));
   const maximumCounts: Record<string, number> = {};
   for (const section of base) {
     const countQuestionId = section.repeatSection?.countQuestionId;
@@ -602,10 +603,10 @@ export const planResponsesExport = (
 ): ResponsesExportPlan => {
   const enumFields = q.enumeratorInfo?.fields || [];
   const consentEnabled = !!q.consentGate?.enabled;
-  const baseQuestions = normalizeQuestionnaireSectionQuestions(
+  const baseQuestions = configureHouseholdIncomeEarnerCounts(normalizeQuestionnaireSectionQuestions(
     q.questions || [],
     q.sections || []
-  );
+  ));
   const questions = getExportQuestionsForResponses(q, responses);
   const columns = buildResponsesExportColumnsForRows(questions, responses);
   const preHeaders = buildSystemAndEnumHeaders(q);

@@ -15,6 +15,7 @@ import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { expandRepeatedQuestions, withInferredRepeatCounts } from '../lib/repeatedQuestions';
 import { calculateComputedAnswers } from '../lib/computedAnswers';
+import { configureHouseholdIncomeEarnerCounts } from '../lib/householdIncomeEarnerCounts';
 import { buildQuestionNumbering } from '../lib/questionNumbering';
 import { useAuth } from './AuthProvider';
 import { Map as MapIcon, ChevronDown, ChevronUp } from 'lucide-react';
@@ -1767,10 +1768,10 @@ const ResponseDetailDialog: React.FC<{
   onDelete
 }) => {
   const enumFields = questionnaire.enumeratorInfo?.fields || [];
-  const allQuestions = normalizeQuestionnaireSectionQuestions(
+  const allQuestions = configureHouseholdIncomeEarnerCounts(normalizeQuestionnaireSectionQuestions(
     questionnaire.questions || [],
     questionnaire.sections || []
-  );
+  ));
   const baseQuestionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
   const responseAnswers = withInferredRepeatCounts(allQuestions, response.responses || {});
   const expandedQuestions = expandRepeatedQuestions(allQuestions, responseAnswers);
