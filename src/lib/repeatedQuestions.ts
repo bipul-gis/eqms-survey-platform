@@ -16,6 +16,41 @@ export const repeatGroupMemberIds = (questions: Question[], sectionIndex: number
   return questions.slice(sectionIndex + 1, end).filter((question) => question.type !== 'section').map((question) => question.id);
 };
 
+/**
+ * Restore repeat counts from saved instance keys when an older response did
+ * not persist its linked count answer. This is for response review and export;
+ * live forms continue to use the current count so reducing it can remove rows.
+ */
+export const withInferredRepeatCounts = (
+  questions: Question[],
+  answers: Record<string, unknown>
+): Record<string, unknown> => {
+  const result = { ...answers };
+  for (let sectionIndex = 0; sectionIndex < questions.length; sectionIndex += 1) {
+    const section = questions[sectionIndex];
+    const countQuestionId = section.type === 'section'
+      ? section.repeatSection?.countQuestionId
+      : undefined;
+    if (!countQuestionId) continue;
+
+    const rawCount = result[countQuestionId];
+    const numericCount = typeof rawCount === 'string' ? Number(rawCount.trim()) : Number(rawCount);
+    let count = Number.isFinite(numericCount) ? Math.max(0, Math.floor(numericCount)) : 0;
+    const memberIds = repeatGroupMemberIds(questions, sectionIndex);
+    const memberKeys = new Set<string>(memberIds);
+    for (const memberId of memberIds) {
+      const member = questions.find((question) => question.id === memberId);
+      if (member?.key) memberKeys.add(member.key);
+    }
+    for (const answerKey of Object.keys(answers)) {
+      const match = /^(.*)__repeat_(\d+)$/.exec(answerKey);
+      if (match && memberKeys.has(match[1])) count = Math.max(count, Number(match[2]));
+    }
+    result[countQuestionId] = Math.min(MAX_SECTION_REPEATS, count);
+  }
+  return result;
+};
+
 export const getRepeatedQuestionSourceIds = (questions: Question[]): Set<string> => {
   const ids = new Set<string>();
   for (let index = 0; index < questions.length; index += 1) {

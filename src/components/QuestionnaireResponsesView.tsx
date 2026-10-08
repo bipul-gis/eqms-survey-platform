@@ -13,7 +13,8 @@ import { assignedZoneValuesFromProfile, zonesToGeoJson } from '../lib/assignedZo
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
-import { expandRepeatedQuestions } from '../lib/repeatedQuestions';
+import { expandRepeatedQuestions, withInferredRepeatCounts } from '../lib/repeatedQuestions';
+import { calculateComputedAnswers } from '../lib/computedAnswers';
 import { buildQuestionNumbering } from '../lib/questionNumbering';
 import { useAuth } from './AuthProvider';
 import { Map as MapIcon, ChevronDown, ChevronUp } from 'lucide-react';
@@ -1771,7 +1772,9 @@ const ResponseDetailDialog: React.FC<{
     questionnaire.sections || []
   );
   const baseQuestionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
-  const expandedQuestions = expandRepeatedQuestions(allQuestions, response.responses || {});
+  const responseAnswers = withInferredRepeatCounts(allQuestions, response.responses || {});
+  const expandedQuestions = expandRepeatedQuestions(allQuestions, responseAnswers);
+  const resolvedAnswers = calculateComputedAnswers(expandedQuestions, responseAnswers);
   const questionNumbers = new Map(baseQuestionNumbers);
   for (const question of expandedQuestions) {
     if (!question.repeatSourceId || !question.repeatIndex) continue;
@@ -1933,7 +1936,7 @@ const ResponseDetailDialog: React.FC<{
                         </th>
                         <td className="px-3 py-2 text-slate-800 whitespace-pre-wrap">
                           {formatAnswerForDisplay(
-                            response.responses?.[q.id],
+                            resolvedAnswers[q.id],
                             q
                           ) || <span className="text-slate-400 italic">—</span>}
                         </td>

@@ -24,7 +24,9 @@ import {
 import { formatPhotoAnswerLabel, collectResponsePhotoAttachment, type ExportPhotoAttachment } from './photoAnswers';
 import { normalizeQuestionnaireSectionQuestions } from './questionnaireSections';
 import { expandRepeatedQuestions } from './repeatedQuestions';
+import { withInferredRepeatCounts } from './repeatedQuestions';
 import { buildQuestionNumbering } from './questionNumbering';
+import { calculateComputedAnswers } from './computedAnswers';
 
 // ---------------------------------------------------------------------------
 // Shared utilities
@@ -290,7 +292,8 @@ const getExportQuestionsForResponses = (
     if (!countQuestionId) continue;
     let maximum = 0;
     for (const response of responses) {
-      const value = Number(response.responses?.[countQuestionId]);
+      const expandedAnswers = withInferredRepeatCounts(base, response.responses || {});
+      const value = Number(expandedAnswers[countQuestionId]);
       if (Number.isFinite(value)) maximum = Math.max(maximum, Math.min(100, Math.floor(value)));
     }
     maximumCounts[countQuestionId] = maximum;
@@ -498,10 +501,10 @@ const buildSystemAndEnumHeaders = (q: Questionnaire): string[] => {
 
 const responsesExportColumnCell = (
   col: ResponsesExportColumn,
-  r: QuestionnaireResponse,
+  answers: Record<string, unknown>,
   photoPath?: string | null
 ): string => {
-  const raw = r.responses?.[col.question.id];
+  const raw = answers[col.question.id];
   if (col.kind === 'question') {
     return stringifyAnswer(raw, col.question, photoPath);
   }
@@ -579,6 +582,7 @@ export type ResponsesTableWithPhotos = ResponsesTable & {
  * stream responses page by page and still produce a single consistent table.
  */
 export type ResponsesExportPlan = {
+  baseQuestions: Question[];
   questions: Question[];
   columns: ResponsesExportColumn[];
   enumFields: Question[];
@@ -598,6 +602,10 @@ export const planResponsesExport = (
 ): ResponsesExportPlan => {
   const enumFields = q.enumeratorInfo?.fields || [];
   const consentEnabled = !!q.consentGate?.enabled;
+  const baseQuestions = normalizeQuestionnaireSectionQuestions(
+    q.questions || [],
+    q.sections || []
+  );
   const questions = getExportQuestionsForResponses(q, responses);
   const columns = buildResponsesExportColumnsForRows(questions, responses);
   const preHeaders = buildSystemAndEnumHeaders(q);
@@ -608,7 +616,7 @@ export const planResponsesExport = (
     getQuestionNumberMap(q, questions)
   );
   const header = [...preHeaders, ...columnHeaders];
-  return { questions, columns, enumFields, consentEnabled, header, columnHeaders };
+  return { baseQuestions, questions, columns, enumFields, consentEnabled, header, columnHeaders };
 };
 
 const buildResponseRow = (
@@ -617,6 +625,10 @@ const buildResponseRow = (
   photoMap: Map<string, ExportPhotoAttachment>,
   attachPhotos: boolean
 ): string[] => {
+  const responseAnswers = calculateComputedAnswers(
+    plan.questions,
+    withInferredRepeatCounts(plan.baseQuestions, r.responses || {})
+  );
   let photoSerial = 0;
   const enumValues = plan.enumFields.map((f) => {
     const raw = r.enumeratorInfo?.[f.id];
@@ -638,7 +650,7 @@ const buildResponseRow = (
     return stringifyAnswer(raw, f, photoPath);
   });
   const answerValues = plan.columns.map((col) => {
-    const raw = r.responses?.[col.question.id];
+    const raw = responseAnswers[col.question.id];
     let photoPath: string | null = null;
     if (attachPhotos && col.kind === 'question' && col.question.type === 'photo') {
       photoSerial += 1;
@@ -654,7 +666,7 @@ const buildResponseRow = (
         photoMap
       );
     }
-    return responsesExportColumnCell(col, r, photoPath);
+    return responsesExportColumnCell(col, responseAnswers, photoPath);
   });
   const sub = r.submissionLocation;
   const { lat: exportLat, lng: exportLng } = exportLatLng(r);

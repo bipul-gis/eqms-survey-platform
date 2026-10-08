@@ -421,6 +421,29 @@ export const evaluateComputed = (
   return { value: rounded, display: formatNumber(rounded) };
 };
 
+/** Recalculate saved computed answers for response detail and data exports. */
+export const calculateComputedAnswers = (
+  questions: Question[],
+  answers: Record<string, unknown>
+): Record<string, unknown> => {
+  const resolved = { ...answers };
+  const computed = questions.filter((question) => question.type === 'computed' && question.computed);
+  // A few passes let later calculated fields depend on earlier computed ones
+  // without requiring questionnaire questions to be stored in dependency order.
+  for (let pass = 0; pass < computed.length; pass += 1) {
+    let changed = false;
+    for (const question of computed) {
+      const value = evaluateComputed(question.computed, resolved, questions).value;
+      if (value === null || value === undefined || value === '') continue;
+      if (resolved[question.id] === value) continue;
+      resolved[question.id] = value;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  return resolved;
+};
+
 /** Human-friendly label for the operation, used in editor + read-only hints. */
 export const computedOpLabel = (op: ComputedSpec['operation']): string => {
   switch (op) {
