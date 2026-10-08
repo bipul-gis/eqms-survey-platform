@@ -633,7 +633,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     if (computedQuestions.length === 0) return;
     const patch: Record<string, unknown> = {};
     for (const q of computedQuestions) {
-      const res = evaluateComputed(q.computed, responses, visibleQuestions);
+      const res = evaluateComputed(q.computed, responses, runtimeQuestions);
       const next = res.value;
       const current = responses[q.id];
       const same =
@@ -645,7 +645,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     }
     if (Object.keys(patch).length === 0) return;
     setResponses((prev) => ({ ...prev, ...patch }));
-  }, [visibleQuestions, responses, readOnly]);
+  }, [visibleQuestions, runtimeQuestions, responses, readOnly]);
 
   // Lock-mode rules disable the corresponding input so enumerators can't
   // edit a value the admin has explicitly tied to another answer. Held
