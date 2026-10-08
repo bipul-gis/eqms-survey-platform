@@ -15,7 +15,7 @@ import { staticLandmarkMatchesAssignedWards, wardMatchesAssignedList } from '../
 import { findMatchingFirestoreLandmark } from '../lib/landmarkMatch';
 import { useLandmarkGeoJsonPoints } from '../hooks/useLandmarkGeoJsonPoints';
 import { NEW_POINT_ADD_PROXIMITY_METERS } from '../lib/newPointProximity';
-import { DEFAULT_MAP_LAYER_STYLE, mapLayerStyleKey, mapPopupAttributeEntries, readMapLayerSettings, subscribeMapLayerSettings, type MapPopupSettings } from '../lib/mapLayerSettings';
+import { DEFAULT_FEATURE_STATUS_COLORS, DEFAULT_MAP_LAYER_STYLE, mapLayerStyleKey, mapPopupAttributeEntries, readMapLayerSettings, subscribeMapLayerSettings, type MapLayerStyle, type MapPopupSettings } from '../lib/mapLayerSettings';
 
 const LANDMARK_ICON_SCALE_KEY = 'eqms_geosurvey_landmark_icon_scale_v1';
 const MAP_LAYER_VISIBILITY_PREFIX = 'eqms.mapLayerVisibility:';
@@ -1296,8 +1296,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const isFeatureLayerVisible = useCallback((f: GeoFeature) => {
     const name = importedLayerName(f);
     if (!name) return true; // Default features without layer name are visible
-    return layerVisibility[name] !== false; // Visible unless explicitly unchecked
-  }, [layerVisibility]);
+    const featureProjectId = String(f.attributes?.projectId || (f as any).projectId || projectId || '');
+    const projectStyles = featureProjectId ? projectMapLayerStylesByProject[featureProjectId] : undefined;
+    const layerStyle = projectStyles?.[mapLayerStyleKey('feature', name)] || mapLayerSettings[mapLayerStyleKey('feature', name)];
+    return layerStyle?.visible !== false && layerVisibility[name] !== false;
+  }, [layerVisibility, projectId, projectMapLayerStylesByProject, mapLayerSettings]);
 
   const selectedFeature = selectedFeatureId
     ? features.find((f) => f.id === selectedFeatureId) || null
@@ -1363,18 +1366,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     [syncLandmarkScaleToFirestore]
   );
 
-  const getStatusColor = (status: string) => {
-    switch (String(status || '').trim().toLocaleLowerCase()) {
-      case 'pending': return '#2563eb';
-      case 'verified': return '#22c55e';
-      case 'rejected': return '#ef4444';
-      default: return '#2563eb';
-    }
-  };
-
-  const getFeatureColor = (feature: GeoFeature) => {
+  const getFeatureColor = (feature: GeoFeature, statusColors?: MapLayerStyle['statusColors']) => {
     const status = feature.status || feature.attributes?.QC_Status || feature.attributes?.Status || feature.attributes?.status;
-    return getStatusColor(String(status || 'pending'));
+    const key = String(status || 'pending').trim().toLocaleLowerCase() as keyof typeof DEFAULT_FEATURE_STATUS_COLORS;
+    const fallback = DEFAULT_FEATURE_STATUS_COLORS[key] || DEFAULT_FEATURE_STATUS_COLORS.pending;
+    const candidate = statusColors?.[key] || fallback;
+    return /^#[0-9a-f]{6}$/i.test(candidate) ? candidate : fallback;
   };
 
   const findMatchingFirestorePoint = (p: { lat: number; lng: number; properties: Record<string, any> }) =>
@@ -1520,6 +1517,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {importedZoneLayers?.map((zoneLayer) => {
           if (zoneLayerVisibility[zoneLayer.id] === false) return null;
           const style = getLayerStyle('zone', zoneLayer.id, zoneLayer.projectId);
+          if (style.visible === false) return null;
           return (
           <React.Fragment key={`zone-layer-${zoneLayer.id}`}>
             <ScaleAwareZoneLayer
@@ -1546,7 +1544,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         {(!importedZoneLayers?.length) && showZones && zoneBoundaries && zoneBoundaries.features?.length > 0 && (
           <>
             <FitToZoneBoundaries data={zoneBoundaries} fitKey={zoneFitKey} />
-            <ScaleAwareZoneLayer
+            {fallbackZoneStyle.visible !== false && <ScaleAwareZoneLayer
               data={zoneBoundaries}
               color={fallbackZoneStyle.boundaryColor}
               fillColor={fallbackZoneStyle.fillColor}
@@ -1563,7 +1561,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               projectId={projectId}
               interactive={surveyLayerKeyMatches(activeSurveyLayerKeys, `zone:${String(zoneBoundaries.features[0]?.properties?.__layerId || '')}`)}
               onFeatureSelect={onSurveyActionRequest}
-            />
+            />}
           </>
         )}
 
@@ -1572,17 +1570,17 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const isSelected = feature.id === selectedFeatureId;
           const isMoveTarget = feature.id === movingFeatureId;
           const isPulsing = feature.id === pulseFeatureId;
-          const color = getFeatureColor(feature);
           const layerName = importedLayerName(feature);
           const isImportedLayerFeature = Boolean(layerName);
           const surveySelectable = isImportedLayerFeature && surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${layerName}`);
           const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === `feature:${layerName}`.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
           const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || projectId || '');
           const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
-          // Uploaded features are color-coded by their individual QC status.
-          // A layer-wide style must not hide Pending / Verified / Rejected changes.
-          const fillColor = color;
-          const boundaryColor = color;
+          const color = getFeatureColor(feature, surveySelectable ? layerStyle?.statusColors : undefined);
+          // Only layers marked for Survey use per-feature QC colors. Other map
+          // layers keep the configured layer fill and boundary colors.
+          const fillColor = surveySelectable ? color : (layerStyle?.fillColor || color);
+          const boundaryColor = surveySelectable ? color : (layerStyle?.boundaryColor || color);
           const borderWidth = layerStyle?.borderWidth;
           const opacity = layerStyle?.opacity;
           const labelField = layerStyle?.labelField;
@@ -1956,14 +1954,19 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                   </span>
                 </div>
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] text-slate-600" aria-label="Feature status color legend">
-                  <span className="font-semibold text-slate-500">Status colors</span>
+                  <span className="font-semibold text-slate-500">Survey layer status colors</span>
                   <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-blue-600" />Pending</span>
                   <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-green-500" />Verified</span>
                   <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-red-500" />Rejected</span>
                 </div>
                 <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                   {distinctImportedLayers.map((lyr) => {
-                    const isVisible = layerVisibility[lyr.name] !== false;
+                    const adminStyle = getLayerStyle('feature', lyr.name, lyr.projectId || undefined);
+                    const isAdminVisible = adminStyle.visible !== false;
+                    const isVisible = isAdminVisible && layerVisibility[lyr.name] !== false;
+                    const isSurveyLayer = surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${lyr.name}`);
+                    const legendStyle = adminStyle;
+                    const legendBorderWidth = Math.max(1, Number(legendStyle.borderWidth ?? 2));
                     return (
                       <div key={lyr.key} className="rounded-lg hover:bg-slate-50">
                       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-1.5 text-xs">
@@ -1971,6 +1974,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                           <input
                             type="checkbox"
                             checked={isVisible}
+                            disabled={!isAdminVisible}
                             onChange={(e) => {
                               const checked = e.target.checked;
                               setLayerVisibility((prev) => ({
@@ -1978,13 +1982,21 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                                 [lyr.name]: checked,
                               }));
                             }}
-                            className="rounded text-sky-600 focus:ring-sky-500"
+                            className="rounded text-sky-600 focus:ring-sky-500 disabled:cursor-not-allowed"
                           />
-                          <div className="flex shrink-0 items-center gap-0.5">
-                            {[['Pending', '#2563eb'], ['Verified', '#22c55e'], ['Rejected', '#ef4444']].map(([label, color]) => (
+                          {isSurveyLayer ? <div className="flex shrink-0 items-center gap-0.5">
+                    {([
+                      ['Pending', legendStyle.statusColors?.pending || DEFAULT_FEATURE_STATUS_COLORS.pending],
+                      ['Verified', legendStyle.statusColors?.verified || DEFAULT_FEATURE_STATUS_COLORS.verified],
+                      ['Rejected', legendStyle.statusColors?.rejected || DEFAULT_FEATURE_STATUS_COLORS.rejected],
+                    ] as const).map(([label, color]) => (
                               <span key={label} title={`${label} feature`} aria-label={`${label} feature color`} className="h-3 w-3 rounded-full border border-white shadow-sm" style={{ backgroundColor: color }} />
                             ))}
-                          </div>
+                          </div> : <div className="flex shrink-0 items-center gap-0.5">
+                            {lyr.types.map((type) => <span key={type} title={`${type} layer symbology`} className="flex h-5 w-5 items-center justify-center">
+                              {type === 'line' ? <span className="block w-3.5" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} /> : <span className={`${type === 'point' ? 'rounded-full' : 'rounded-sm'} h-3.5 w-3.5 border`} style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, borderColor: legendStyle.boundaryColor, borderWidth: `${legendBorderWidth}px` }} />}
+                            </span>)}
+                          </div>}
                           <span className={`min-w-0 whitespace-normal break-words font-medium leading-tight ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
                             {lyr.name}
                           </span>

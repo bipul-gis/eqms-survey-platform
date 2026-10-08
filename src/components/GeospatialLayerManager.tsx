@@ -6,6 +6,7 @@ import { geosurveyApi } from '../lib/geosurveyApi';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import {
   DEFAULT_MAP_LAYER_STYLE,
+  DEFAULT_FEATURE_STATUS_COLORS,
   mapLayerStyleKey,
   readMapLayerSettings,
   writeMapLayerStyle,
@@ -382,6 +383,9 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                     </span>
                     <span className="block pl-5 text-[10px] text-slate-500">{item.kind === 'zone' ? 'Boundary SHP' : 'Map feature layer'} · {item.count.toLocaleString()} records</span>
                   </button>
+                  <label title="Show or hide this layer for everyone on the project map" className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[9px] font-medium text-slate-600">
+                    <input type="checkbox" checked={styles[item.key]?.visible !== false} disabled={busy} onChange={(event) => changeLayerStyle(item.key, { visible: event.target.checked })} />Map
+                  </label>
                   {activeSurveyKeys.includes(item.surveyKey) && <select aria-label={`${item.name} survey popup actions`} title="Actions available from this layer's map popup" value={layerActions[item.surveyKey] || 'both'} disabled={busy || savingSurveyLayer} onChange={(event) => void changeSurveyLayerAction(item.surveyKey, event.target.value as SurveyLayerAction)} className="max-w-28 rounded border border-emerald-200 bg-white px-1.5 py-1 text-[9px] text-slate-700 disabled:opacity-50">
                     <option value="edit">Edit attributes</option>
                     <option value="questionnaire">Questionnaire survey</option>
@@ -471,6 +475,13 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   </div>
                   <label className="text-[10px] font-semibold text-slate-600">Fill opacity · {Math.round(style.opacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={style.opacity} onChange={(e) => changeStyle({ opacity: Number(e.target.value) })} className="mt-2 block w-full" /></label>
                   <label className="text-[10px] font-semibold text-slate-600">Label field<select value={style.labelField} onChange={(e) => changeStyle({ labelField: e.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-2 py-2 text-xs"><option value="">Use layer default</option>{columns.map((field) => <option key={field} value={field}>{field}</option>)}</select></label>
+                  {selected.kind === 'feature' && activeSurveyKeys.includes(selected.surveyKey) && <div className="col-span-2 grid grid-cols-3 gap-2 border-t border-slate-100 pt-2">
+                    {(['pending', 'verified', 'rejected'] as const).map((status) => <label key={status} className="text-[10px] font-semibold capitalize text-slate-600">
+                      {status} color
+                      <input aria-label={`${selected.name} ${status} status color`} type="color" value={style.statusColors?.[status] || DEFAULT_FEATURE_STATUS_COLORS[status]} onChange={(event) => changeStyle({ statusColors: { ...DEFAULT_FEATURE_STATUS_COLORS, ...(style.statusColors || {}), [status]: event.target.value } })} className="mt-1 block h-8 w-full cursor-pointer rounded border border-slate-200 p-1" />
+                    </label>)}
+                    <p className="col-span-3 text-[9px] font-normal text-slate-500">Used for features in this survey-enabled layer.</p>
+                  </div>}
                   <div className="col-span-2 grid grid-cols-[minmax(6.5rem,1fr)_auto_auto_minmax(6rem,auto)] items-center gap-2 border-t border-slate-100 pt-2">
                     <label className="flex items-center gap-2 whitespace-nowrap text-[10px] font-semibold text-slate-600">
                       <input type="checkbox" checked={style.labelsVisible} onChange={(e) => changeStyle({ labelsVisible: e.target.checked })} />

@@ -14,7 +14,17 @@ export interface MapLayerStyle {
   popupHiddenFields?: string[];
   /** Popup field names keyed by their source attribute. */
   popupFieldLabels?: Record<string, string>;
+  /** Admin-controlled status palette, applied only when the layer is survey-enabled. */
+  statusColors?: Partial<Record<'pending' | 'verified' | 'rejected', string>>;
+  /** Admin-controlled project visibility; false hides the layer on every project map. */
+  visible?: boolean;
 }
+
+export const DEFAULT_FEATURE_STATUS_COLORS: Record<'pending' | 'verified' | 'rejected', string> = {
+  pending: '#2563eb',
+  verified: '#22c55e',
+  rejected: '#ef4444',
+};
 
 export type MapPopupSettings = Pick<MapLayerStyle, 'popupHiddenFields' | 'popupFieldLabels'>;
 
@@ -30,6 +40,7 @@ export const DEFAULT_MAP_LAYER_STYLE: MapLayerStyle = {
   borderWidth: 2,
   showFromZoom: 0,
   labelsFromZoom: 17,
+  statusColors: DEFAULT_FEATURE_STATUS_COLORS,
 };
 
 export function mapPopupAttributeEntries(
