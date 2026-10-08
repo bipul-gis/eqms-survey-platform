@@ -1557,8 +1557,10 @@ export const RuntimeQuestion: React.FC<{
   allAnswers?: Record<string, unknown>;
   /** Sibling questions, used by `computed` to resolve operand keys. */
   allQuestions?: Question[];
+  /** Keep the submitted computed answer stable when viewing historical responses. */
+  preserveComputedValue?: boolean;
   language?: SurveyLanguage;
-}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions, language = 'en' }) => {
+}> = ({ index, numberLabel, question, value, onChange, allAnswers, allQuestions, preserveComputedValue = false, language = 'en' }) => {
   const opts =
     question.type === 'section' ? [] : ensureOptionShape(question.options);
   const cls = 'w-full text-sm border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500';
@@ -1738,11 +1740,16 @@ export const RuntimeQuestion: React.FC<{
       // mirror the live calculation back to the enumerator — re-running
       // it on every render keeps the value in sync the moment any
       // operand answer changes, with zero extra subscriptions.
-      const res = evaluateComputed(
-        question.computed,
-        allAnswers ?? {},
-        allQuestions ?? []
-      );
+      const res = preserveComputedValue && value !== undefined && value !== null && value !== ''
+        ? {
+            value: value as number | string,
+            display: `${question.computed?.prefix ?? ''}${String(value)}${question.computed?.suffix ?? ''}`,
+          }
+        : evaluateComputed(
+            question.computed,
+            allAnswers ?? {},
+            allQuestions ?? []
+          );
       body = (
         <ComputedAnswerCell
           display={res.display}

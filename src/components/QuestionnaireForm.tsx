@@ -1673,6 +1673,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                         onChange={(v) => handleAnswer(q.id, v)}
                         allAnswers={answersForOptionLogic}
                         allQuestions={visibleQuestions}
+                        preserveComputedValue={readOnly}
                         language={surveyLanguage}
                       />
                       {locked && (
