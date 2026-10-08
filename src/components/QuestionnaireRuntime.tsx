@@ -678,36 +678,42 @@ export const EnumeratorInfoTable: React.FC<{
       }
       case 'multiselect':
         return (
-          <select
-            multiple
-            value={(v as string[]) || []}
-            onChange={(e) =>
-              onChange(
-                f.id,
-                Array.from(
-                  e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>
-                )
-                  .map((o) => o.value)
-                  .filter((pv) => {
-                    const o = opts.find((x) => x.value === pv);
-                    return !o || !isChoiceOptionUnavailable(o, logicCtx);
-                  })
-              )
-            }
-            className={`${cls} h-24`}
-          >
+          <div className="space-y-1.5">
             {opts
               .filter((o) => !isChoiceOptionHidden(o, logicCtx))
-              .map((o) => (
-                <option
-                  key={o.id}
-                  value={o.value}
-                  disabled={isChoiceOptionDisabled(o, logicCtx)}
-                >
-                  {getLocalizedOptionText(o.label, language, o.labelTranslations)}
-                </option>
-              ))}
-          </select>
+              .map((o) => {
+                const selected = Array.isArray(v) ? (v as string[]) : [];
+                const disabled = isChoiceOptionDisabled(o, logicCtx);
+                return (
+                  <label
+                    key={o.id}
+                    className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      disabled
+                        ? 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-400'
+                        : selected.includes(o.value)
+                          ? 'cursor-pointer border-blue-200 bg-blue-50 text-slate-800'
+                          : 'cursor-pointer border-slate-200 bg-white text-slate-700'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={disabled}
+                      checked={selected.includes(o.value)}
+                      onChange={(e) =>
+                        onChange(
+                          f.id,
+                          e.target.checked
+                            ? [...selected, o.value]
+                            : selected.filter((item) => item !== o.value)
+                        )
+                      }
+                      className="h-4 w-4 shrink-0 accent-blue-600"
+                    />
+                    <span>{getLocalizedOptionText(o.label, language, o.labelTranslations)}</span>
+                  </label>
+                );
+              })}
+          </div>
         );
       default:
         return null;
