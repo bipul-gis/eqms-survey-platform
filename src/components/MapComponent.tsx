@@ -1579,8 +1579,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === `feature:${layerName}`.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
           const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || projectId || '');
           const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
-          const fillColor = layerStyle?.fillColor || color;
-          const boundaryColor = layerStyle?.boundaryColor || color;
+          // Uploaded features are color-coded by their individual QC status.
+          // A layer-wide style must not hide Pending / Verified / Rejected changes.
+          const fillColor = color;
+          const boundaryColor = color;
           const borderWidth = layerStyle?.borderWidth;
           const opacity = layerStyle?.opacity;
           const labelField = layerStyle?.labelField;
