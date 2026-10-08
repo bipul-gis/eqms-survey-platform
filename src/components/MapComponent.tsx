@@ -89,6 +89,25 @@ const importedLayerName = (feature: GeoFeature): string => {
   return isImported ? 'Unassigned layer' : '';
 };
 
+const resolveFeatureLabel = (attributes: Record<string, unknown> | undefined, preferredField?: string) => {
+  if (!attributes) return '';
+  const isTextValue = (value: unknown): value is string | number =>
+    (typeof value === 'string' && value.trim() !== '') ||
+    (typeof value === 'number' && Number.isFinite(value));
+  const preferred = preferredField ? attributes[preferredField] : undefined;
+  if (isTextValue(preferred)) return String(preferred).trim();
+
+  const commonFields = ['name', 'label', 'title', 'road_name', 'union_name', 'upazila_name', 'NAME', 'Name', 'LABEL', 'Label', 'TITLE', 'Title'];
+  for (const field of commonFields) {
+    const value = attributes[field];
+    if (isTextValue(value)) return String(value).trim();
+  }
+  const namedField = Object.entries(attributes).find(([field, value]) =>
+    /(?:^|[_\s-])(?:name|label|title|na)$/i.test(field) && isTextValue(value)
+  );
+  return namedField ? String(namedField[1]).trim() : '';
+};
+
 const polygonGeometryKey = (geometry: any): string => {
   if (!geometry || typeof geometry.type !== 'string' || !Array.isArray(geometry.coordinates)) return '';
   const rounded = (value: any): any => Array.isArray(value)
@@ -1252,28 +1271,31 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
   // Group imported features by their layer name
   const distinctImportedLayers = useMemo(() => {
-    const layerMap = new Map<string, { count: number; types: Set<string> }>();
+    const layerMap = new Map<string, { projectId: string; count: number; types: Set<string> }>();
     for (const f of features) {
       const name = importedLayerName(f);
       if (!name) continue;
-      const existing = layerMap.get(name) || { count: 0, types: new Set<string>() };
+      const featureProjectId = String(
+        f.attributes?.projectId || (f as any).projectId || projectId || ''
+      ).trim();
+      const existing = layerMap.get(name) || { projectId: featureProjectId, count: 0, types: new Set<string>() };
       existing.count++;
       existing.types.add(f.type);
       layerMap.set(name, existing);
     }
     return Array.from(layerMap.entries()).map(([name, info]) => ({
+      key: name,
       name,
+      projectId: info.projectId,
       count: info.count,
       types: Array.from(info.types),
     }));
-  }, [features]);
+  }, [features, projectId]);
 
   const getLayerStyle = (kind: 'feature' | 'zone', id: string, layerProjectId?: string) => {
     const key = mapLayerStyleKey(kind, id);
     const projectStyles = layerProjectId ? projectMapLayerStylesByProject[layerProjectId] : undefined;
-    const savedStyle = projectStyles
-      ? projectStyles[key]
-      : mapLayerSettings[key];
+    const savedStyle = projectStyles?.[key] ?? mapLayerSettings[key];
     return {
       ...DEFAULT_MAP_LAYER_STYLE,
       ...(kind === 'zone' ? { labelsVisible: true } : {}),
@@ -1284,16 +1306,26 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const duplicateZonePolygonFeatureIds = useMemo(() => {
     if (!isEnumeratorUser) return new Set<string>();
     const zoneGeometryKeys = new Set<string>();
-    const addZoneFeatures = (collection?: GeoJSON.FeatureCollection | null) => {
+    const addZoneFeatures = (collection?: GeoJSON.FeatureCollection | null, zoneProjectId?: string) => {
       for (const feature of collection?.features || []) {
         const geometryKey = polygonGeometryKey(feature.geometry);
         if (!geometryKey) continue;
-        const projectKey = String(feature.properties?.__projectId || '');
+        const projectKey = String(feature.properties?.__projectId || zoneProjectId || '');
         zoneGeometryKeys.add(`${projectKey}:${geometryKey}`);
       }
     };
-    addZoneFeatures(zoneBoundaries);
-    importedZoneLayers?.forEach((layer) => addZoneFeatures(layer.data));
+    if (importedZoneLayers?.length) {
+      for (const layer of importedZoneLayers) {
+        if (zoneLayerVisibility[layer.id] === false) continue;
+        const style = getLayerStyle('zone', layer.id, layer.projectId);
+        if (mapZoom < style.showFromZoom) continue;
+        addZoneFeatures(layer.data, layer.projectId);
+      }
+    } else if (showZones && zoneBoundaries) {
+      const zoneLayerId = String(zoneBoundaries.features[0]?.properties?.__layerId || '');
+      const style = getLayerStyle('zone', zoneLayerId, projectId);
+      if (mapZoom >= style.showFromZoom) addZoneFeatures(zoneBoundaries, projectId);
+    }
 
     return new Set(
       features
@@ -1305,7 +1337,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         })
         .map((feature) => feature.id)
     );
-  }, [isEnumeratorUser, features, zoneBoundaries, importedZoneLayers]);
+  }, [isEnumeratorUser, features, zoneBoundaries, importedZoneLayers, zoneLayerVisibility, showZones, mapZoom, projectId, projectMapLayerStylesByProject, mapLayerSettings]);
 
   const isFeatureLayerVisible = useCallback((f: GeoFeature) => {
     if (duplicateZonePolygonFeatureIds.has(f.id)) return false;
@@ -1602,7 +1634,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const opacity = layerStyle?.opacity;
           const labelField = layerStyle?.labelField;
           const labelText = layerStyle?.labelsVisible && mapZoom >= layerStyle.labelsFromZoom
-            ? String((labelField ? feature.attributes?.[labelField] : undefined) ?? feature.attributes?.name ?? feature.attributes?.Name ?? feature.attributes?.label ?? '')
+            ? resolveFeatureLabel(feature.attributes, labelField)
             : '';
 
           if (feature.type === 'point') {
@@ -1822,7 +1854,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           </button>
         )}
         {showLayerPanel && (
-          <div className="w-56 bg-white rounded-xl shadow-xl border border-slate-200 p-3 text-xs space-y-3">
+          <div className="max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-xl">
+            <div className="space-y-3">
             <div>
               <p className="font-bold text-slate-700 mb-2">Basemap</p>
               <div className="space-y-1.5">
@@ -1972,11 +2005,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                   {distinctImportedLayers.map((lyr) => {
                     const isVisible = layerVisibility[lyr.name] !== false;
-                    const legendStyle = getLayerStyle('feature', lyr.name, projectId);
+                    const legendStyle = getLayerStyle('feature', lyr.name, lyr.projectId || undefined);
                     const legendBorderWidth = Math.max(1, Number(legendStyle.borderWidth ?? 2));
                     return (
-                      <div key={lyr.name} className="rounded-lg hover:bg-slate-50">
-                      <div className="flex items-center gap-2 p-1.5 text-xs">
+                      <div key={lyr.key} className="rounded-lg hover:bg-slate-50">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-1.5 text-xs">
                         <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
                           <input
                             type="checkbox"
@@ -1994,11 +2027,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                             {lyr.types.map((type) => (
                               <span key={type} title={`${type} legend`} aria-label={`${type} legend`} className="flex h-5 w-5 items-center justify-center">
                                 {type === 'point' ? (
-                                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: legendStyle.fillColor, border: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                  <span className="h-3.5 w-3.5 rounded-full border" style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, borderColor: legendStyle.boundaryColor, borderWidth: `${legendBorderWidth}px` }} />
                                 ) : type === 'line' ? (
-                                  <span className="block w-4" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                  <span className="block w-3.5" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
                                 ) : (
-                                  <span className="h-3 w-4 rounded-[2px]" style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, border: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                  <span className="h-3.5 w-3.5 rounded-sm border" style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, borderColor: legendStyle.boundaryColor, borderWidth: `${legendBorderWidth}px` }} />
                                 )}
                               </span>
                             ))}
@@ -2007,7 +2040,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                             {lyr.name}
                           </span>
                         </label>
-                        <span className="text-right text-[10px] text-slate-400">({lyr.count})</span>
+                        <span className="shrink-0 text-right text-[10px] tabular-nums text-slate-400">({lyr.count.toLocaleString()})</span>
                       </div>
                       </div>
                     );
@@ -2015,6 +2048,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 </div>
               </div>
             )}
+            </div>
           </div>
         )}
       </div>
