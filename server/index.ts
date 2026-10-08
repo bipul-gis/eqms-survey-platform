@@ -158,6 +158,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 app.get('/api/auth/session', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   const token = extractSessionToken(req);
   if (!token) {
     res.status(401).json({ error: 'Not authenticated.' });

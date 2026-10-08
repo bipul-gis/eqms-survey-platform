@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
   geosurveyApi,
   setStoredSessionToken,
@@ -47,6 +47,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<AuthUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const profileRefreshInFlight = useRef(false);
+  const currentProfile = useRef<UserProfile | null>(null);
 
   const applySession = useCallback((profile: UserProfile, token: string) => {
     if (!profile?.uid) {
@@ -59,28 +61,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: profile.email,
       displayName: profile.displayName,
     });
+    currentProfile.current = profile;
     setUserProfile(profile);
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    const token = getStoredSessionToken();
-    if (!token) {
-      setUser(null);
-      setUserProfile(null);
-      return;
-    }
+    if (profileRefreshInFlight.current) return;
+    profileRefreshInFlight.current = true;
     try {
+      const token = getStoredSessionToken();
+      if (!token) {
+        setUser(null);
+        currentProfile.current = null;
+        setUserProfile(null);
+        return;
+      }
       const session = await geosurveyApi.session();
       if (!session?.profile?.uid || !session.sessionToken) return;
-      applySession(session.profile, session.sessionToken);
+      if (JSON.stringify(session.profile) !== JSON.stringify(currentProfile.current)) {
+        applySession(session.profile, session.sessionToken);
+      }
     } catch (error) {
       // Keep the last good session through offline gaps and server hiccups.
       if (!isAuthRejection(error)) return;
       clearCachedAuthProfile();
       setStoredSessionToken(null);
       setUser(null);
+      currentProfile.current = null;
       setUserProfile(null);
       throw error;
+    } finally {
+      profileRefreshInFlight.current = false;
     }
   }, [applySession]);
 
@@ -134,6 +145,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setStoredSessionToken(null);
         clearCachedAuthProfile();
         setUser(null);
+        currentProfile.current = null;
         setUserProfile(null);
       } finally {
         if (!cancelled) setLoading(false);
@@ -146,11 +158,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     if (!userProfile?.uid) return;
+    const refreshWhenActive = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshProfile().catch(() => undefined);
+      }
+    };
+    // Pending enumerators are waiting for an admin action. Check frequently
+    // while the screen is open, then use a lighter cadence after approval.
+    const pollMs = userProfile.status === 'pending' ? 5_000 : 30_000;
     const interval = window.setInterval(() => {
-      void refreshProfile().catch(() => undefined);
-    }, 30_000);
-    return () => window.clearInterval(interval);
-  }, [userProfile?.uid, refreshProfile]);
+      refreshWhenActive();
+    }, pollMs);
+    window.addEventListener('focus', refreshWhenActive);
+    window.addEventListener('pageshow', refreshWhenActive);
+    document.addEventListener('visibilitychange', refreshWhenActive);
+    refreshWhenActive();
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshWhenActive);
+      window.removeEventListener('pageshow', refreshWhenActive);
+      document.removeEventListener('visibilitychange', refreshWhenActive);
+    };
+  }, [userProfile?.uid, userProfile?.status, refreshProfile]);
 
   const login = async (email: string, pass: string) => {
     const session = await geosurveyApi.login(email, pass);
@@ -169,6 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setStoredSessionToken(null);
     clearCachedAuthProfile();
     setUser(null);
+    currentProfile.current = null;
     setUserProfile(null);
   };
 

@@ -2782,6 +2782,9 @@ const AppContent: React.FC = () => {
             <p className="text-[10px] text-slate-400 mt-3">
               {userProfile.email}
             </p>
+            <p className="text-[11px] text-emerald-700 mt-2">
+              This screen checks for approval automatically while the app is open.
+            </p>
           </div>
 
           <div className="space-y-3">

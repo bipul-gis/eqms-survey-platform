@@ -138,7 +138,9 @@ export const geosurveyApi = {
     ),
 
   session: () =>
-    apiFetch<{ profile: import('../types').UserProfile; sessionToken: string }>('/api/auth/session'),
+    apiFetch<{ profile: import('../types').UserProfile; sessionToken: string }>('/api/auth/session', {
+      cache: 'no-store',
+    }),
 
   logout: () => apiFetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
