@@ -252,6 +252,14 @@ export const getExportOrderedQuestions = (questionnaire: Questionnaire): Questio
   return ordered;
 };
 
+const getQuestionNumberMap = (questionnaire: Questionnaire): Map<string, string> =>
+  buildQuestionNumbering(
+    normalizeQuestionnaireSectionQuestions(
+      questionnaire.questions || [],
+      questionnaire.sections || []
+    )
+  ).questionNumbers;
+
 /** Include answer keys from responses whose question was removed from the form. */
 const mergeQuestionsWithResponseKeys = (
   ordered: Question[],
@@ -391,10 +399,10 @@ const branchTagForColumn = (
 const buildUniqueColumnHeaders = (
   cols: ResponsesExportColumn[],
   allQuestions: Question[],
-  reserved: Iterable<string>
+  reserved: Iterable<string>,
+  questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers
 ): string[] => {
   const branchingId = inferBranchingPrefixQuestionId(allQuestions);
-  const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
   const base = cols.map((col) => responsesExportColumnBaseHeader(col, questionNumbers));
   const counts = new Map<string, number>();
   for (const b of base) counts.set(b, (counts.get(b) || 0) + 1);
@@ -545,7 +553,12 @@ export const planResponsesExport = (
   );
   const columns = buildResponsesExportColumnsForRows(questions, responses);
   const preHeaders = buildSystemAndEnumHeaders(q);
-  const columnHeaders = buildUniqueColumnHeaders(columns, questions, preHeaders);
+  const columnHeaders = buildUniqueColumnHeaders(
+    columns,
+    questions,
+    preHeaders,
+    getQuestionNumberMap(q)
+  );
   const header = [...preHeaders, ...columnHeaders];
   return { questions, columns, enumFields, consentEnabled, header, columnHeaders };
 };
@@ -770,7 +783,8 @@ export const buildResponsesExportFieldDescriptors = (
   const columnHeaders = buildUniqueColumnHeaders(
     exportColumns,
     questions,
-    buildSystemAndEnumHeaders(q)
+    buildSystemAndEnumHeaders(q),
+    getQuestionNumberMap(q)
   );
   exportColumns.forEach((col, i) => {
     const qq = col.question;
