@@ -390,25 +390,58 @@ export const evaluateComputed = (
     const matchQuestionId = spec.repeatMatchQuestionId;
     const expected = (spec.repeatMatchValue ?? '').trim().toLocaleLowerCase();
     if (!matchQuestionId || !expected) return empty;
+    const answerForInstance = (question: Question): unknown => {
+      const sourceId = question.repeatSourceId || question.id;
+      const keys = [
+        question.id,
+        question.key && question.repeatIndex !== undefined
+          ? `${question.key}__repeat_${question.repeatIndex}`
+          : undefined,
+        question.repeatIndex !== undefined
+          ? `${sourceId}__repeat_${question.repeatIndex}`
+          : undefined,
+        question.key && question.repeatIndex === undefined ? question.key : undefined,
+        sourceId
+      ];
+      for (const key of keys) {
+        if (key && Object.prototype.hasOwnProperty.call(answers, key)) return answers[key];
+      }
+      return undefined;
+    };
+    const comparableChoiceValues = (question: Question, value: unknown): string[] => {
+      const selected = String(value ?? '').trim().toLocaleLowerCase();
+      if (!selected) return [];
+      const options = question.options ?? [];
+      const matched = options.find((option) => {
+        if (typeof option === 'string') return option.trim().toLocaleLowerCase() === selected;
+        return [option.value, option.id, option.label, option.labelTranslations?.en, option.labelTranslations?.bn]
+          .some((candidate) => candidate?.trim().toLocaleLowerCase() === selected);
+      });
+      if (!matched || typeof matched === 'string') return [selected];
+      return [matched.value, matched.id, matched.label, matched.labelTranslations?.en, matched.labelTranslations?.bn]
+        .filter((candidate): candidate is string => Boolean(candidate))
+        .map((candidate) => candidate.trim().toLocaleLowerCase());
+    };
     const repeatedInstances = (questionId: string) => {
-      const source = questions.find((question) =>
-        question.id === questionId || question.key === questionId
-      );
+      const source = questions.find((question) => question.id === questionId) ??
+        questions.find((question) => question.key === questionId);
       const sourceId = source?.repeatSourceId || source?.id || questionId;
       return questions.filter((question) => question.type !== 'section' && (
         question.repeatSourceId === sourceId || question.id.startsWith(`${sourceId}__repeat_`)
       )).filter((question) => question.repeatIndex !== undefined);
     };
+    const matchingInstances = repeatedInstances(matchQuestionId);
     let count = 0;
     for (const operandId of operandIds) {
       for (const operand of repeatedInstances(operandId)) {
-        const income = coerceAnswerToNumber(answers[operand.id]);
+        const income = coerceAnswerToNumber(answerForInstance(operand));
         if (income === null || income <= 0 || operand.repeatIndex === undefined) continue;
-        const match = repeatedInstances(matchQuestionId).find(
+        const match = matchingInstances.find(
           (question) => question.repeatIndex === operand.repeatIndex
         );
-        const value = match ? answers[match.id] : undefined;
-        if (String(value ?? '').trim().toLocaleLowerCase() === expected) count += 1;
+        if (!match) continue;
+        const value = answerForInstance(match);
+        if (comparableChoiceValues(match, value).includes(expected)) count += 1;
       }
     }
     return { value: count, display: `${spec.prefix ?? ''}${count}${spec.suffix ?? ''}` };
