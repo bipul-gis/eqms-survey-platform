@@ -1226,6 +1226,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   const [selectedId, setSelectedId] = useState<string | null>(
     questions[0]?.id ?? null
   );
+  const [bulkLogicQuestionIds, setBulkLogicQuestionIds] = useState<Set<string>>(new Set());
+  const [showBulkLogicEditor, setShowBulkLogicEditor] = useState(false);
   const [rightTab, setRightTab] = useState<'properties' | 'logic' | 'validation'>('properties');
   const [showPreview, setShowPreview] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -1286,6 +1288,24 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     () => questions.find((q) => q.id === selectedId) || null,
     [questions, selectedId]
   );
+  const bulkLogicQuestions = useMemo(
+    () => questions.filter((question) => bulkLogicQuestionIds.has(question.id) && question.type !== 'section'),
+    [questions, bulkLogicQuestionIds]
+  );
+  const toggleBulkLogicQuestion = (id: string) => {
+    setBulkLogicQuestionIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const updateBulkLogic = (patch: Partial<Question>) => {
+    const ids = new Set(bulkLogicQuestions.map((question) => question.id));
+    setQuestions((previous) => previous.map((question) => ids.has(question.id)
+      ? { ...question, ...patch }
+      : question));
+  };
 
   // ----- Question mutation helpers -----------------------------------------
   const addQuestion = (type: QuestionType) => {
@@ -1748,6 +1768,32 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
         {/* Center: canvas */}
         <main className="col-span-12 md:col-span-6 lg:col-span-7 overflow-y-auto p-6 bg-slate-50">
           <div className="max-w-3xl mx-auto space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+              <span className="text-xs text-blue-900">
+                {bulkLogicQuestions.length > 0
+                  ? `${bulkLogicQuestions.length} question${bulkLogicQuestions.length === 1 ? '' : 's'} selected for shared display logic`
+                  : 'Select questions to apply the same display logic to them'}
+              </span>
+              <div className="flex items-center gap-2">
+                {bulkLogicQuestions.length > 0 && (
+                  <button type="button" onClick={() => setBulkLogicQuestionIds(new Set())} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Clear</button>
+                )}
+                <button
+                  type="button"
+                  disabled={bulkLogicQuestions.length < 2}
+                  onClick={() => setShowBulkLogicEditor((open) => !open)}
+                  className="rounded bg-blue-600 px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {showBulkLogicEditor ? 'Close shared logic' : 'Apply shared logic'}
+                </button>
+              </div>
+            </div>
+            {showBulkLogicEditor && bulkLogicQuestions.length >= 2 && (
+              <div className="rounded-lg border border-blue-200 bg-white p-3">
+                <p className="mb-2 text-xs font-semibold text-slate-700">The same display rule will be applied to all selected questions.</p>
+                <LogicPanel question={bulkLogicQuestions[0]} allQuestions={questions} onUpdate={updateBulkLogic} />
+              </div>
+            )}
             <div className="bg-white rounded-xl border border-slate-200 p-5">
               <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                 Description
@@ -1811,6 +1857,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                       allQuestions={questions}
                       hasChildren={childrenWithIdx.length > 0}
                       selected={selectedId === q.id}
+                      bulkSelected={bulkLogicQuestionIds.has(q.id)}
+                      onToggleBulk={() => toggleBulkLogicQuestion(q.id)}
                       onSelect={() => {
                         setSelectedId(q.id);
                         setRightTab('properties');
@@ -1845,6 +1893,8 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                         allQuestions={questions}
                         hasChildren={false}
                         selected={selectedId === c.id}
+                        bulkSelected={bulkLogicQuestionIds.has(c.id)}
+                        onToggleBulk={() => toggleBulkLogicQuestion(c.id)}
                         onSelect={() => {
                           setSelectedId(c.id);
                           setRightTab('properties');
@@ -1985,6 +2035,8 @@ interface QuestionCardProps {
   /** True when this top-level question has at least one sub-question. */
   hasChildren: boolean;
   selected: boolean;
+  bulkSelected: boolean;
+  onToggleBulk: () => void;
   onSelect: () => void;
   onUpdate: (patch: Partial<Question>) => void;
   onRemove: () => void;
@@ -2008,6 +2060,8 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
   allQuestions,
   hasChildren,
   selected,
+  bulkSelected,
+  onToggleBulk,
   onSelect,
   onUpdate,
   onRemove,
@@ -2048,6 +2102,17 @@ const QuestionCard: React.FC<QuestionCardProps> = ({
     >
       <div className={`flex items-center gap-2 px-4 py-2 border-b rounded-t-xl ${isSection ? 'border-indigo-200 bg-indigo-100/80' : 'border-slate-100 bg-slate-50/60'}`}>
         {!isSection && <GripVertical size={14} className="text-slate-300" />}
+        {!isSection && (
+          <input
+            type="checkbox"
+            checked={bulkSelected}
+            onClick={(event) => event.stopPropagation()}
+            onChange={onToggleBulk}
+            aria-label={`Select ${question.question || question.id} for shared display logic`}
+            title="Select for shared display logic"
+            className="h-3.5 w-3.5 accent-blue-600"
+          />
+        )}
         <span
           className={`text-[10px] font-bold uppercase tracking-wider ${
             isSection ? 'text-indigo-800' : isChild ? 'text-blue-600' : 'text-slate-500'
