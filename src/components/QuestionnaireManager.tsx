@@ -1294,13 +1294,16 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     () => questions.filter((question) => bulkLogicQuestionIds.has(question.id) && question.type !== 'section'),
     [questions, bulkLogicQuestionIds]
   );
+  const bulkLogicModeActive = Boolean(
+    selectedQuestion && bulkLogicQuestions.length > 1
+  );
   useEffect(() => {
-    if (rightTab !== 'logic' || bulkLogicQuestions.length < 2 || bulkLogicDraft) return;
+    if (rightTab !== 'logic' || !bulkLogicModeActive || bulkLogicDraft) return;
     const startingLogic = bulkLogicQuestions[0]?.logic;
     setBulkLogicDraft(startingLogic
       ? JSON.parse(JSON.stringify(startingLogic)) as LogicRule
       : blankLogic());
-  }, [rightTab, bulkLogicQuestions, bulkLogicDraft]);
+  }, [rightTab, bulkLogicModeActive, bulkLogicQuestions, bulkLogicDraft]);
   const toggleBulkLogicQuestion = (id: string) => {
     setBulkLogicAppliedCount(0);
     setBulkLogicQuestionIds((previous) => {
@@ -1330,7 +1333,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     setBulkLogicAppliedCount(0);
   };
   const applyBulkLogic = () => {
-    if (!bulkLogicDraft || bulkLogicQuestions.length < 2) return;
+    if (!bulkLogicDraft || !bulkLogicModeActive) return;
     const ids = new Set(bulkLogicQuestions.map((question) => question.id));
     const sharedLogic = JSON.parse(JSON.stringify(bulkLogicDraft)) as LogicRule;
     setQuestions((previous) => previous.map((question) => ids.has(question.id)
@@ -1338,9 +1341,15 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       : question));
     setBulkLogicAppliedCount(ids.size);
   };
-
+  const clearBulkLogicSelection = () => {
+    setBulkLogicQuestionIds(new Set());
+    setShowBulkLogicEditor(false);
+    setBulkLogicDraft(null);
+    setBulkLogicAppliedCount(0);
+  };
   // ----- Question mutation helpers -----------------------------------------
   const addQuestion = (type: QuestionType) => {
+    clearBulkLogicSelection();
     const now = Date.now();
     const guard = addQuestionGuardRef.current;
     // Guard against double-tap / touch+click on the palette (common on tablets).
@@ -1364,6 +1373,12 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   };
 
   const removeQuestion = (id: string) => {
+    if (selectedId === id) clearBulkLogicSelection();
+    setBulkLogicQuestionIds((previous) => {
+      const next = new Set(previous);
+      next.delete(id);
+      return next;
+    });
     setQuestions((prev) => {
       // Any sub-questions parented under the one being deleted get
       // promoted back to top-level so they don't become orphans
@@ -1440,6 +1455,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     const parent = questions.find((q) => q.id === parentId);
     if (!parent || parent.type === 'section' || parent.parentId) return;
     if (type === 'responseId') return; // Response ID stays top-level only
+    clearBulkLogicSelection();
     const child: Question = { ...newDefaultQuestion(type, questions), parentId };
     setQuestions((prev) => {
       const next = [...prev];
@@ -1460,6 +1476,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   };
 
   const duplicateQuestion = (id: string) => {
+    clearBulkLogicSelection();
     setQuestions((prev) => {
       const idx = prev.findIndex((q) => q.id === id);
       if (idx < 0) return prev;
@@ -1812,7 +1829,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                 )}
                 <button
                   type="button"
-                  disabled={bulkLogicQuestions.length < 2}
+                  disabled={!bulkLogicModeActive}
                   onClick={openBulkLogicEditor}
                   className="rounded bg-blue-600 px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -1820,7 +1837,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                 </button>
               </div>
             </div>
-            {showBulkLogicEditor && bulkLogicQuestions.length >= 2 && (
+            {showBulkLogicEditor && bulkLogicModeActive && (
               <div className="rounded-lg border border-blue-200 bg-white p-3">
                 <p className="mb-2 text-xs font-semibold text-slate-700">Edit one shared rule, then apply it to all selected questions.</p>
                 <LogicPanel
@@ -1840,7 +1857,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                       ? `Applied to ${bulkLogicAppliedCount} selected questions.`
                       : `${bulkLogicQuestions.length} questions will receive this rule.`}
                   </span>
-                  <button type="button" onClick={applyBulkLogic} disabled={bulkLogicQuestions.length < 2 || !bulkLogicDraft} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                  <button type="button" onClick={applyBulkLogic} disabled={!bulkLogicModeActive || !bulkLogicDraft} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
                     Apply logic to {bulkLogicQuestions.length} questions
                   </button>
                 </div>
@@ -1912,6 +1929,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                       bulkSelected={bulkLogicQuestionIds.has(q.id)}
                       onToggleBulk={() => toggleBulkLogicQuestion(q.id)}
                       onSelect={() => {
+                        clearBulkLogicSelection();
                         setSelectedId(q.id);
                         setRightTab('properties');
                       }}
@@ -1948,6 +1966,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                         bulkSelected={bulkLogicQuestionIds.has(c.id)}
                         onToggleBulk={() => toggleBulkLogicQuestion(c.id)}
                         onSelect={() => {
+                          clearBulkLogicSelection();
                           setSelectedId(c.id);
                           setRightTab('properties');
                         }}
@@ -1982,14 +2001,14 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                   [
                     { id: 'properties', label: 'Properties', Icon: Settings },
                     { id: 'validation', label: 'Validation', Icon: AlertCircle },
-                    { id: 'logic', label: bulkLogicQuestions.length > 1 ? `Logic (${bulkLogicQuestions.length})` : 'Logic', Icon: Filter }
+                    { id: 'logic', label: bulkLogicModeActive ? `Logic (${bulkLogicQuestions.length})` : 'Logic', Icon: Filter }
                   ] as const
                 ).map((t) => (
                   <button
                     key={t.id}
                     onClick={() => {
                       setRightTab(t.id);
-                      if (t.id === 'logic' && bulkLogicQuestions.length > 1) initializeBulkLogicDraft();
+                      if (t.id === 'logic' && bulkLogicModeActive) initializeBulkLogicDraft();
                     }}
                     className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-2.5 border-b-2 transition-colors ${
                       rightTab === t.id
@@ -2019,7 +2038,7 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                   />
                 )}
                 {rightTab === 'logic' && (
-                  bulkLogicQuestions.length > 1 ? (
+                  bulkLogicModeActive ? (
                     <div className="space-y-3">
                       <div className="rounded border border-blue-200 bg-blue-50 p-2 text-[11px] text-blue-900">
                         Editing one shared display rule for {bulkLogicQuestions.length} selected questions.
