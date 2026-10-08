@@ -23,6 +23,7 @@ import {
 } from '../lib/choiceAnswers';
 import { formatPhotoAnswerLabel, collectResponsePhotoAttachment, type ExportPhotoAttachment } from './photoAnswers';
 import { normalizeQuestionnaireSectionQuestions } from './questionnaireSections';
+import { expandRepeatedQuestions } from './repeatedQuestions';
 import { buildQuestionNumbering } from './questionNumbering';
 
 // ---------------------------------------------------------------------------
@@ -252,13 +253,63 @@ export const getExportOrderedQuestions = (questionnaire: Questionnaire): Questio
   return ordered;
 };
 
-const getQuestionNumberMap = (questionnaire: Questionnaire): Map<string, string> =>
-  buildQuestionNumbering(
+const getQuestionNumberMap = (
+  questionnaire: Questionnaire,
+  questions = normalizeQuestionnaireSectionQuestions(
+    questionnaire.questions || [],
+    questionnaire.sections || []
+  )
+): Map<string, string> => {
+  const baseNumbers = buildQuestionNumbering(
     normalizeQuestionnaireSectionQuestions(
       questionnaire.questions || [],
       questionnaire.sections || []
     )
   ).questionNumbers;
+  const numbers = new Map(baseNumbers);
+  for (const question of questions) {
+    if (!question.repeatSourceId || !question.repeatIndex) continue;
+    const sourceNumber = baseNumbers.get(question.repeatSourceId);
+    if (sourceNumber) numbers.set(question.id, `${sourceNumber} (${question.repeatIndex})`);
+  }
+  return numbers;
+};
+
+/** Build export columns for the largest repeat count found in any response. */
+const getExportQuestionsForResponses = (
+  questionnaire: Questionnaire,
+  responses: QuestionnaireResponse[]
+): Question[] => {
+  const base = normalizeQuestionnaireSectionQuestions(
+    questionnaire.questions || [],
+    questionnaire.sections || []
+  );
+  const maximumCounts: Record<string, number> = {};
+  for (const section of base) {
+    const countQuestionId = section.repeatSection?.countQuestionId;
+    if (!countQuestionId) continue;
+    let maximum = 0;
+    for (const response of responses) {
+      const value = Number(response.responses?.[countQuestionId]);
+      if (Number.isFinite(value)) maximum = Math.max(maximum, Math.min(100, Math.floor(value)));
+    }
+    maximumCounts[countQuestionId] = maximum;
+  }
+  const expanded = expandRepeatedQuestions(base, maximumCounts);
+  const ordered: Question[] = [];
+  const seen = new Set<string>();
+  const push = (question: Question) => {
+    if (question.type === 'section' || seen.has(question.id)) return;
+    seen.add(question.id);
+    ordered.push(question);
+  };
+  for (const question of expanded.filter((item) => !item.parentId)) {
+    push(question);
+    for (const child of expanded.filter((item) => item.parentId === question.id)) push(child);
+  }
+  for (const question of expanded) push(question);
+  return mergeQuestionsWithResponseKeys(ordered, responses);
+};
 
 /** Include answer keys from responses whose question was removed from the form. */
 const mergeQuestionsWithResponseKeys = (
@@ -547,17 +598,14 @@ export const planResponsesExport = (
 ): ResponsesExportPlan => {
   const enumFields = q.enumeratorInfo?.fields || [];
   const consentEnabled = !!q.consentGate?.enabled;
-  const questions = mergeQuestionsWithResponseKeys(
-    getExportOrderedQuestions(q),
-    responses
-  );
+  const questions = getExportQuestionsForResponses(q, responses);
   const columns = buildResponsesExportColumnsForRows(questions, responses);
   const preHeaders = buildSystemAndEnumHeaders(q);
   const columnHeaders = buildUniqueColumnHeaders(
     columns,
     questions,
     preHeaders,
-    getQuestionNumberMap(q)
+    getQuestionNumberMap(q, questions)
   );
   const header = [...preHeaders, ...columnHeaders];
   return { questions, columns, enumFields, consentEnabled, header, columnHeaders };
@@ -755,7 +803,7 @@ export const buildResponsesExportFieldDescriptors = (
   responses: QuestionnaireResponse[]
 ): ResponsesExportFieldDescriptor[] => {
   const enumFields = q.enumeratorInfo?.fields || [];
-  const questions = mergeQuestionsWithResponseKeys(getExportOrderedQuestions(q), responses);
+  const questions = getExportQuestionsForResponses(q, responses);
   const exportColumns = buildResponsesExportColumnsForRows(questions, responses);
   const out: ResponsesExportFieldDescriptor[] = [];
 
@@ -784,7 +832,7 @@ export const buildResponsesExportFieldDescriptors = (
     exportColumns,
     questions,
     buildSystemAndEnumHeaders(q),
-    getQuestionNumberMap(q)
+    getQuestionNumberMap(q, questions)
   );
   exportColumns.forEach((col, i) => {
     const qq = col.question;

@@ -27,6 +27,7 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
+import { expandRepeatedQuestions } from '../lib/repeatedQuestions';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import {
@@ -2494,6 +2495,43 @@ const PropertiesPanel: React.FC<{
         />
       </Field>
 
+      {question.type === 'section' && (() => {
+        const sectionIndex = allQuestions.findIndex((item) => item.id === question.id);
+        const countCandidates = allQuestions.slice(0, Math.max(0, sectionIndex)).filter((item) =>
+          ['number', 'scale', 'computed', 'text'].includes(item.type)
+        );
+        const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
+        return (
+          <Field
+            label="Repeat this section"
+            hint="The section and all questions up to the next section break repeat together, one full set at a time. Enter the number of sets in the linked question."
+          >
+            <select
+              value={question.repeatSection?.countQuestionId || ''}
+              onChange={(event) => onUpdate({
+                repeatSection: event.target.value
+                  ? { countQuestionId: event.target.value }
+                  : undefined
+              })}
+              className={inputCls}
+            >
+              <option value="">Do not repeat</option>
+              {countCandidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {questionNumbers.get(candidate.id) || ''} · {candidate.question || candidate.key || candidate.id}
+                </option>
+              ))}
+            </select>
+            {question.repeatSection && countCandidates.length === 0 && (
+              <p className="mt-1 text-[10px] text-amber-700">Add a count question before this section (number, scale, computed, or numeric text).</p>
+            )}
+            {question.repeatSection && countCandidates.length > 0 && (
+              <p className="mt-1 text-[10px] text-slate-500">The linked response is treated as a whole number, capped at 100 repeats.</p>
+            )}
+          </Field>
+        );
+      })()}
+
       <Field
         label="Variable / Field Key"
         hint="Used as the response field id. Auto-generated from the prompt if blank."
@@ -4817,8 +4855,26 @@ const PreviewDialog: React.FC<{
   /** Questions are revealed only when the gate is disabled or has been accepted. */
   const questionsUnlocked = !consentGate.enabled || consentGranted;
 
-  const visibleQuestions = questions.filter((q) => evaluateLogic(q.logic, answers));
+  const runtimeQuestions = useMemo(
+    () => expandRepeatedQuestions(questions, answers),
+    [questions, answers]
+  );
+  const visibleQuestions = runtimeQuestions.filter((q) => evaluateLogic(q.logic, answers));
   const numbering = useMemo(() => buildQuestionNumbering(questions), [questions]);
+  const runtimeNumbering = useMemo(() => {
+    const questionNumbers = new Map(numbering.questionNumbers);
+    const sectionNumbers = new Map(numbering.sectionNumbers);
+    const parentIds = new Map(numbering.parentIds);
+    for (const q of visibleQuestions) {
+      if (!q.repeatSourceId || !q.repeatIndex) continue;
+      const number = numbering.questionNumbers.get(q.repeatSourceId);
+      if (number) questionNumbers.set(q.id, `${number} (${q.repeatIndex})`);
+      const section = numbering.sectionNumbers.get(q.repeatSourceId);
+      if (section) sectionNumbers.set(q.id, section);
+      if (q.parentId) parentIds.set(q.id, q.parentId);
+    }
+    return { ...numbering, questionNumbers, sectionNumbers, parentIds };
+  }, [numbering, visibleQuestions]);
 
   // Mirror the live form's auto-fill / lock behaviour so admins testing
   // rules in preview see the same outcome enumerators will. Same loop-
@@ -5026,7 +5082,7 @@ const PreviewDialog: React.FC<{
                 <p className="text-sm text-slate-500 italic">Nothing to preview yet.</p>
               ) : (
                 (() => {
-                  const slots = buildVisibleQuestionSlots(visibleQuestions, numbering);
+                  const slots = buildVisibleQuestionSlots(visibleQuestions, runtimeNumbering);
                   return slots.map(({ question: q, label, depth }) => {
                     const linkedQuestionLocked = Boolean(q.featureAttributeLink) && !isSurveyDateQuestion(q);
                     const locked = lockedQuestionIds.has(q.id) || linkedQuestionLocked;

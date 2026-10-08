@@ -71,6 +71,7 @@ import {
 } from '../lib/enumeratorIdentityFields';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { expandRepeatedQuestions, getRepeatedQuestionSourceIds } from '../lib/repeatedQuestions';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer } from '../lib/choiceAnswers';
 import {
@@ -542,10 +543,33 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
     () => buildQuestionNumbering(surveyQuestions),
     [surveyQuestions]
   );
+  const runtimeQuestions = useMemo(
+    () => expandRepeatedQuestions(surveyQuestions, responses),
+    [surveyQuestions, responses]
+  );
+  const repeatedSourceIds = useMemo(
+    () => getRepeatedQuestionSourceIds(surveyQuestions),
+    [surveyQuestions]
+  );
+  useEffect(() => {
+    if (readOnly || repeatedSourceIds.size === 0) return;
+    const activeRuntimeIds = new Set(runtimeQuestions.map((question) => question.id));
+    setResponses((previous) => {
+      let changed = false;
+      const next = { ...previous };
+      for (const key of Object.keys(next)) {
+        const match = /^(.*)__repeat_(\d+)$/.exec(key);
+        if (!match || !repeatedSourceIds.has(match[1]) || activeRuntimeIds.has(key)) continue;
+        delete next[key];
+        changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, [readOnly, repeatedSourceIds, runtimeQuestions]);
 
   // Visible questions respect display logic AND the consent gate.
   const visibleQuestions = useMemo(() => {
-    const all = surveyQuestions;
+    const all = runtimeQuestions;
     // Compute logic visibility per question first.
     const visibleById = new Map<string, boolean>();
     for (const q of all) visibleById.set(q.id, evaluateLogic(q.logic, responses));
@@ -560,7 +584,22 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       }
       return true;
     });
-  }, [surveyQuestions, responses]);
+  }, [runtimeQuestions, responses]);
+
+  const runtimeNumbering = useMemo(() => {
+    const questionNumbers = new Map(numbering.questionNumbers);
+    const sectionNumbers = new Map(numbering.sectionNumbers);
+    const parentIds = new Map(numbering.parentIds);
+    for (const question of visibleQuestions) {
+      if (!question.repeatSourceId || !question.repeatIndex) continue;
+      const baseNumber = numbering.questionNumbers.get(question.repeatSourceId);
+      if (baseNumber) questionNumbers.set(question.id, `${baseNumber} (${question.repeatIndex})`);
+      const baseSection = numbering.sectionNumbers.get(question.repeatSourceId);
+      if (baseSection) sectionNumbers.set(question.id, baseSection);
+      if (question.parentId) parentIds.set(question.id, question.parentId);
+    }
+    return { ...numbering, questionNumbers, sectionNumbers, parentIds };
+  }, [numbering, visibleQuestions]);
 
   /** Merged map for cross-field rules (enumerator info + survey answers). */
   const answersForOptionLogic = useMemo(
@@ -1631,7 +1670,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
             {/* Show stable section.question numbering; logic-gated questions
                 receive nested letters beneath their controlling question. */}
             {(() => {
-              const slots = buildVisibleQuestionSlots(visibleQuestions, numbering);
+              const slots = buildVisibleQuestionSlots(visibleQuestions, runtimeNumbering);
               return slots.map(({ question: q, label, depth }) => {
                 const link = q.featureAttributeLink;
                 const linkedLayerMatches = Boolean(

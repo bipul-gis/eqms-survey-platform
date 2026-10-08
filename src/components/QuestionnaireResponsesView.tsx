@@ -13,6 +13,7 @@ import { assignedZoneValuesFromProfile, zonesToGeoJson } from '../lib/assignedZo
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
+import { expandRepeatedQuestions } from '../lib/repeatedQuestions';
 import { buildQuestionNumbering } from '../lib/questionNumbering';
 import { useAuth } from './AuthProvider';
 import { Map as MapIcon, ChevronDown, ChevronUp } from 'lucide-react';
@@ -1769,8 +1770,15 @@ const ResponseDetailDialog: React.FC<{
     questionnaire.questions || [],
     questionnaire.sections || []
   );
-  const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
-  const questions = allQuestions.filter((q) => q.type !== 'section');
+  const baseQuestionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
+  const expandedQuestions = expandRepeatedQuestions(allQuestions, response.responses || {});
+  const questionNumbers = new Map(baseQuestionNumbers);
+  for (const question of expandedQuestions) {
+    if (!question.repeatSourceId || !question.repeatIndex) continue;
+    const sourceNumber = baseQuestionNumbers.get(question.repeatSourceId);
+    if (sourceNumber) questionNumbers.set(question.id, `${sourceNumber} (${question.repeatIndex})`);
+  }
+  const questions = expandedQuestions.filter((q) => q.type !== 'section');
 
   return (
     <div className="fixed inset-0 z-[1008] bg-slate-900/60 flex items-center justify-center p-4">

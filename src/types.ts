@@ -481,6 +481,12 @@ export interface Question {
    * hidden by its `logic` rule, every child is hidden alongside it.
    */
   parentId?: string;
+  /** Repeat the section beginning at this section break using a count answer. */
+  repeatSection?: { countQuestionId: string };
+  /** Runtime-only source metadata used for expanded repeat instances. */
+  repeatSourceId?: string;
+  /** Runtime-only one-based repeat index. */
+  repeatIndex?: number;
   /** For matrix questions only — row labels. */
   rows?: string[];
   /** For matrix questions only — column option labels. */
