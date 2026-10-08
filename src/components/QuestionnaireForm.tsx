@@ -1712,7 +1712,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
                         value={responses[q.id]}
                         onChange={(v) => handleAnswer(q.id, v)}
                         allAnswers={answersForOptionLogic}
-                        allQuestions={visibleQuestions}
+                        allQuestions={runtimeQuestions}
                         preserveComputedValue={readOnly}
                         language={surveyLanguage}
                       />

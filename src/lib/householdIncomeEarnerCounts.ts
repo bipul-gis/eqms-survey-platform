@@ -7,37 +7,29 @@ import { repeatGroupMemberIds } from './repeatedQuestions';
  */
 export const configureHouseholdIncomeEarnerCounts = (questions: Question[]): Question[] => {
   const memberIds = new Set<string>();
-  let repeatGroupConfigured = false;
   for (let sectionIndex = 0; sectionIndex < questions.length; sectionIndex += 1) {
     const section = questions[sectionIndex];
     if (section.type !== 'section' || !section.repeatSection?.countQuestionId) continue;
-    repeatGroupConfigured = true;
     repeatGroupMemberIds(questions, sectionIndex).forEach((id) => memberIds.add(id));
   }
-  // The generated UDD questionnaire has the correct repeat block ordering,
-  // but older saved questionnaire revisions may lack repeatSection metadata.
-  // Infer that specific block from the stable UDD member field IDs.
-  if (!repeatGroupConfigured) {
-    const sexIndex = questions.findIndex((question) => question.id === 'member_sex');
-    const incomeIndex = questions.findIndex((question) => question.id === 'member_monthly_income');
-    if (sexIndex >= 0 && incomeIndex > sexIndex) {
-      questions.slice(sexIndex, incomeIndex + 1).forEach((question) => memberIds.add(question.id));
-    }
-  }
-  // Published UDD questionnaires may predate repeatSection metadata entirely.
-  // Recognize the member-repeat block from its localized instruction heading
-  // and include every question up to the next section divider.
-  if (memberIds.size === 0) {
-    const instructionIndex = questions.findIndex((question) =>
+  // Locate the household member repeat block specifically. Other questionnaire
+  // repeat sections must not suppress the legacy household fallback.
+  const instructionIndex = questions.findIndex((question) =>
       question.type === 'section' && /repeat record for each household member/i.test(
         `${question.question} ${question.description ?? ''} ${question.questionTranslations?.en ?? ''} ${question.descriptionTranslations?.en ?? ''}`
       )
-    );
-    if (instructionIndex >= 0) {
-      for (let index = instructionIndex + 1; index < questions.length && questions[index].type !== 'section'; index += 1) {
-        memberIds.add(questions[index].id);
-      }
+  );
+  if (instructionIndex >= 0) {
+    for (let index = instructionIndex + 1; index < questions.length && questions[index].type !== 'section'; index += 1) {
+      memberIds.add(questions[index].id);
     }
+  }
+  // Some saved copies include the stable member fields without the
+  // instructional section metadata.
+  const sexIndex = questions.findIndex((question) => question.id === 'member_sex');
+  const incomeIndex = questions.findIndex((question) => question.id === 'member_monthly_income');
+  if (sexIndex >= 0 && incomeIndex > sexIndex) {
+    questions.slice(sexIndex, incomeIndex + 1).forEach((question) => memberIds.add(question.id));
   }
   const sexQuestion = questions.find((question) =>
     memberIds.has(question.id) && /^(sex|gender)$/i.test(question.question.trim())
@@ -60,6 +52,7 @@ export const configureHouseholdIncomeEarnerCounts = (questions: Question[]): Que
       ...question,
       type: 'computed',
       required: false,
+      validation: { ...question.validation, integerOnly: true, min: 0 },
       computed: {
         operation: 'count_repeat_nonzero_matching',
         operandQuestionIds: [incomeQuestionId],
