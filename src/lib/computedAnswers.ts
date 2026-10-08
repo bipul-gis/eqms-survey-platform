@@ -84,6 +84,33 @@ const coerceAnswerToString = (v: unknown): string => {
 };
 
 /**
+ * Resolve one logical operand to its answer value(s). A base question id or
+ * key can refer to several runtime questions when that question belongs to a
+ * repeat section. Keep those instances in form order so computed operations
+ * can aggregate them deterministically.
+ */
+const resolveAnswerValues = (
+  name: string,
+  answers: Record<string, unknown>,
+  questions: Question[]
+): unknown[] => {
+  const key = name.trim();
+  if (!key) return [];
+  const source = questions.find((question) => question.id === key || question.key === key);
+  // References remapped to a particular repeat instance must stay scoped to
+  // that record (for computed questions inside the repeat set).
+  if (source?.repeatSourceId && source.id === key) return [answers[key]];
+  const sourceId = source?.repeatSourceId || source?.id || key;
+  const repeated = questions
+    .filter((question) => question.repeatSourceId === sourceId && question.type !== 'section')
+    .sort((left, right) => (left.repeatIndex || 0) - (right.repeatIndex || 0));
+  if (repeated.length > 0) return repeated.map((question) => answers[question.id]);
+  if (key in answers) return [answers[key]];
+  if (source) return [answers[source.id]];
+  return [];
+};
+
+/**
  * Resolve a placeholder name (`{{...}}` content) to the answer for
  * either a question id or a question key. We trim whitespace inside
  * the braces so admins can write `{{ q1 }}` without surprises.
@@ -93,12 +120,13 @@ const resolvePlaceholder = (
   answers: Record<string, unknown>,
   questions: Question[]
 ): unknown => {
-  const key = name.trim();
-  if (key === '') return undefined;
-  if (key in answers) return answers[key];
-  const byKey = questions.find((q) => q.key === key);
-  if (byKey) return answers[byKey.id];
-  return undefined;
+  const values = resolveAnswerValues(name, answers, questions);
+  if (values.length === 0) return undefined;
+  if (values.length === 1) return values[0];
+  // In an arithmetic expression, a repeated operand represents the total
+  // across its records (for example, {{monthly_income}} becomes their sum).
+  const numbers = values.map(coerceAnswerToNumber).filter((value): value is number => value !== null);
+  return numbers.length > 0 ? numbers.reduce((total, value) => total + value, 0) : undefined;
 };
 
 const round = (n: number, decimals: number | undefined): number => {
@@ -301,7 +329,8 @@ export const evaluateComputed = (
 
   if (op === 'concat') {
     const parts = operandIds
-      .map((id) => coerceAnswerToString(answers[id]))
+      .flatMap((id) => resolveAnswerValues(id, answers, questions))
+      .map(coerceAnswerToString)
       .filter((s) => s !== '');
     if (parts.length === 0) return empty;
     const joiner = spec.separator ?? ' ';
@@ -310,22 +339,26 @@ export const evaluateComputed = (
   }
 
   if (op === 'count_nonempty') {
-    const count = operandIds.reduce((acc, id) => {
-      const v = answers[id];
-      if (v === undefined || v === null || v === '') return acc;
-      if (Array.isArray(v) && v.length === 0) return acc;
-      return acc + 1;
-    }, 0);
+    const count = operandIds
+      .flatMap((id) => resolveAnswerValues(id, answers, questions))
+      .filter((value) => value !== undefined && value !== null && value !== '' &&
+        !(Array.isArray(value) && value.length === 0)).length;
     return { value: count, display: `${spec.prefix ?? ''}${count}${spec.suffix ?? ''}` };
   }
 
   // Pure numeric ops — coerce every operand and skip the empties so a
   // partially-filled form still shows a partial result.
-  const numbers: number[] = [];
-  for (const id of operandIds) {
-    const n = coerceAnswerToNumber(answers[id]);
-    if (n !== null) numbers.push(n);
-  }
+  const numbersByOperand = operandIds.map((id) => resolveAnswerValues(id, answers, questions)
+    .map(coerceAnswerToNumber)
+    .filter((value): value is number => value !== null));
+  // Repeated operands are a series for sum/average/min/max/multiply. For
+  // ordered binary-style operations, collapse each repeated series to its
+  // total so one logical operand still occupies one position.
+  const numbers = ['subtract', 'divide'].includes(op)
+    ? numbersByOperand.map((values) => values.length > 0
+      ? values.reduce((total, value) => total + value, 0)
+      : null).filter((value): value is number => value !== null)
+    : numbersByOperand.flat();
   if (numbers.length === 0) return empty;
 
   let result: number;
