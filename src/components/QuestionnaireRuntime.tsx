@@ -1782,33 +1782,41 @@ export const RuntimeQuestion: React.FC<{
       break;
     case 'multiselect':
       body = (
-        <select
-          multiple
-          value={(value as string[]) || []}
-          onChange={(e) => {
-            const picked = Array.from(
-              e.target.selectedOptions as HTMLCollectionOf<HTMLOptionElement>
-            ).map((o) => o.value);
-            const filtered = picked.filter((pv) => {
-              const o = opts.find((x) => x.value === pv);
-              return !o || !isChoiceOptionUnavailable(o, answersMap);
-            });
-            onChange(filtered);
-          }}
-          className={`${cls} h-32`}
-        >
+        <div className="space-y-1.5">
           {opts
             .filter((o) => !isChoiceOptionHidden(o, answersMap))
-            .map((o) => (
-              <option
-                key={o.id}
-                value={o.value}
-                disabled={isChoiceOptionDisabled(o, answersMap)}
-              >
-                {getLocalizedOptionText(o.label, language, o.labelTranslations)}
-              </option>
-            ))}
-        </select>
+            .map((o) => {
+              const selected = Array.isArray(value) ? (value as string[]) : [];
+              const disabled = isChoiceOptionDisabled(o, answersMap);
+              return (
+                <label
+                  key={o.id}
+                  className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                    disabled
+                      ? 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-400'
+                      : selected.includes(o.value)
+                        ? 'cursor-pointer border-blue-200 bg-blue-50 text-slate-800'
+                        : 'cursor-pointer border-slate-200 bg-white text-slate-700'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={disabled}
+                    checked={selected.includes(o.value)}
+                    onChange={(e) =>
+                      onChange(
+                        e.target.checked
+                          ? [...selected, o.value]
+                          : selected.filter((item) => item !== o.value)
+                      )
+                    }
+                    className="h-4 w-4 shrink-0 accent-blue-600"
+                  />
+                  <span>{getLocalizedOptionText(o.label, language, o.labelTranslations)}</span>
+                </label>
+              );
+            })}
+        </div>
       );
       break;
     case 'radio':
