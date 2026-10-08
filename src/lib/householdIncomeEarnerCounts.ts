@@ -24,6 +24,21 @@ export const configureHouseholdIncomeEarnerCounts = (questions: Question[]): Que
       questions.slice(sexIndex, incomeIndex + 1).forEach((question) => memberIds.add(question.id));
     }
   }
+  // Published UDD questionnaires may predate repeatSection metadata entirely.
+  // Recognize the member-repeat block from its localized instruction heading
+  // and include every question up to the next section divider.
+  if (memberIds.size === 0) {
+    const instructionIndex = questions.findIndex((question) =>
+      question.type === 'section' && /repeat record for each household member/i.test(
+        `${question.question} ${question.description ?? ''} ${question.questionTranslations?.en ?? ''} ${question.descriptionTranslations?.en ?? ''}`
+      )
+    );
+    if (instructionIndex >= 0) {
+      for (let index = instructionIndex + 1; index < questions.length && questions[index].type !== 'section'; index += 1) {
+        memberIds.add(questions[index].id);
+      }
+    }
+  }
   const sexQuestion = questions.find((question) =>
     memberIds.has(question.id) && /^(sex|gender)$/i.test(question.question.trim())
   );
