@@ -27,7 +27,7 @@ import {
 } from '../types';
 import { evaluateComputed } from '../lib/computedAnswers';
 import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
-import { expandRepeatedQuestions } from '../lib/repeatedQuestions';
+import { expandRepeatedQuestions, isRepeatCountQuestionCandidate } from '../lib/repeatedQuestions';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import {
@@ -2497,14 +2497,14 @@ const PropertiesPanel: React.FC<{
 
       {question.type === 'section' && (() => {
         const sectionIndex = allQuestions.findIndex((item) => item.id === question.id);
-        const countCandidates = allQuestions.slice(0, Math.max(0, sectionIndex)).filter((item) =>
-          ['number', 'scale', 'computed', 'text'].includes(item.type)
-        );
+        const countCandidates = allQuestions
+          .slice(0, Math.max(0, sectionIndex))
+          .filter(isRepeatCountQuestionCandidate);
         const questionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
         return (
           <Field
             label="Repeat this section"
-            hint="The section and all questions up to the next section break repeat together, one full set at a time. Enter the number of sets in the linked question."
+            hint="The section and its questions up to the next section break repeat together, one full set at a time. Link a numeric response from an earlier section; single-choice options should use numeric values."
           >
             <select
               value={question.repeatSection?.countQuestionId || ''}
@@ -2523,7 +2523,7 @@ const PropertiesPanel: React.FC<{
               ))}
             </select>
             {question.repeatSection && countCandidates.length === 0 && (
-              <p className="mt-1 text-[10px] text-amber-700">Add a count question before this section (number, scale, computed, or numeric text).</p>
+              <p className="mt-1 text-[10px] text-amber-700">Add a count question before this section. Use a number, scale, computed, numeric text, rating, select, or radio question.</p>
             )}
             {question.repeatSection && countCandidates.length > 0 && (
               <p className="mt-1 text-[10px] text-slate-500">The linked response is treated as a whole number, capped at 100 repeats.</p>

@@ -3,6 +3,9 @@ import type { Question } from '../types';
 const MAX_SECTION_REPEATS = 100;
 const repeatedId = (id: string, index: number) => `${id}__repeat_${index}`;
 
+export const isRepeatCountQuestionCandidate = (question: Question): boolean =>
+  ['number', 'scale', 'rating', 'computed', 'text', 'select', 'radio'].includes(question.type);
+
 export const getRepeatedQuestionSourceIds = (questions: Question[]): Set<string> => {
   const ids = new Set<string>();
   for (let index = 0; index < questions.length; index += 1) {
@@ -32,7 +35,8 @@ export const expandRepeatedQuestions = (
     let end = index + 1;
     while (end < questions.length && questions[end].type !== 'section') end += 1;
     const block = questions.slice(index, end);
-    const countValue = Number(answers[start.repeatSection.countQuestionId]);
+    const rawCount = answers[start.repeatSection.countQuestionId];
+    const countValue = typeof rawCount === 'string' ? Number(rawCount.trim()) : Number(rawCount);
     const count = Number.isFinite(countValue)
       ? Math.max(0, Math.min(MAX_SECTION_REPEATS, Math.floor(countValue)))
       : 0;
