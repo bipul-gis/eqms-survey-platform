@@ -2748,8 +2748,7 @@ const ComputedQuestionEditor: React.FC<{
       q.type !== 'photo' &&
       q.type !== 'signature' &&
       q.type !== 'location' &&
-      q.type !== 'matrix' &&
-      q.type !== 'computed'
+      q.type !== 'matrix'
   );
   const operandIds = spec.operandQuestionIds ?? [];
 
