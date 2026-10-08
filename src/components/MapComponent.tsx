@@ -1364,18 +1364,18 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   );
 
   const getStatusColor = (status: string) => {
-    switch (status) {
+    switch (String(status || '').trim().toLocaleLowerCase()) {
+      case 'pending': return '#2563eb';
       case 'verified': return '#22c55e';
       case 'rejected': return '#ef4444';
-      default: return '#f59e0b';
+      default: return '#2563eb';
     }
   };
 
-  const isNewlyAddedFeature = (feature: GeoFeature) =>
-    typeof feature.newFeatureRemarks === 'string' && feature.newFeatureRemarks.trim().length > 0;
-
-  const getFeatureColor = (feature: GeoFeature) =>
-    isNewlyAddedFeature(feature) ? '#7c3aed' : getStatusColor(feature.status);
+  const getFeatureColor = (feature: GeoFeature) => {
+    const status = feature.status || feature.attributes?.QC_Status || feature.attributes?.Status || feature.attributes?.status;
+    return getStatusColor(String(status || 'pending'));
+  };
 
   const findMatchingFirestorePoint = (p: { lat: number; lng: number; properties: Record<string, any> }) =>
     findMatchingFirestoreLandmark(p, features);
@@ -1955,11 +1955,15 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     {distinctImportedLayers.length}
                   </span>
                 </div>
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] text-slate-600" aria-label="Feature status color legend">
+                  <span className="font-semibold text-slate-500">Status colors</span>
+                  <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-blue-600" />Pending</span>
+                  <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-green-500" />Verified</span>
+                  <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-red-500" />Rejected</span>
+                </div>
                 <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                   {distinctImportedLayers.map((lyr) => {
                     const isVisible = layerVisibility[lyr.name] !== false;
-                    const legendStyle = getLayerStyle('feature', lyr.name, lyr.projectId || undefined);
-                    const legendBorderWidth = Math.max(1, Number(legendStyle.borderWidth ?? 2));
                     return (
                       <div key={lyr.key} className="rounded-lg hover:bg-slate-50">
                       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-1.5 text-xs">
@@ -1977,16 +1981,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                             className="rounded text-sky-600 focus:ring-sky-500"
                           />
                           <div className="flex shrink-0 items-center gap-0.5">
-                            {lyr.types.map((type) => (
-                              <span key={type} title={`${type} legend`} aria-label={`${type} legend`} className="flex h-5 w-5 items-center justify-center">
-                                {type === 'point' ? (
-                                  <span className="h-3.5 w-3.5 rounded-full border" style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, borderColor: legendStyle.boundaryColor, borderWidth: `${legendBorderWidth}px` }} />
-                                ) : type === 'line' ? (
-                                  <span className="block w-3.5" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
-                                ) : (
-                                  <span className="h-3.5 w-3.5 rounded-sm border" style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, borderColor: legendStyle.boundaryColor, borderWidth: `${legendBorderWidth}px` }} />
-                                )}
-                              </span>
+                            {[['Pending', '#2563eb'], ['Verified', '#22c55e'], ['Rejected', '#ef4444']].map(([label, color]) => (
+                              <span key={label} title={`${label} feature`} aria-label={`${label} feature color`} className="h-3 w-3 rounded-full border border-white shadow-sm" style={{ backgroundColor: color }} />
                             ))}
                           </div>
                           <span className={`min-w-0 whitespace-normal break-words font-medium leading-tight ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
