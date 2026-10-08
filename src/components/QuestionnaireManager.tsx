@@ -30,6 +30,7 @@ import { matrixAllRowsAnswered } from '../lib/matrixAnswers';
 import { expandRepeatedQuestions, isRepeatCountQuestionCandidate, repeatGroupMemberIds } from '../lib/repeatedQuestions';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { configureHouseholdIncomeEarnerCounts } from '../lib/householdIncomeEarnerCounts';
+import { isUddXlsformImportDescription } from '../lib/questionnaireDescription';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import {
   collapseAccidentalResponseIdQuestions,
@@ -1135,10 +1136,12 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
   // single paragraph block on first load.
   const [descriptionBlocks, setDescriptionBlocks] = useState<DescriptionBlock[]>(() => {
     if (questionnaire?.descriptionBlocks && questionnaire.descriptionBlocks.length > 0) {
-      return questionnaire.descriptionBlocks;
+      return questionnaire.descriptionBlocks.filter((block) =>
+        block.type !== 'paragraph' || !isUddXlsformImportDescription(block.text)
+      );
     }
     const plain = (questionnaire?.description || '').trim();
-    if (plain) {
+    if (plain && !isUddXlsformImportDescription(plain)) {
       return [{ id: uid('b'), type: 'paragraph', text: plain }];
     }
     return [];

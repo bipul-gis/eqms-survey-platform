@@ -72,6 +72,7 @@ import {
 import { evaluateComputed } from '../lib/computedAnswers';
 import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSections';
 import { configureHouseholdIncomeEarnerCounts } from '../lib/householdIncomeEarnerCounts';
+import { isUddXlsformImportDescription } from '../lib/questionnaireDescription';
 import { expandRepeatedQuestions, getRepeatedQuestionSourceIds } from '../lib/repeatedQuestions';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
 import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer, multiChoiceHasOther, multiChoiceOtherText } from '../lib/choiceAnswers';
@@ -489,7 +490,9 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
 
   // Questionnaire-level config — preserve old default behaviour when missing.
   // Only fields the admin added in the builder appear here (no runtime injection).
-  const descriptionBlocks = questionnaire.descriptionBlocks || [];
+  const descriptionBlocks = (questionnaire.descriptionBlocks || []).filter((block) =>
+    block.type !== 'paragraph' || !isUddXlsformImportDescription(block.text)
+  );
   const conclusionBlocks = questionnaire.conclusionBlocks || [];
   const enumeratorInfoConfig = questionnaire.enumeratorInfo;
   const consentGate = questionnaire.consentGate || {
@@ -1589,7 +1592,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           <div className="border-b border-slate-100 pb-4">
             <DescriptionRenderer blocks={descriptionBlocks} language={surveyLanguage} />
           </div>
-        ) : questionnaire.description ? (
+        ) : questionnaire.description && !isUddXlsformImportDescription(questionnaire.description) ? (
           <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap border-b border-slate-100 pb-4">
             {getLocalizedText(questionnaire.description, surveyLanguage)}
           </p>

@@ -19,8 +19,7 @@ export const uddSocioEconomicQuestionnaireTemplate = (
   id: 'udd_12_upazila_socioeconomic_survey',
   projectId,
   title: 'Pre-test Final UDD Socioeconomic Survey',
-  description:
-    'Questionnaire imported from the UDD XLSForm workbook. English and Bangla labels and choices are stored separately.',
+  description: '',
   version: '2.2',
   questions: structuredClone(questions),
   sections: [],
