@@ -375,6 +375,17 @@ export const evaluateComputed = (
     return { value: count, display: `${spec.prefix ?? ''}${count}${spec.suffix ?? ''}` };
   }
 
+  if (op === 'count_nonzero') {
+    const count = operandIds
+      .flatMap((id) => resolveAnswerValues(id, answers, questions))
+      .filter((value) => {
+        if (value === undefined || value === null || value === '') return false;
+        if (Array.isArray(value) && value.length === 0) return false;
+        return coerceAnswerToNumber(value) !== 0;
+      }).length;
+    return { value: count, display: `${spec.prefix ?? ''}${count}${spec.suffix ?? ''}` };
+  }
+
   // Pure numeric ops — coerce every operand and skip the empties so a
   // partially-filled form still shows a partial result.
   const numbersByOperand = operandIds.map((id) => resolveAnswerValues(id, answers, questions)
@@ -463,6 +474,8 @@ export const computedOpLabel = (op: ComputedSpec['operation']): string => {
       return 'Maximum';
     case 'count_nonempty':
       return 'Count of answered operands';
+    case 'count_nonzero':
+      return 'Count of answered operands excluding zero';
     case 'concat':
       return 'Concatenate text';
     case 'expression':

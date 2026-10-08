@@ -218,6 +218,7 @@ export type QuestionType =
  * - `min` / `max`: extreme of all non-empty numeric operands.
  * - `count_nonempty`: integer count of operands that have any answer
  *   (handy for "how many household members are employed" totals).
+ * - `count_nonzero`: integer count of answered operands other than numeric 0.
  * - `concat`: string concatenation of operand answers, joined by the
  *   configured separator (defaults to a single space).
  * - `expression`: free arithmetic expression with `{{questionId}}`
@@ -232,6 +233,7 @@ export type ComputedOperation =
   | 'min'
   | 'max'
   | 'count_nonempty'
+  | 'count_nonzero'
   | 'concat'
   | 'expression';
 
@@ -252,7 +254,7 @@ export interface ComputedSpec {
    * anything else is rejected and the result falls back to empty.
    */
   expression?: string;
-  /** Number of decimal places to round to (defaults to 2 for arithmetic, no rounding for `count_nonempty`). */
+  /** Number of decimal places to round to (defaults to 2 for arithmetic, no rounding for count operations). */
   decimals?: number;
   /** Optional prefix shown before the value (e.g. "BDT "). */
   prefix?: string;

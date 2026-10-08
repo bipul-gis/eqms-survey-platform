@@ -2804,6 +2804,7 @@ const COMPUTED_OPERATIONS: { value: ComputedOperation; label: string; hint: stri
   { value: 'min',            label: 'Minimum',               hint: 'Smallest non-empty value' },
   { value: 'max',            label: 'Maximum',               hint: 'Largest non-empty value' },
   { value: 'count_nonempty', label: 'Count answered',        hint: 'Number of operands that have a value' },
+  { value: 'count_nonzero',  label: 'Count answered (exclude 0)', hint: 'Counts filled operands except numeric 0' },
   { value: 'concat',         label: 'Join text',             hint: 'Concatenate answers with a separator' },
   { value: 'expression',     label: 'Custom expression',     hint: 'Free formula with {{questionId}} placeholders' }
 ];
@@ -5275,6 +5276,8 @@ const computedOpHumanLabel = (op: ComputedOperation): string => {
       return 'Maximum';
     case 'count_nonempty':
       return 'Count of answered';
+    case 'count_nonzero':
+      return 'Count answered (excluding 0)';
     case 'concat':
       return 'Joined text';
     case 'expression':
