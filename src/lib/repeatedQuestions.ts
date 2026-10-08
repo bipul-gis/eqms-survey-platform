@@ -1,4 +1,5 @@
 import type { Question } from '../types';
+import { evaluateComputed } from './computedAnswers';
 
 const MAX_SECTION_REPEATS = 100;
 const repeatedId = (id: string, index: number) => `${id}__repeat_${index}`;
@@ -55,7 +56,18 @@ export const expandRepeatedQuestions = (
     }
     const members = questions.filter((candidate) => memberIds.has(candidate.id));
     const block = [start, ...members];
-    const rawCount = answers[start.repeatSection.countQuestionId];
+    const countQuestionId = start.repeatSection.countQuestionId;
+    let rawCount = answers[countQuestionId];
+    // A linked count can itself be computed (for example, male + female
+    // household members). Resolve it here as well as in the form's effect so
+    // the repeat group is available on the first render after its operands
+    // change, before the computed answer has been copied into response state.
+    if (rawCount === undefined || rawCount === null || rawCount === '') {
+      const countQuestion = questions.find((question) => question.id === countQuestionId);
+      if (countQuestion?.type === 'computed') {
+        rawCount = evaluateComputed(countQuestion.computed, answers, questions).value;
+      }
+    }
     const countValue = typeof rawCount === 'string' ? Number(rawCount.trim()) : Number(rawCount);
     const count = Number.isFinite(countValue)
       ? Math.max(0, Math.min(MAX_SECTION_REPEATS, Math.floor(countValue)))
