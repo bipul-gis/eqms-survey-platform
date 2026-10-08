@@ -103,6 +103,8 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const labelZoomDraftKey = selected ? `${selected.key}:labelsFromZoom` : '';
   const [rows, setRows] = useState<Array<{ id: string; properties: Record<string, unknown> }>>([]);
   const [showAttributeTable, setShowAttributeTable] = useState(false);
+  const [showLayerManagement, setShowLayerManagement] = useState(true);
+  const [showPopupSettings, setShowPopupSettings] = useState(true);
   const [attributeSearchQuery, setAttributeSearchQuery] = useState('');
   const [showAllRows, setShowAllRows] = useState(false);
   const [popupLabelDrafts, setPopupLabelDrafts] = useState<Record<string, string>>({});
@@ -128,6 +130,8 @@ export const GeospatialLayerManager: React.FC<Props> = ({
 
   useEffect(() => {
     setShowAttributeTable(false);
+    setShowLayerManagement(true);
+    setShowPopupSettings(true);
     setAttributeSearchQuery('');
     setShowAllRows(false);
     setPopupLabelDrafts({});
@@ -367,12 +371,12 @@ export const GeospatialLayerManager: React.FC<Props> = ({
           {selected ? (
             <main className="min-h-0 flex-1 overflow-y-auto p-3">
               {error && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div><h3 className="text-sm font-bold text-slate-900">{selected.name}</h3><p className="text-[10px] text-slate-500">{selected.count.toLocaleString()} records · {selected.kind === 'zone' ? 'Boundary SHP' : 'Map feature layer'}</p></div>
-              </div>
               {busy && <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-red-100"><div className="h-full w-1/3 animate-pulse rounded-full bg-red-500" /></div>}
               <section className="mb-4 rounded-xl border border-slate-200 p-3">
-                <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wide text-slate-500">Layer management</h4>
+                <button type="button" aria-expanded={showLayerManagement} onClick={() => setShowLayerManagement((shown) => !shown)} className="flex w-full items-center gap-2 text-left text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                  {showLayerManagement ? <ChevronDown size={14} /> : <ChevronRight size={14} />}Layer management
+                </button>
+                {showLayerManagement && <>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="flex items-center justify-between">
@@ -465,20 +469,23 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                     </label>
                   </div>
                 </div>
-                <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices. Set each threshold independently; zoom 0 keeps that content visible at every zoom.</p>
+                <p className="mt-2 text-[10px] text-slate-400">Changes apply immediately and sync to enumerator devices.</p>
+                </>}
               </section>
               <section>
                 <div className="mb-4 rounded-xl border border-violet-200 bg-violet-50/40 p-3">
-                  <div className="mb-2 flex items-start justify-between gap-2">
-                    <div>
-                      <h4 className="text-[10px] font-bold uppercase tracking-wide text-violet-800">Feature click popup</h4>
-                      <p className="mt-0.5 text-[10px] text-slate-500">Choose which attributes appear and set the labels users see. All fields show by default.</p>
-                    </div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <button type="button" aria-expanded={showPopupSettings} onClick={() => setShowPopupSettings((shown) => !shown)} className="flex items-center gap-2 text-left text-[10px] font-bold uppercase tracking-wide text-violet-800">
+                      {showPopupSettings ? <ChevronDown size={14} /> : <ChevronRight size={14} />}Feature click popup
+                    </button>
+                    {showPopupSettings && <>
                     <div className="flex shrink-0 gap-1">
                       <button type="button" onClick={() => changeStyle({ popupHiddenFields: [] })} className="rounded border border-violet-200 bg-white px-2 py-1 text-[9px] font-semibold text-violet-700 hover:bg-violet-100">Show all</button>
                       <button type="button" onClick={() => changeStyle({ popupHiddenFields: [...popupFields] })} className="rounded border border-violet-200 bg-white px-2 py-1 text-[9px] font-semibold text-violet-700 hover:bg-violet-100">Hide all</button>
                     </div>
+                    </>}
                   </div>
+                  {showPopupSettings && <>
                   {popupFields.length > 0 ? (
                     <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-violet-100 bg-white p-2">
                       {popupFields.map((field) => {
@@ -511,6 +518,7 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   ) : (
                     <p className="rounded-lg border border-violet-100 bg-white p-2 text-[10px] text-slate-400">No attributes found for this layer.</p>
                   )}
+                  </>}
                 </div>
               </section>
               <section>
