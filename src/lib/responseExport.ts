@@ -19,6 +19,7 @@ import { mapLabelsToDbfFieldNames } from './dbfUtf8';
 import { inferBranchingPrefixQuestionId } from './responseIdSequence';
 import {
   formatChoiceAnswerForExport,
+  formatMultiChoiceAnswerForExport,
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
 import { formatPhotoAnswerLabel, collectResponsePhotoAttachment, type ExportPhotoAttachment } from './photoAnswers';
@@ -179,11 +180,11 @@ const stringifyAnswer = (
   if (Array.isArray(v)) {
     if (q && ensureOptions(q.options).length > 0) {
       const opts = ensureOptions(q.options);
-      return v
+      return formatMultiChoiceAnswerForExport(v)
         .map((x) => opts.find((o) => o.value === x)?.label ?? String(x))
         .join('; ');
     }
-    return v.map((x) => String(x)).join('; ');
+    return formatMultiChoiceAnswerForExport(v).map(String).join('; ');
   }
   if (typeof v === 'object') {
     if (

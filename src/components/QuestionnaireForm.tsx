@@ -74,7 +74,7 @@ import { normalizeQuestionnaireSectionQuestions } from '../lib/questionnaireSect
 import { configureHouseholdIncomeEarnerCounts } from '../lib/householdIncomeEarnerCounts';
 import { expandRepeatedQuestions, getRepeatedQuestionSourceIds } from '../lib/repeatedQuestions';
 import { buildQuestionNumbering, buildVisibleQuestionSlots } from '../lib/questionNumbering';
-import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer } from '../lib/choiceAnswers';
+import { choiceAnswerIsEmpty, choiceAnswerIsFilled, isOtherSpecifyAnswer, multiChoiceHasOther, multiChoiceOtherText } from '../lib/choiceAnswers';
 import {
   matrixAllRowsAnswered,
   validateMatrixQuestion
@@ -280,6 +280,9 @@ const validateQuestion = (
   }
   if (q.type === 'multiselect' || q.type === 'checkbox') {
     const arr = Array.isArray(value) ? (value as string[]) : [];
+    if (q.allowOther && q.otherRequired && multiChoiceHasOther(value) && !multiChoiceOtherText(value).trim()) {
+      return 'Please specify the Other value.';
+    }
     const opts = ensureOptionShape(q.options);
     for (const s of arr) {
       const opt = opts.find((o) => o.value === s);

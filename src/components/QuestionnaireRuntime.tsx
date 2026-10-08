@@ -52,7 +52,12 @@ import {
 } from '../lib/banglaDigits';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
-  choiceAnswerToComparableString
+  choiceAnswerToComparableString,
+  makeMultiChoiceAnswer,
+  multiChoiceHasOther,
+  multiChoiceOtherText,
+  multiChoiceValues,
+  OTHER_OPTION_VALUE
 } from '../lib/choiceAnswers';
 import { ChoiceWithOtherFields } from './ChoiceWithOtherFields';
 import {
@@ -1795,13 +1800,15 @@ export const RuntimeQuestion: React.FC<{
         />
       );
       break;
-    case 'multiselect':
+    case 'multiselect': {
+      const selected = multiChoiceValues(value);
+      const showOther = Boolean(question.allowOther && !isOtherChoiceHidden(question, answersMap));
+      const otherDisabled = isOtherChoiceDisabled(question, answersMap);
       body = (
         <div className="space-y-1.5">
           {opts
             .filter((o) => !isChoiceOptionHidden(o, answersMap))
             .map((o) => {
-              const selected = Array.isArray(value) ? (value as string[]) : [];
               const disabled = isChoiceOptionDisabled(o, answersMap);
               return (
                 <label
@@ -1819,11 +1826,10 @@ export const RuntimeQuestion: React.FC<{
                     disabled={disabled}
                     checked={selected.includes(o.value)}
                     onChange={(e) =>
-                      onChange(
-                        e.target.checked
-                          ? [...selected, o.value]
-                          : selected.filter((item) => item !== o.value)
-                      )
+                      onChange(makeMultiChoiceAnswer(
+                        e.target.checked ? [...selected, o.value] : selected.filter((item) => item !== o.value),
+                        multiChoiceOtherText(value)
+                      ))
                     }
                     className="h-4 w-4 shrink-0 accent-blue-600"
                   />
@@ -1831,9 +1837,37 @@ export const RuntimeQuestion: React.FC<{
                 </label>
               );
             })}
+          {showOther && (
+            <label className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                disabled={otherDisabled}
+                checked={multiChoiceHasOther(value)}
+                onChange={(event) => onChange(makeMultiChoiceAnswer(
+                  event.target.checked ? [...selected, OTHER_OPTION_VALUE] : selected.filter((item) => item !== OTHER_OPTION_VALUE),
+                  event.target.checked ? multiChoiceOtherText(value) : ''
+                ))}
+                className="h-4 w-4 shrink-0 accent-blue-600"
+              />
+              {language === 'bn' ? 'অন্যান্য / উল্লেখ করুন' : 'Other / specify'}
+            </label>
+          )}
+          {showOther && multiChoiceHasOther(value) && (
+            <input
+              type="text"
+              value={multiChoiceOtherText(value)}
+              required={Boolean(question.otherRequired)}
+              aria-required={question.otherRequired || undefined}
+              disabled={otherDisabled}
+              placeholder={language === 'bn' ? 'অনুগ্রহ করে উল্লেখ করুন' : 'Please specify'}
+              onChange={(event) => onChange(makeMultiChoiceAnswer(selected, event.target.value))}
+              className={cls}
+            />
+          )}
         </div>
       );
       break;
+    }
     case 'radio':
       body = (
         <ChoiceWithOtherFields

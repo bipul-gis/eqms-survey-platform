@@ -53,7 +53,12 @@ import {
 } from './QuestionnaireRuntime';
 import {
   choiceAnswerIsEmpty as choiceAnswerIsLogicallyEmpty,
-  choiceAnswerToComparableString
+  choiceAnswerToComparableString,
+  makeMultiChoiceAnswer,
+  multiChoiceHasOther,
+  multiChoiceOtherText,
+  multiChoiceValues,
+  OTHER_OPTION_VALUE
 } from '../lib/choiceAnswers';
 import { DEFAULT_PROJECT_ID, listProjects, searchMisProjects } from '../lib/projects';
 import { formatConsentGateTemplate } from '../lib/consentGateTemplate';
@@ -5230,7 +5235,7 @@ const PreviewDialog: React.FC<{
                           value={answers[q.id]}
                           onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
                           allAnswers={previewLogicAnswers}
-                          allQuestions={questions}
+                          allQuestions={runtimeQuestions}
                           language={previewLanguage}
                         />
                         {locked && (
@@ -5577,13 +5582,15 @@ const PreviewQuestion: React.FC<{
         />
       );
       break;
-    case 'multiselect':
+    case 'multiselect': {
+      const selected = multiChoiceValues(value);
+      const showOther = Boolean(question.allowOther && !isOtherChoiceHidden(question, answersMap));
+      const otherDisabled = isOtherChoiceDisabled(question, answersMap);
       body = (
         <div className="space-y-1.5">
           {opts
             .filter((o) => !isChoiceOptionHidden(o, answersMap))
             .map((o) => {
-              const selected = Array.isArray(value) ? (value as string[]) : [];
               const disabled = isChoiceOptionDisabled(o, answersMap);
               return (
                 <label
@@ -5601,11 +5608,10 @@ const PreviewQuestion: React.FC<{
                     disabled={disabled}
                     checked={selected.includes(o.value)}
                     onChange={(e) =>
-                      onChange(
-                        e.target.checked
-                          ? [...selected, o.value]
-                          : selected.filter((item) => item !== o.value)
-                      )
+                      onChange(makeMultiChoiceAnswer(
+                        e.target.checked ? [...selected, o.value] : selected.filter((item) => item !== o.value),
+                        multiChoiceOtherText(value)
+                      ))
                     }
                     className="h-4 w-4 shrink-0 accent-blue-600"
                   />
@@ -5613,9 +5619,19 @@ const PreviewQuestion: React.FC<{
                 </label>
               );
             })}
+          {showOther && (
+            <label className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+              <input type="checkbox" disabled={otherDisabled} checked={multiChoiceHasOther(value)} onChange={(e) => onChange(makeMultiChoiceAnswer(e.target.checked ? [...selected, OTHER_OPTION_VALUE] : selected.filter((item) => item !== OTHER_OPTION_VALUE), e.target.checked ? multiChoiceOtherText(value) : ''))} className="h-4 w-4 shrink-0 accent-blue-600" />
+              {language === 'bn' ? 'অন্যান্য / উল্লেখ করুন' : 'Other / specify'}
+            </label>
+          )}
+          {showOther && multiChoiceHasOther(value) && (
+            <input type="text" value={multiChoiceOtherText(value)} required={Boolean(question.otherRequired)} aria-required={question.otherRequired || undefined} disabled={otherDisabled} placeholder={language === 'bn' ? 'অনুগ্রহ করে উল্লেখ করুন' : 'Please specify'} onChange={(e) => onChange(makeMultiChoiceAnswer(selected, e.target.value))} className={cls} />
+          )}
         </div>
       );
       break;
+    }
     case 'radio':
       body = (
         <ChoiceWithOtherFields

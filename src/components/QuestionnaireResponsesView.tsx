@@ -4,6 +4,7 @@ import L from 'leaflet';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import {
   formatChoiceAnswerForExport,
+  formatMultiChoiceAnswerForExport,
   isOtherSpecifyAnswer
 } from '../lib/choiceAnswers';
 import { formatPhotoAnswerLabel } from '../lib/photoAnswers';
@@ -2082,12 +2083,12 @@ const formatAnswerForDisplay = (v: unknown, q?: Question): string => {
     if (q) {
       const opts = ensureOpts(q.options);
       if (opts.length > 0) {
-        return v
+        return formatMultiChoiceAnswerForExport(v)
           .map((x) => opts.find((o) => o.value === x)?.label ?? String(x))
           .join(', ');
       }
     }
-    return v.map((x) => String(x)).join(', ');
+    return formatMultiChoiceAnswerForExport(v).map(String).join(', ');
   }
   if (typeof v === 'object') {
     // Slim / legacy photo payloads — never dump base64 or stub metadata.
