@@ -75,19 +75,23 @@ export const GeospatialFeatureImportModal: React.FC<GeospatialFeatureImportModal
         }
 
         const rawFeatures: any[] = [];
-        const flattenGeoData = (data: any) => {
-          if (!data) return;
+        // Walk nested shpjs output iteratively. Recursive traversal and spreading a
+        // huge FeatureCollection into push() can exceed the browser call stack.
+        const pending: any[] = [rawJson];
+        while (pending.length > 0) {
+          const data = pending.pop();
+          if (!data || typeof data !== 'object') continue;
           if (Array.isArray(data)) {
-            data.forEach(flattenGeoData);
+            for (let i = data.length - 1; i >= 0; i--) pending.push(data[i]);
           } else if (data.type === 'FeatureCollection' && Array.isArray(data.features)) {
-            rawFeatures.push(...data.features);
+            for (const feature of data.features) rawFeatures.push(feature);
           } else if (data.type === 'Feature') {
             rawFeatures.push(data);
-          } else if (typeof data === 'object') {
-            Object.values(data).forEach(flattenGeoData);
+          } else {
+            const values = Object.values(data);
+            for (let i = values.length - 1; i >= 0; i--) pending.push(values[i]);
           }
         }
-        flattenGeoData(rawJson);
         if (rawFeatures.length === 0) {
           throw new Error(`${selectedFile.name}: no geospatial features found.`);
         }
@@ -363,26 +367,30 @@ const getImportedFeaturesExtent = (features: ParsedFeatureItem[]): ImportedMapEx
   let north = -Infinity;
   let east = -Infinity;
 
-  const visitCoordinates = (value: unknown): void => {
-    if (!Array.isArray(value)) return;
-    if (
-      value.length >= 2 &&
-      typeof value[0] === 'number' &&
-      typeof value[1] === 'number' &&
-      Number.isFinite(value[0]) &&
-      Number.isFinite(value[1])
-    ) {
-      const [lng, lat] = value;
-      south = Math.min(south, lat);
-      west = Math.min(west, lng);
-      north = Math.max(north, lat);
-      east = Math.max(east, lng);
-      return;
+  const visitCoordinates = (coordinates: unknown): void => {
+    const pending: unknown[] = [coordinates];
+    while (pending.length > 0) {
+      const value = pending.pop();
+      if (!Array.isArray(value)) continue;
+      if (
+        value.length >= 2 &&
+        typeof value[0] === 'number' &&
+        typeof value[1] === 'number' &&
+        Number.isFinite(value[0]) &&
+        Number.isFinite(value[1])
+      ) {
+        const [lng, lat] = value;
+        south = Math.min(south, lat);
+        west = Math.min(west, lng);
+        north = Math.max(north, lat);
+        east = Math.max(east, lng);
+        continue;
+      }
+      for (const child of value) pending.push(child);
     }
-    value.forEach(visitCoordinates);
   };
 
-  features.forEach((feature) => visitCoordinates(feature.geometry?.coordinates));
+  for (const feature of features) visitCoordinates(feature.geometry?.coordinates);
   if (![south, west, north, east].every(Number.isFinite)) return null;
   return { south, west, north, east };
 };

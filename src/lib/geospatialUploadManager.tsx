@@ -67,40 +67,61 @@ export const startGeospatialUpload = (input: {
   void (async () => {
     try {
       const now = new Date().toISOString();
-      const payload = input.features.map((feature) => ({
-        id: feature.id,
-        type: feature.type,
-        geometry: feature.geometry,
-        attributes: {
-          ...feature.attributes,
-          __layerName: feature.layerName,
-          layerName: feature.layerName
-        },
-        status: 'pending',
-        projectId: input.projectId,
-        createdBy: input.currentUserEmail || 'admin',
-        createdByUid: input.currentUserUid || null,
-        updatedBy: input.currentUserEmail || 'admin',
-        updatedAt: now
-      }));
-      const chunkSize = 500;
-      const totalBatches = Math.ceil(payload.length / chunkSize);
+      // Keep each request below the prior 50 MB reverse-proxy limit too, so
+      // deployments using the old proxy config can still accept the batches.
+      const maxBatchBytes = 40 * 1024 * 1024;
+      const encoder = new TextEncoder();
+      const totalBatches = Math.max(1, Math.ceil(input.features.length / 100));
       let uploaded = 0;
-      for (let offset = 0; offset < payload.length; offset += chunkSize) {
-        const chunk = payload.slice(offset, offset + chunkSize);
+      let batchNumber = 0;
+      let chunk: Record<string, unknown>[] = [];
+      let chunkBytes = 16; // JSON envelope and array punctuation
+      const uploadChunk = async () => {
+        if (chunk.length === 0) return;
+        batchNumber++;
         if (snapshot?.id === id) {
-          snapshot = { ...snapshot, currentBatch: Math.floor(offset / chunkSize) + 1, totalBatches };
+          snapshot = { ...snapshot, currentBatch: batchNumber, totalBatches: Math.max(totalBatches, batchNumber) };
           emit();
         }
         const result = await geosurveyApi.bulkSaveFeatures(chunk);
         uploaded += result.count || chunk.length;
         if (snapshot?.id === id) {
-          snapshot = { ...snapshot, uploaded: Math.min(uploaded, payload.length) };
+          snapshot = { ...snapshot, uploaded: Math.min(uploaded, input.features.length), totalBatches: Math.max(totalBatches, batchNumber) };
           emit();
         }
+        chunk = [];
+        chunkBytes = 16;
+      };
+
+      for (const feature of input.features) {
+        const item: Record<string, unknown> = {
+          id: feature.id,
+          type: feature.type,
+          geometry: feature.geometry,
+          attributes: {
+            ...feature.attributes,
+            __layerName: feature.layerName,
+            layerName: feature.layerName
+          },
+          status: 'pending',
+          projectId: input.projectId,
+          createdBy: input.currentUserEmail || 'admin',
+          createdByUid: input.currentUserUid || null,
+          updatedBy: input.currentUserEmail || 'admin',
+          updatedAt: now
+        };
+        const serialized = JSON.stringify(item);
+        const itemBytes = encoder.encode(serialized).byteLength + 1;
+        if (itemBytes + 16 > maxBatchBytes) {
+          throw new Error(`Feature ${feature.id} is larger than the 40 MB upload batch limit.`);
+        }
+        if (chunk.length > 0 && chunkBytes + itemBytes > maxBatchBytes) await uploadChunk();
+        chunk.push(item);
+        chunkBytes += itemBytes;
       }
+      await uploadChunk();
       if (snapshot?.id === id) {
-        snapshot = { ...snapshot, status: 'success', uploaded: payload.length };
+        snapshot = { ...snapshot, status: 'success', uploaded: input.features.length, totalBatches: batchNumber };
         emit();
       }
     } catch (error) {

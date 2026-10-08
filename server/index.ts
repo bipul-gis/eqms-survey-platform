@@ -77,7 +77,7 @@ const PORT = Number(process.env.PORT || 3002);
 const app = express();
 app.use(cors(buildCorsOptions()));
 app.use(compression());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '200mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'eqms-geosurvey' });

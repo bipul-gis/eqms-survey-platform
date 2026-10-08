@@ -3495,7 +3495,7 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col bg-slate-50 font-sans text-slate-800">
+    <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col overflow-hidden bg-slate-50 font-sans text-slate-800">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 shadow-sm z-[1001] shrink-0 pt-[env(safe-area-inset-top,0px)]">
         <div className="h-16 px-3 sm:px-4 flex items-center justify-between gap-2">
@@ -3665,8 +3665,8 @@ const AppContent: React.FC = () => {
       </header>
 
       {/* Main Layout */}
-      <div className="flex-1 flex overflow-hidden relative">
-        <main className={`flex-1 flex min-h-0 flex-col ${enumeratorCombinedTasks ? 'overflow-y-auto' : ''}`}>
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {activeTab === 'map' ? (
             <>
             {enumeratorCombinedTasks && (
@@ -3686,7 +3686,7 @@ const AppContent: React.FC = () => {
                 </button>
               </div>
             )}
-            <div className={`relative min-h-0 ${enumeratorCombinedTasks ? (enumeratorMapCollapsed ? 'h-0 overflow-hidden' : 'flex h-[65dvh] max-h-[680px] min-h-[320px] shrink-0 gap-3') : 'flex-1'}`}>
+            <div className={`relative min-h-0 ${enumeratorCombinedTasks ? (enumeratorMapCollapsed ? 'h-0 shrink-0 overflow-hidden' : 'flex min-h-0 flex-[1.15] shrink-0 gap-3') : 'flex-1'}`}>
             <MapComponent 
               className={enumeratorCombinedTasks ? 'min-w-0 flex-1' : undefined}
               key={`${mapProjectId || zoneLayer?.id || 'map'}:${enumeratorMapCollapsed}`}
@@ -3841,7 +3841,7 @@ const AppContent: React.FC = () => {
               </section>
             )}
             {enumeratorCombinedTasks && userProfile && (
-              <section className="shrink-0 border-t border-slate-200 bg-white">
+              <section className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-slate-200 bg-white">
                 <EnumeratorQuestionnaireList
                   userProfile={userProfile}
                   geofenceZones={zonePolygons}

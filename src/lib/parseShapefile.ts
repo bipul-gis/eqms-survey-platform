@@ -33,27 +33,26 @@ function collectFeatures(geo: unknown): ParsedZoneFeature[] {
 
   if (!geo) return out;
 
-  // shpjs may return FeatureCollection, array of FCs, or a map of layerName → FC
-  if (Array.isArray(geo)) {
-    for (const item of geo) collectFeatures(item).forEach((f) => out.push(f));
-    return out;
-  }
-
-  if (typeof geo === 'object') {
-    const obj = geo as Record<string, unknown>;
+  // shpjs may return a FeatureCollection, nested arrays, or named layers.
+  // Use an explicit stack so large or deeply wrapped files cannot exhaust JS call stack.
+  const pending: unknown[] = [geo];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object') continue;
+    if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i--) pending.push(value[i]);
+      continue;
+    }
+    const obj = value as Record<string, unknown>;
     if (obj.type === 'FeatureCollection' && Array.isArray(obj.features)) {
-      for (const f of obj.features as Array<{ geometry?: unknown; properties?: Record<string, unknown> }>) {
-        pushFeature(f);
+      for (const feature of obj.features as Array<{ geometry?: unknown; properties?: Record<string, unknown> }>) {
+        pushFeature(feature);
       }
-      return out;
-    }
-    if (obj.type === 'Feature') {
+    } else if (obj.type === 'Feature') {
       pushFeature(obj as { geometry?: unknown; properties?: Record<string, unknown> });
-      return out;
-    }
-    // Named layers object
-    for (const v of Object.values(obj)) {
-      collectFeatures(v).forEach((f) => out.push(f));
+    } else {
+      const values = Object.values(obj);
+      for (let i = values.length - 1; i >= 0; i--) pending.push(values[i]);
     }
   }
   return out;
@@ -138,33 +137,40 @@ export async function parseZoneShapefileZip(file: File | ArrayBuffer): Promise<{
     return path.replace(/\\/g, '/').split('/').pop()?.replace(/\.(shp|geojson|json)$/i, '').trim() || fallback;
   };
   const grouped: Array<{ name: string; features: ParsedZoneFeature[] }> = [];
-  const collectGroups = (value: unknown, name: string) => {
-    if (!value || typeof value !== 'object') return;
+  const pendingGroups: Array<{ value: unknown; name: string }> = [{ value: geo, name: fallbackName }];
+  while (pendingGroups.length > 0) {
+    const { value, name } = pendingGroups.pop()!;
+    if (!value || typeof value !== 'object') continue;
     const obj = value as Record<string, unknown>;
     if (obj.type === 'FeatureCollection' || obj.type === 'Feature') {
-      const features = collectFeatures(value);
-      if (features.length) grouped.push({ name: getLayerName(obj.fileName, name), features });
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
+      const layerFeatures = collectFeatures(value);
+      if (layerFeatures.length) grouped.push({ name: getLayerName(obj.fileName, name), features: layerFeatures });
+    } else if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index--) {
+        const item = value[index];
         const itemName = item && typeof item === 'object' ? (item as Record<string, unknown>).fileName : null;
-        collectGroups(item, getLayerName(itemName, `${name} ${index + 1}`));
-      });
-      return;
+        pendingGroups.push({ value: item, name: getLayerName(itemName, `${name} ${index + 1}`) });
+      }
+    } else {
+      const entries = Object.entries(obj);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [key, child] = entries[index];
+        pendingGroups.push({ value: child, name: key || name });
+      }
     }
-    for (const [key, child] of Object.entries(obj)) {
-      collectGroups(child, key || name);
-    }
-  };
-  collectGroups(geo, fallbackName);
+  }
   const layers = grouped.map((group) => ({
     ...group,
     name: getLayerName(group.name, fallbackName),
     attributeFields: attributeFieldsFromFeatures(group.features),
   }));
   // A shapefile ZIP with one layer may be returned in an unexpected wrapper shape.
-  const features = layers.length ? layers.flatMap((layer) => layer.features) : collectFeatures(geo);
+  const features: ParsedZoneFeature[] = [];
+  if (layers.length) {
+    for (const layer of layers) for (const feature of layer.features) features.push(feature);
+  } else {
+    for (const feature of collectFeatures(geo)) features.push(feature);
+  }
   if (features.length === 0) {
     throw new Error('No polygon/multipolygon features found in the shapefile.');
   }

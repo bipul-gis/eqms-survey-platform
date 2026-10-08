@@ -452,7 +452,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
   };
 
   return (
-    <div className={embedded ? 'w-full bg-white' : 'qc-panel-scroll flex flex-col min-h-[100dvh] bg-gradient-to-br from-emerald-50/40 to-teal-50/30'}>
+    <div className={embedded ? 'flex h-full min-h-0 w-full flex-col overflow-hidden bg-white' : 'qc-panel-scroll flex flex-col min-h-[100dvh] bg-gradient-to-br from-emerald-50/40 to-teal-50/30'}>
       {!embedded && <header className="bg-white/85 backdrop-blur border-b border-slate-200 shadow-sm pt-safe-top">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
           {onBack && (
@@ -523,7 +523,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
         </div>
       </header>}
 
-      <main className={embedded ? 'w-full px-3 py-4 sm:px-5' : 'flex-1 max-w-5xl w-full mx-auto px-4 py-5 sm:py-7'}>
+      <main className={embedded ? 'flex min-h-0 w-full flex-1 flex-col overflow-hidden px-3 py-2 sm:px-5' : 'flex-1 max-w-5xl w-full mx-auto px-4 py-5 sm:py-7'}>
         {strictGeofence && !embedded &&
           (showAssignedZoneMap ? (
             <EnumeratorAssignedZoneMap
@@ -555,7 +555,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             </div>
           ))}
 
-        <div className="relative mb-4 w-full sm:w-[calc((100%-0.75rem)/2)]">
+        <div className={`relative w-full sm:w-[calc((100%-0.75rem)/2)] ${embedded ? 'mb-2 shrink-0' : 'mb-4'}`}>
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             type="search"
@@ -580,6 +580,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           </div>
         )}
 
+        <div className={embedded ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1' : ''}>
         {loading ? (
           <div className="flex items-center justify-center text-slate-500 py-16">
             <Loader2 size={20} className="animate-spin mr-2" /> Loading your questionnaires…
@@ -597,7 +598,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             message="Try a different search term, or clear the search to see everything."
           />
         ) : (
-          <div className="space-y-6">
+          <div className={embedded ? 'space-y-3' : 'space-y-6'}>
             {grouped.map(([pid, group]) => (
               <section key={pid}>
                 {/* Project name/code are hidden on the enumerator view by
@@ -618,6 +619,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             ))}
           </div>
         )}
+        </div>
       </main>
       {!embedded && <AppFooter className="border-t border-slate-200 bg-white/70 backdrop-blur" />}
 
