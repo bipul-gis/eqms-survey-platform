@@ -1294,6 +1294,13 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
     () => questions.filter((question) => bulkLogicQuestionIds.has(question.id) && question.type !== 'section'),
     [questions, bulkLogicQuestionIds]
   );
+  useEffect(() => {
+    if (rightTab !== 'logic' || bulkLogicQuestions.length < 2 || bulkLogicDraft) return;
+    const startingLogic = bulkLogicQuestions[0]?.logic;
+    setBulkLogicDraft(startingLogic
+      ? JSON.parse(JSON.stringify(startingLogic)) as LogicRule
+      : blankLogic());
+  }, [rightTab, bulkLogicQuestions, bulkLogicDraft]);
   const toggleBulkLogicQuestion = (id: string) => {
     setBulkLogicAppliedCount(0);
     setBulkLogicQuestionIds((previous) => {
@@ -1314,6 +1321,13 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
       : blankLogic());
     setBulkLogicAppliedCount(0);
     setShowBulkLogicEditor(true);
+  };
+  const initializeBulkLogicDraft = () => {
+    const startingLogic = bulkLogicQuestions[0]?.logic;
+    setBulkLogicDraft(startingLogic
+      ? JSON.parse(JSON.stringify(startingLogic)) as LogicRule
+      : blankLogic());
+    setBulkLogicAppliedCount(0);
   };
   const applyBulkLogic = () => {
     if (!bulkLogicDraft || bulkLogicQuestions.length < 2) return;
@@ -1968,12 +1982,15 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                   [
                     { id: 'properties', label: 'Properties', Icon: Settings },
                     { id: 'validation', label: 'Validation', Icon: AlertCircle },
-                    { id: 'logic', label: 'Logic', Icon: Filter }
+                    { id: 'logic', label: bulkLogicQuestions.length > 1 ? `Logic (${bulkLogicQuestions.length})` : 'Logic', Icon: Filter }
                   ] as const
                 ).map((t) => (
                   <button
                     key={t.id}
-                    onClick={() => setRightTab(t.id)}
+                    onClick={() => {
+                      setRightTab(t.id);
+                      if (t.id === 'logic' && bulkLogicQuestions.length > 1) initializeBulkLogicDraft();
+                    }}
                     className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-2.5 border-b-2 transition-colors ${
                       rightTab === t.id
                         ? 'border-blue-600 text-blue-700'
@@ -2002,11 +2019,40 @@ const QuestionnaireBuilder: React.FC<QuestionnaireBuilderProps> = ({
                   />
                 )}
                 {rightTab === 'logic' && (
-                  <LogicPanel
-                    question={selectedQuestion}
-                    allQuestions={questions}
-                    onUpdate={(patch) => updateQuestion(selectedQuestion.id, patch)}
-                  />
+                  bulkLogicQuestions.length > 1 ? (
+                    <div className="space-y-3">
+                      <div className="rounded border border-blue-200 bg-blue-50 p-2 text-[11px] text-blue-900">
+                        Editing one shared display rule for {bulkLogicQuestions.length} selected questions.
+                      </div>
+                      <LogicPanel
+                        question={{ ...bulkLogicQuestions[0], logic: bulkLogicDraft ?? blankLogic() }}
+                        allQuestions={questions}
+                        showDefaultRules={false}
+                        onUpdate={(patch) => {
+                          if (patch.logic) {
+                            setBulkLogicDraft(patch.logic);
+                            setBulkLogicAppliedCount(0);
+                          }
+                        }}
+                      />
+                      <div className="sticky bottom-0 border-t border-slate-200 bg-white py-3">
+                        <button type="button" onClick={applyBulkLogic} disabled={!bulkLogicDraft} className="w-full rounded bg-blue-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">
+                          Apply logic to {bulkLogicQuestions.length} selected questions
+                        </button>
+                        {bulkLogicAppliedCount > 0 && (
+                          <p className="mt-1.5 text-center text-[10px] font-medium text-emerald-700">
+                            Applied to {bulkLogicAppliedCount} questions.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <LogicPanel
+                      question={selectedQuestion}
+                      allQuestions={questions}
+                      onUpdate={(patch) => updateQuestion(selectedQuestion.id, patch)}
+                    />
+                  )
                 )}
               </div>
             </>
