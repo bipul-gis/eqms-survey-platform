@@ -108,16 +108,6 @@ const resolveFeatureLabel = (attributes: Record<string, unknown> | undefined, pr
   return namedField ? String(namedField[1]).trim() : '';
 };
 
-const polygonGeometryKey = (geometry: any): string => {
-  if (!geometry || typeof geometry.type !== 'string' || !Array.isArray(geometry.coordinates)) return '';
-  const rounded = (value: any): any => Array.isArray(value)
-    ? value.map(rounded)
-    : typeof value === 'number'
-      ? Math.round(value * 1_000_000) / 1_000_000
-      : value;
-  return `${geometry.type}:${JSON.stringify(rounded(geometry.coordinates))}`;
-};
-
 const surveyLayerKeyMatches = (keys: string[], key: string) => {
   const normalize = (value: string) => value.trim().normalize('NFKC').toLocaleLowerCase();
   const expected = normalize(key);
@@ -1303,48 +1293,11 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     };
   };
 
-  const duplicateZonePolygonFeatureIds = useMemo(() => {
-    if (!isEnumeratorUser) return new Set<string>();
-    const zoneGeometryKeys = new Set<string>();
-    const addZoneFeatures = (collection?: GeoJSON.FeatureCollection | null, zoneProjectId?: string) => {
-      for (const feature of collection?.features || []) {
-        const geometryKey = polygonGeometryKey(feature.geometry);
-        if (!geometryKey) continue;
-        const projectKey = String(feature.properties?.__projectId || zoneProjectId || '');
-        zoneGeometryKeys.add(`${projectKey}:${geometryKey}`);
-      }
-    };
-    if (importedZoneLayers?.length) {
-      for (const layer of importedZoneLayers) {
-        if (zoneLayerVisibility[layer.id] === false) continue;
-        const style = getLayerStyle('zone', layer.id, layer.projectId);
-        if (mapZoom < style.showFromZoom) continue;
-        addZoneFeatures(layer.data, layer.projectId);
-      }
-    } else if (showZones && zoneBoundaries) {
-      const zoneLayerId = String(zoneBoundaries.features[0]?.properties?.__layerId || '');
-      const style = getLayerStyle('zone', zoneLayerId, projectId);
-      if (mapZoom >= style.showFromZoom) addZoneFeatures(zoneBoundaries, projectId);
-    }
-
-    return new Set(
-      features
-        .filter((feature) => {
-          if (feature.type !== 'polygon') return false;
-          const projectKey = String(feature.attributes?.projectId || (feature as any).projectId || '');
-          const geometryKey = polygonGeometryKey(feature.geometry);
-          return !!geometryKey && zoneGeometryKeys.has(`${projectKey}:${geometryKey}`);
-        })
-        .map((feature) => feature.id)
-    );
-  }, [isEnumeratorUser, features, zoneBoundaries, importedZoneLayers, zoneLayerVisibility, showZones, mapZoom, projectId, projectMapLayerStylesByProject, mapLayerSettings]);
-
   const isFeatureLayerVisible = useCallback((f: GeoFeature) => {
-    if (duplicateZonePolygonFeatureIds.has(f.id)) return false;
     const name = importedLayerName(f);
     if (!name) return true; // Default features without layer name are visible
     return layerVisibility[name] !== false; // Visible unless explicitly unchecked
-  }, [duplicateZonePolygonFeatureIds, layerVisibility]);
+  }, [layerVisibility]);
 
   const selectedFeature = selectedFeatureId
     ? features.find((f) => f.id === selectedFeatureId) || null
