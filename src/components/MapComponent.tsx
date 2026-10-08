@@ -647,10 +647,10 @@ const PointMarker = React.memo(({
   popupSettings?: MapPopupSettings;
 }) => {
   const baseWeight = Math.max(0.5, Number(borderWidth ?? 2));
-  const popupSource = feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload' || feature.attributes?.projectId
-    ? feature.attributes || {}
+  const isUploadedFeature = feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload' || feature.attributes?.projectId;
+  const popupAttributes = isUploadedFeature
+    ? mapPopupAttributeEntries(feature.attributes || {}, popupSettings)
     : normalizeLandmarkAttributesForDisplay(feature.attributes || {}, feature.type);
-  const popupAttributes = mapPopupAttributeEntries(popupSource, popupSettings);
   return (
   <CircleMarker
     interactive={interactive}

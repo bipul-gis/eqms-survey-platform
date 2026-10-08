@@ -135,6 +135,9 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
     ];
     return ids.length === 1 ? ids[0] : undefined;
   }, [geofenceZones]);
+  const assignedZoneBufferMeters = assignedZoneProjectId
+    ? userProfile.projectZoneBufferMeters?.[assignedZoneProjectId] ?? ASSIGNED_ZONE_BUFFER_METERS
+    : ASSIGNED_ZONE_BUFFER_METERS;
   const {
     locations: assignedZoneSurveyLocations,
     loading: assignedZoneSurveyLocationsLoading,
@@ -525,6 +528,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
           (showAssignedZoneMap ? (
             <EnumeratorAssignedZoneMap
               zones={geofenceZones || []}
+              bufferMeters={assignedZoneBufferMeters}
               projectMapLayerStyles={projectMapLayerStyles}
               projectMapLayerStylesByProject={projectMapLayerStylesByProject}
               onHide={() => setShowAssignedZoneMap(false)}
@@ -538,7 +542,7 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
                 <MapPinned size={16} className="shrink-0" />
                 <span>
                   Strict geofence is on. Survey inside your assigned zone or within{' '}
-                  {ASSIGNED_ZONE_BUFFER_METERS} m outside its boundary.
+                  {assignedZoneBufferMeters} m outside its boundary.
                 </span>
               </div>
               <button
@@ -661,6 +665,10 @@ export const EnumeratorQuestionnaireList: React.FC<EnumeratorQuestionnaireListPr
             initialLocation={initialLocation}
             geofenceZones={geofenceZones}
             strictGeofence={strictGeofence}
+            geofenceBufferMeters={
+              userProfile.projectZoneBufferMeters?.[opening.questionnaire.projectId || DEFAULT_PROJECT_ID]
+              ?? ASSIGNED_ZONE_BUFFER_METERS
+            }
             variant="fullscreen"
             onClose={() => {
               setOpening(null);

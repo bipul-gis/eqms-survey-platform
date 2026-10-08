@@ -24,6 +24,7 @@ import { DEFAULT_PROJECT_ID } from '../lib/projects';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
 import { assignedZoneValuesFromProfile } from '../lib/assignedZones';
+import { ASSIGNED_ZONE_BUFFER_METERS } from '../lib/pointInPolygon';
 
 type EnumeratorEntry = {
   email: string;
@@ -35,6 +36,7 @@ type EnumeratorEntry = {
   assignedWardNames: string[];
   /** Zone attribute values from imported SHP assignment field. */
   assignedZoneValues: string[];
+  zoneBufferMeters: number;
   /** Union of `assignedQuestionnaireIds` across all UIDs sharing this email. */
   assignedQuestionnaireIds: string[];
   /** Project IDs with explicit Geospatial Survey entitlement. */
@@ -120,6 +122,7 @@ const EnumeratorProjectTaskRow: React.FC<{
   onSave: (next: {
     wards?: string[];
     zoneValues?: string[];
+    zoneBufferMeters?: number;
     questionnaireIds?: string[];
   }) => void;
 }> = ({
@@ -143,6 +146,7 @@ const EnumeratorProjectTaskRow: React.FC<{
 
   const [wards, setWards] = useState<string[]>(() => [...entry.assignedWardNames]);
   const [zoneValues, setZoneValues] = useState<string[]>(() => [...(entry.assignedZoneValues || [])]);
+  const [zoneBufferMeters, setZoneBufferMeters] = useState(() => entry.zoneBufferMeters ?? ASSIGNED_ZONE_BUFFER_METERS);
   const [questionnaireIds, setQuestionnaireIds] = useState<string[]>(initialQIds);
 
   useEffect(() => {
@@ -152,6 +156,10 @@ const EnumeratorProjectTaskRow: React.FC<{
   useEffect(() => {
     setZoneValues([...(entry.assignedZoneValues || [])]);
   }, [entry.assignedZoneValues, entry.email]);
+
+  useEffect(() => {
+    setZoneBufferMeters(entry.zoneBufferMeters ?? ASSIGNED_ZONE_BUFFER_METERS);
+  }, [entry.zoneBufferMeters, entry.email]);
 
   useEffect(() => {
     setQuestionnaireIds(initialQIds);
@@ -205,6 +213,7 @@ const EnumeratorProjectTaskRow: React.FC<{
   const isDirty = (() => {
     if (enableGeospatial && useZones) {
       if (!sameStringSet(zoneValues, entry.assignedZoneValues || [])) return true;
+      if (zoneBufferMeters !== (entry.zoneBufferMeters ?? ASSIGNED_ZONE_BUFFER_METERS)) return true;
     }
     if (enableQuestionnaire) {
       if (!sameStringSet(questionnaireIds, initialQIds)) return true;
@@ -217,7 +226,7 @@ const EnumeratorProjectTaskRow: React.FC<{
     onSave({
       ...(enableGeospatial
         ? useZones
-          ? { zoneValues, wards: [] }
+          ? { zoneValues, zoneBufferMeters, wards: [] }
           : { zoneValues: [], wards: [] }
         : {}),
       ...(enableQuestionnaire ? { questionnaireIds } : {})
@@ -329,6 +338,20 @@ const EnumeratorProjectTaskRow: React.FC<{
               ? 'No boundaries assigned.'
               : `${zoneValues.length} boundary zone(s) assigned.`}
           </p>
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-sky-100 bg-sky-50/60 px-2.5 py-2 text-[10px] font-semibold text-sky-900">
+            <span>GPS submit buffer (meters)</span>
+            <input
+              aria-label={`GPS submit buffer for ${entry.displayName}`}
+              type="number"
+              min="0"
+              max="10000"
+              step="10"
+              value={zoneBufferMeters}
+              disabled={saving || zoneValues.length === 0}
+              onChange={(event) => setZoneBufferMeters(Math.max(0, Math.min(10000, Number(event.target.value) || 0)))}
+              className="w-24 rounded-md border border-sky-200 bg-white px-2 py-1 text-right text-xs text-slate-800 disabled:opacity-50"
+            />
+          </label>
         </div>
       )}
 
@@ -735,6 +758,9 @@ export const UserManagement: React.FC<{
               uids: uid ? [uid] : [],
               assignedWardNames: status === 'approved' ? wn : [],
               assignedZoneValues: status === 'approved' ? zv : [],
+              zoneBufferMeters: status === 'approved' && targetProjectId
+                ? data.projectZoneBufferMeters?.[targetProjectId] ?? ASSIGNED_ZONE_BUFFER_METERS
+                : ASSIGNED_ZONE_BUFFER_METERS,
               assignedQuestionnaireIds: status === 'approved' ? qids : [],
               assignedGeospatialProjectIds: status === 'approved' ? geoIds : []
             });
@@ -745,6 +771,7 @@ export const UserManagement: React.FC<{
           if (status === 'approved') {
             existing.assignedWardNames = [...new Set([...existing.assignedWardNames, ...wn])].sort((a, b) => a.localeCompare(b));
             existing.assignedZoneValues = [...new Set([...existing.assignedZoneValues, ...zv])].sort((a, b) => a.localeCompare(b));
+            if (targetProjectId && data.projectZoneBufferMeters?.[targetProjectId] !== undefined) existing.zoneBufferMeters = data.projectZoneBufferMeters[targetProjectId];
             existing.assignedQuestionnaireIds = [...new Set([...existing.assignedQuestionnaireIds, ...qids])].sort();
             existing.assignedGeospatialProjectIds = [...new Set([...existing.assignedGeospatialProjectIds, ...geoIds])];
           }
@@ -948,7 +975,7 @@ export const UserManagement: React.FC<{
 
   const saveEnumeratorProjectAssignment = async (
     entry: EnumeratorEntry,
-    next: { wards?: string[]; zoneValues?: string[]; questionnaireIds?: string[] }
+    next: { wards?: string[]; zoneValues?: string[]; zoneBufferMeters?: number; questionnaireIds?: string[] }
   ) => {
     try {
       setTaskSavingEmail(entry.email);
@@ -1025,12 +1052,15 @@ export const UserManagement: React.FC<{
           entry.uids.map(async (uid) => {
             const profile = allUsers.find((u) => u.uid === uid);
             const existingMap = { ...(profile?.projectZoneAssignments || {}) };
+            const existingBufferMap = { ...(profile?.projectZoneBufferMeters || {}) };
             const values = patch.assignedZoneValues || [];
             if (values.length) existingMap[projectId] = values;
             else delete existingMap[projectId];
+            if (next.zoneBufferMeters !== undefined) existingBufferMap[projectId] = next.zoneBufferMeters;
             await geosurveyApi.updateUser(uid, {
               ...patch,
               projectZoneAssignments: existingMap,
+              ...(next.zoneBufferMeters !== undefined ? { projectZoneBufferMeters: existingBufferMap } : {}),
             });
           })
         );

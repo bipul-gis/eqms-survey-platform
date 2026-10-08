@@ -330,6 +330,7 @@ export async function purgeProjectData(projectId: string): Promise<PurgeProjectR
       `UPDATE users
        SET
          project_zone_assignments = project_zone_assignments - $1,
+         project_zone_buffer_meters = project_zone_buffer_meters - $1,
          project_slum_assignments = project_slum_assignments - $1,
          project_ward_assignments = project_ward_assignments - $1,
          assigned_geospatial_project_ids = (
@@ -339,6 +340,7 @@ export async function purgeProjectData(projectId: string): Promise<PurgeProjectR
          )
        WHERE
          project_zone_assignments ? $1 OR
+         project_zone_buffer_meters ? $1 OR
          project_slum_assignments ? $1 OR
          project_ward_assignments ? $1 OR
          assigned_geospatial_project_ids @> to_jsonb($1::text)`,

@@ -89,6 +89,8 @@ export interface UserProfile {
   assignedZoneValues?: string[];
   /** Per-project zone-value assignments — `{ [projectId]: ['Zone A', …] }`. */
   projectZoneAssignments?: { [projectId: string]: string[] };
+  /** Per-project GPS tolerance outside assigned boundary polygons, in meters. */
+  projectZoneBufferMeters?: { [projectId: string]: number };
   /** Active zone layer id used for assignment (project's imported SHP layer). */
   assignedZoneLayerId?: string | null;
   /**

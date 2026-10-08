@@ -164,4 +164,5 @@ CREATE INDEX IF NOT EXISTS idx_zone_polygons_assign ON zone_polygons(layer_id, a
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_zone_values JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS project_zone_assignments JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_zone_layer_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS project_zone_buffer_meters JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_geospatial_project_ids JSONB NOT NULL DEFAULT '[]'::jsonb;

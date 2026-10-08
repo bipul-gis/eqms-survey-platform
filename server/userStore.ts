@@ -16,6 +16,7 @@ export interface DbUser {
   projectSlumAssignments: Record<string, string[]>;
   assignedZoneValues: string[];
   projectZoneAssignments: Record<string, string[]>;
+  projectZoneBufferMeters: Record<string, number>;
   assignedZoneLayerId?: string | null;
   assignedGeospatialProjectIds: string[];
   createdAt: string;
@@ -58,6 +59,17 @@ function asStringMap(value: unknown): Record<string, string[]> {
   return out;
 }
 
+function asNumberMap(value: unknown): Record<string, number> {
+  const raw = typeof value === 'string' && value.trim() ? (() => { try { return JSON.parse(value); } catch { return null; } })() : value;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) out[key] = number;
+  }
+  return out;
+}
+
 function rowToUser(row: Record<string, unknown>): DbUser {
   return {
     id: row.id as string,
@@ -75,6 +87,7 @@ function rowToUser(row: Record<string, unknown>): DbUser {
     projectSlumAssignments: asStringMap(row.project_slum_assignments),
     assignedZoneValues: asStringArray(row.assigned_zone_values),
     projectZoneAssignments: asStringMap(row.project_zone_assignments),
+    projectZoneBufferMeters: asNumberMap(row.project_zone_buffer_meters),
     assignedZoneLayerId: (row.assigned_zone_layer_id as string) || null,
     assignedGeospatialProjectIds: asStringArray(row.assigned_geospatial_project_ids),
     createdAt: row.created_at as string,
@@ -99,6 +112,7 @@ export function userToProfile(user: DbUser) {
     projectSlumAssignments: user.projectSlumAssignments,
     assignedZoneValues: user.assignedZoneValues,
     projectZoneAssignments: user.projectZoneAssignments,
+    projectZoneBufferMeters: user.projectZoneBufferMeters,
     assignedZoneLayerId: user.assignedZoneLayerId,
     assignedGeospatialProjectIds: user.assignedGeospatialProjectIds,
   };
@@ -184,7 +198,8 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       assigned_slum_ids = $12, project_slum_assignments = $13,
       assigned_zone_values = $14, project_zone_assignments = $15,
       assigned_zone_layer_id = $16,
-      assigned_geospatial_project_ids = $17, updated_at = NOW()
+      assigned_geospatial_project_ids = $17,
+      project_zone_buffer_meters = $18, updated_at = NOW()
      WHERE id = $1 RETURNING *`,
     [
       id,
@@ -204,6 +219,7 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
       JSON.stringify(merged.projectZoneAssignments || {}),
       merged.assignedZoneLayerId ?? null,
       JSON.stringify(merged.assignedGeospatialProjectIds || []),
+      JSON.stringify(merged.projectZoneBufferMeters || {}),
     ]
   );
   return rows[0] ? rowToUser(rows[0]) : null;

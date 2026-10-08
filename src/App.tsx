@@ -4219,6 +4219,9 @@ const AppContent: React.FC = () => {
                 initialLocation={questionnaireLocation || undefined}
                 geofenceZones={zonePolygons}
                 strictGeofence={questionnaireStrictGeofence}
+                geofenceBufferMeters={
+                  userProfile?.projectZoneBufferMeters?.[selectedQuestionnaire.projectId || DEFAULT_PROJECT_ID]
+                }
                 linkedFeature={linkedSurveyFeature || undefined}
                 variant="fullscreen"
                 onSubmit={() => {

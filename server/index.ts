@@ -390,6 +390,7 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     delete patch.projectSlumAssignments;
     delete patch.assignedZoneValues;
     delete patch.projectZoneAssignments;
+    delete patch.projectZoneBufferMeters;
     delete patch.assignedZoneLayerId;
     delete patch.assignedGeospatialProjectIds;
   }
@@ -408,6 +409,7 @@ app.patch('/api/users/:id', requireAuth, async (req: GeosurveyAuthenticatedReque
     'projectSlumAssignments',
     'assignedZoneValues',
     'projectZoneAssignments',
+    'projectZoneBufferMeters',
     'assignedZoneLayerId',
     'assignedGeospatialProjectIds',
   ] as const;

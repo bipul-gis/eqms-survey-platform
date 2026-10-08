@@ -131,6 +131,8 @@ interface QuestionnaireFormProps {
   /** Assigned zone polygons — when strictGeofence, GPS must fall inside one. */
   geofenceZones?: ZonePolygon[];
   strictGeofence?: boolean;
+  /** Admin configured GPS tolerance outside assigned zones, in meters. */
+  geofenceBufferMeters?: number;
   /** Optional geospatial feature to link this response to */
   linkedFeature?: {
     id: string;
@@ -369,6 +371,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   forceNew = false,
   geofenceZones = [],
   strictGeofence = false,
+  geofenceBufferMeters = ASSIGNED_ZONE_BUFFER_METERS,
   linkedFeature,
 }) => {
   const { user, userProfile } = useAuth();
@@ -1028,20 +1031,20 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
       return {
         ok: false,
         message:
-          `Strict geofence is on. Capture GPS inside your assigned zone or within ${ASSIGNED_ZONE_BUFFER_METERS} m of its boundary before submitting.`,
+          `Strict geofence is on. Capture GPS inside your assigned zone or within ${geofenceBufferMeters} m of its boundary before submitting.`,
       };
     }
     const proximity = findZoneWithinDistance(
       pt.lng,
       pt.lat,
       geofenceZones,
-      ASSIGNED_ZONE_BUFFER_METERS
+      geofenceBufferMeters
     );
     if (!proximity) {
       return {
         ok: false,
         message:
-          `You are more than ${ASSIGNED_ZONE_BUFFER_METERS} m outside your assigned zone. Move closer to the assigned area and recapture GPS to submit.`,
+          `You are more than ${geofenceBufferMeters} m outside your assigned zone. Move closer to the assigned area and recapture GPS to submit.`,
       };
     }
     return { ok: true, zone: proximity.zone };
@@ -1507,7 +1510,7 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
         <div className="px-5 py-2 bg-sky-50/80 border-b border-sky-100 text-[11px] text-sky-900 flex items-start gap-1.5 shrink-0">
           <MapPin size={12} className="mt-0.5 shrink-0" />
           <span>
-            Strict geofence: submit inside your assigned zone or within {ASSIGNED_ZONE_BUFFER_METERS} m
+            Strict geofence: submit inside your assigned zone or within {geofenceBufferMeters} m
             outside its boundary
             {geofenceZones.length === 1 && geofenceZones[0].assignValue
               ? ` (${geofenceZones[0].assignValue})`

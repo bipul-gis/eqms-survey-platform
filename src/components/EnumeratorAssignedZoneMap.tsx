@@ -127,7 +127,8 @@ export const EnumeratorAssignedZoneMap: React.FC<{
   surveyLocationsError?: Error | null;
   projectMapLayerStyles?: Record<string, MapLayerStyle>;
   projectMapLayerStylesByProject?: Record<string, Record<string, MapLayerStyle>>;
-}> = ({ zones, onHide, surveyLocations, surveyLocationsLoading = false, surveyLocationsError, projectMapLayerStyles = {}, projectMapLayerStylesByProject = {} }) => {
+  bufferMeters?: number;
+}> = ({ zones, onHide, surveyLocations, surveyLocationsLoading = false, surveyLocationsError, projectMapLayerStyles = {}, projectMapLayerStylesByProject = {}, bufferMeters = ASSIGNED_ZONE_BUFFER_METERS }) => {
   const { location, error, requestLocation } = useGeoLocation();
   const [focusRequestKey, setFocusRequestKey] = useState(0);
   const [showSurveyLocations, setShowSurveyLocations] = useState(true);
@@ -157,10 +158,10 @@ export const EnumeratorAssignedZoneMap: React.FC<{
           point.lng,
           point.lat,
           zones,
-          ASSIGNED_ZONE_BUFFER_METERS
+          bufferMeters
         )
       ),
-    [surveyLocations, zones]
+    [surveyLocations, zones, bufferMeters]
   );
   const zoneProximity = useMemo(
     () =>
@@ -169,10 +170,10 @@ export const EnumeratorAssignedZoneMap: React.FC<{
             location.lng,
             location.lat,
             zones,
-            ASSIGNED_ZONE_BUFFER_METERS
+            bufferMeters
           )
         : null,
-    [location, zones]
+    [location, zones, bufferMeters]
   );
 
   const focusLocation = () => {
@@ -204,7 +205,7 @@ export const EnumeratorAssignedZoneMap: React.FC<{
               </button>
             </div>
             <p className="mt-0.5 text-[11px] leading-tight text-slate-600">
-              Stay within {ASSIGNED_ZONE_BUFFER_METERS} m buffer of assigned boundary.
+              Stay within {bufferMeters} m buffer of assigned boundary.
             </p>
           </div>
         </div>
@@ -353,8 +354,8 @@ export const EnumeratorAssignedZoneMap: React.FC<{
                 {zoneProximity?.inside
                   ? 'You are inside your assigned zone'
                   : zoneProximity
-                    ? `You are within the ${ASSIGNED_ZONE_BUFFER_METERS} m boundary buffer`
-                    : `You are more than ${ASSIGNED_ZONE_BUFFER_METERS} m outside your assigned zone`}
+                  ? `You are within the ${bufferMeters} m boundary buffer`
+                    : `You are more than ${bufferMeters} m outside your assigned zone`}
               </span>
             ) : (
               <button
