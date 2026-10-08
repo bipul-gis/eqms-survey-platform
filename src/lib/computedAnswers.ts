@@ -101,10 +101,39 @@ const resolveAnswerValues = (
   // that record (for computed questions inside the repeat set).
   if (source?.repeatSourceId && source.id === key) return [answers[key]];
   const sourceId = source?.repeatSourceId || source?.id || key;
+  const sourceKey = source?.key;
   const repeated = questions
-    .filter((question) => question.repeatSourceId === sourceId && question.type !== 'section')
+    .filter((question) => question.type !== 'section' && (
+      question.repeatSourceId === sourceId ||
+      question.id.startsWith(`${sourceId}__repeat_`) ||
+      (sourceKey && question.key === sourceKey && question.repeatIndex !== undefined)
+    ))
     .sort((left, right) => (left.repeatIndex || 0) - (right.repeatIndex || 0));
-  if (repeated.length > 0) return repeated.map((question) => answers[question.id]);
+  if (repeated.length > 0) {
+    return repeated.map((question) => {
+      const repeatIndex = question.repeatIndex;
+      const fallbackKeys = repeatIndex === undefined ? [] : [
+        `${sourceId}__repeat_${repeatIndex}`,
+        question.key ? `${question.key}__repeat_${repeatIndex}` : '',
+      ];
+      for (const answerKey of [question.id, ...fallbackKeys]) {
+        if (answerKey && answerKey in answers) return answers[answerKey];
+      }
+      return undefined;
+    });
+  }
+  // Also handle drafts whose answer map contains repeat ids but whose
+  // question list has not yet been expanded (for example, during hydration).
+  const repeatedAnswerKeys = Object.keys(answers)
+    .map((answerKey) => {
+      const match = /^(.*)__repeat_(\d+)$/.exec(answerKey);
+      return match && (match[1] === sourceId || match[1] === sourceKey)
+        ? { answerKey, index: Number(match[2]) }
+        : null;
+    })
+    .filter((entry): entry is { answerKey: string; index: number } => entry !== null)
+    .sort((left, right) => left.index - right.index);
+  if (repeatedAnswerKeys.length > 0) return repeatedAnswerKeys.map(({ answerKey }) => answers[answerKey]);
   if (key in answers) return [answers[key]];
   if (source) return [answers[source.id]];
   return [];
