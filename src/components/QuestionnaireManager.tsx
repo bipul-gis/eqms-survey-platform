@@ -2704,6 +2704,53 @@ const COMPUTED_OPERATIONS: { value: ComputedOperation; label: string; hint: stri
   { value: 'expression',     label: 'Custom expression',     hint: 'Free formula with {{questionId}} placeholders' }
 ];
 
+const ComputedOperandPicker: React.FC<{
+  questions: Question[];
+  questionNumbers: Map<string, string>;
+  placeholder: string;
+  onSelect: (id: string) => void;
+}> = ({ questions, questionNumbers, placeholder, onSelect }) => {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matches = questions.filter((q) => {
+    const number = questionNumbers.get(q.id) ?? '';
+    const label = q.question || q.key || q.id;
+    return !normalizedQuery || `${number} ${label} ${q.key ?? ''} ${q.id}`.toLocaleLowerCase().includes(normalizedQuery);
+  });
+
+  return (
+    <div className="space-y-1.5">
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        className={inputCls}
+        placeholder="Search by question number or text…"
+        aria-label="Search questions to add as computed operands"
+      />
+      <div className="max-h-48 overflow-y-auto rounded border border-slate-200 bg-white">
+        {matches.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-slate-400">No matching questions.</p>
+        ) : matches.map((q) => (
+          <button
+            key={q.id}
+            type="button"
+            onClick={() => { onSelect(q.id); setQuery(''); }}
+            className="flex w-full items-center gap-2 border-b border-slate-100 px-2.5 py-2 text-left last:border-b-0 hover:bg-violet-50"
+          >
+            <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-violet-800">
+              {questionNumbers.get(q.id) ?? '—'}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-xs text-slate-700">{q.question || q.key || q.id}</span>
+            {q.key && <span className="max-w-32 truncate font-mono text-[10px] text-slate-400">{q.key}</span>}
+          </button>
+        ))}
+      </div>
+      <p className="text-[10px] text-slate-400">{placeholder}</p>
+    </div>
+  );
+};
+
 const ComputedQuestionEditor: React.FC<{
   question: Question;
   allQuestions: Question[];
@@ -2727,6 +2774,11 @@ const ComputedQuestionEditor: React.FC<{
       q.type !== 'matrix'
   );
   const operandIds = spec.operandQuestionIds ?? [];
+  const questionNumbers = useMemo(
+    () => buildQuestionNumbering(allQuestions).questionNumbers,
+    [allQuestions]
+  );
+  const availableOperands = eligible.filter((q) => !operandIds.includes(q.id));
 
   const addOperand = (id: string) => {
     if (!id) return;
@@ -2814,6 +2866,9 @@ const ComputedQuestionEditor: React.FC<{
                   <span className="text-[10px] font-mono text-slate-400 w-5">
                     {String.fromCharCode(65 + i)}
                   </span>
+                  <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-violet-800">
+                    {questionNumbers.get(id) ?? '—'}
+                  </span>
                   <span className="flex-1 min-w-0 text-xs text-slate-700 truncate">
                     {operandLabel(id)}
                   </span>
@@ -2845,20 +2900,12 @@ const ComputedQuestionEditor: React.FC<{
                   </button>
                 </div>
               ))}
-              <select
-                value=""
-                onChange={(e) => addOperand(e.target.value)}
-                className={inputCls}
-              >
-                <option value="">+ Add operand…</option>
-                {eligible
-                  .filter((q) => !operandIds.includes(q.id))
-                  .map((q) => (
-                    <option key={q.id} value={q.id}>
-                      {q.question || q.key || q.id}
-                    </option>
-                  ))}
-              </select>
+              <ComputedOperandPicker
+                questions={availableOperands}
+                questionNumbers={questionNumbers}
+                placeholder="Select a question to add as an operand."
+                onSelect={addOperand}
+              />
             </div>
           </Field>
         )}
@@ -2907,6 +2954,9 @@ const ComputedQuestionEditor: React.FC<{
                     key={id}
                     className="flex items-center gap-1 bg-white border border-slate-200 rounded px-2 py-1"
                   >
+                    <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-violet-800">
+                      {questionNumbers.get(id) ?? '—'}
+                    </span>
                     <span className="flex-1 min-w-0 text-xs text-slate-700 truncate">
                       {operandLabel(id)}
                     </span>
@@ -2920,20 +2970,12 @@ const ComputedQuestionEditor: React.FC<{
                     </button>
                   </div>
                 ))}
-                <select
-                  value=""
-                  onChange={(e) => addOperand(e.target.value)}
-                  className={inputCls}
-                >
-                  <option value="">+ Reference a question…</option>
-                  {eligible
-                    .filter((q) => !operandIds.includes(q.id))
-                    .map((q) => (
-                      <option key={q.id} value={q.id}>
-                        {q.question || q.key || q.id}
-                      </option>
-                    ))}
-                </select>
+                <ComputedOperandPicker
+                  questions={availableOperands}
+                  questionNumbers={questionNumbers}
+                  placeholder="Select a question referenced in the expression."
+                  onSelect={addOperand}
+                />
               </div>
             </Field>
           </>
