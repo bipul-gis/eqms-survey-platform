@@ -1945,70 +1945,104 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             </div>
 
             {/* Imported Geospatial Survey Layers */}
-            {distinctImportedLayers.length > 0 && (
-              <div className="border-t pt-2 mt-2">
-                <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
-                  <span>Geospatial Layers</span>
-                  <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-1.5 py-0.5 rounded border border-sky-100">
-                    {distinctImportedLayers.length}
-                  </span>
-                </div>
-                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] text-slate-600" aria-label="Feature status color legend">
-                  <span className="font-semibold text-slate-500">Survey layer status colors</span>
-                  <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-blue-600" />Pending</span>
-                  <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-green-500" />Verified</span>
-                  <span className="inline-flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-full bg-red-500" />Rejected</span>
-                </div>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                  {distinctImportedLayers.map((lyr) => {
-                    const adminStyle = getLayerStyle('feature', lyr.name, lyr.projectId || undefined);
-                    const isAdminVisible = adminStyle.visible !== false;
-                    const isVisible = isAdminVisible && layerVisibility[lyr.name] !== false;
-                    const isSurveyLayer = surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${lyr.name}`);
-                    const legendStyle = adminStyle;
-                    const legendBorderWidth = Math.max(1, Number(legendStyle.borderWidth ?? 2));
-                    return (
-                      <div key={lyr.key} className="rounded-lg hover:bg-slate-50">
-                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-1.5 text-xs">
-                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={isVisible}
-                            disabled={!isAdminVisible}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setLayerVisibility((prev) => ({
-                                ...prev,
-                                [lyr.name]: checked,
-                              }));
-                            }}
-                            className="rounded text-sky-600 focus:ring-sky-500 disabled:cursor-not-allowed"
-                          />
-                          {isSurveyLayer ? <div className="flex shrink-0 items-center gap-0.5">
-                    {([
-                      ['Pending', legendStyle.statusColors?.pending || DEFAULT_FEATURE_STATUS_COLORS.pending],
-                      ['Verified', legendStyle.statusColors?.verified || DEFAULT_FEATURE_STATUS_COLORS.verified],
-                      ['Rejected', legendStyle.statusColors?.rejected || DEFAULT_FEATURE_STATUS_COLORS.rejected],
-                    ] as const).map(([label, color]) => (
-                              <span key={label} title={`${label} feature`} aria-label={`${label} feature color`} className="h-3 w-3 rounded-full border border-white shadow-sm" style={{ backgroundColor: color }} />
-                            ))}
-                          </div> : <div className="flex shrink-0 items-center gap-0.5">
-                            {lyr.types.map((type) => <span key={type} title={`${type} layer symbology`} className="flex h-5 w-5 items-center justify-center">
-                              {type === 'line' ? <span className="block w-3.5" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} /> : <span className={`${type === 'point' ? 'rounded-full' : 'rounded-sm'} h-3.5 w-3.5 border`} style={{ backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor, borderColor: legendStyle.boundaryColor, borderWidth: `${legendBorderWidth}px` }} />}
-                            </span>)}
-                          </div>}
-                          <span className={`min-w-0 whitespace-normal break-words font-medium leading-tight ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
-                            {lyr.name}
-                          </span>
-                        </label>
-                        <span className="shrink-0 text-right text-[10px] tabular-nums text-slate-400">({lyr.count.toLocaleString()})</span>
+            {(() => {
+              const visibleImportedLayers = distinctImportedLayers.filter((lyr) => {
+                const adminStyle = getLayerStyle('feature', lyr.name, lyr.projectId || undefined);
+                return adminStyle.visible !== false;
+              });
+
+              if (visibleImportedLayers.length === 0) return null;
+
+              return (
+                <div className="border-t pt-2 mt-2">
+                  <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center justify-between">
+                    <span>Geospatial Layers</span>
+                    <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-1.5 py-0.5 rounded border border-sky-100">
+                      {visibleImportedLayers.length}
+                    </span>
+                  </div>
+                  {visibleImportedLayers.some((lyr) => surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${lyr.name}`)) && (
+                    <div className="flex items-center text-[8px] font-bold text-slate-400 select-none px-1.5 pb-0.5">
+                      <span className="w-5 shrink-0" />
+                      <div className="flex shrink-0 items-center gap-1.5 w-[50px] justify-center text-center">
+                        <span className="w-2.5 text-center" title="Pending">P</span>
+                        <span className="w-2.5 text-center" title="Verified">V</span>
+                        <span className="w-2.5 text-center" title="Rejected">R</span>
                       </div>
-                      </div>
-                    );
-                  })}
+                    </div>
+                  )}
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                    {visibleImportedLayers.map((lyr) => {
+                      const adminStyle = getLayerStyle('feature', lyr.name, lyr.projectId || undefined);
+                      const isVisible = layerVisibility[lyr.name] !== false;
+                      const isSurveyLayer = surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${lyr.name}`);
+                      const legendStyle = adminStyle;
+                      const legendBorderWidth = Math.max(1, Number(legendStyle.borderWidth ?? 2));
+                      return (
+                        <div key={lyr.key} className="rounded-lg hover:bg-slate-50">
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-1.5 text-xs">
+                          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={isVisible}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setLayerVisibility((prev) => ({
+                                  ...prev,
+                                  [lyr.name]: checked,
+                                }));
+                              }}
+                              className="rounded text-sky-600 focus:ring-sky-500"
+                            />
+                            {isSurveyLayer ? (
+                              <div className="flex shrink-0 items-center gap-1.5 w-[50px] justify-center">
+                                {([
+                                  ['Pending', legendStyle.statusColors?.pending || DEFAULT_FEATURE_STATUS_COLORS.pending],
+                                  ['Verified', legendStyle.statusColors?.verified || DEFAULT_FEATURE_STATUS_COLORS.verified],
+                                  ['Rejected', legendStyle.statusColors?.rejected || DEFAULT_FEATURE_STATUS_COLORS.rejected],
+                                ] as const).map(([label, color]) => (
+                                  <span
+                                    key={label}
+                                    title={`${label} feature`}
+                                    aria-label={`${label} feature color`}
+                                    className="h-2.5 w-2.5 rounded-full border border-white shadow-sm shrink-0"
+                                    style={{ backgroundColor: color }}
+                                  />
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex shrink-0 items-center gap-0.5">
+                                {lyr.types.map((type) => (
+                                  <span key={type} title={`${type} layer symbology`} className="flex h-5 w-5 items-center justify-center">
+                                    {type === 'line' ? (
+                                      <span className="block w-3.5" style={{ borderTop: `${legendBorderWidth}px solid ${legendStyle.boundaryColor}` }} />
+                                    ) : (
+                                      <span
+                                        className={`${type === 'point' ? 'rounded-full' : 'rounded-sm'} h-3.5 w-3.5 border`}
+                                        style={{
+                                          backgroundColor: legendStyle.opacity === 0 ? 'transparent' : legendStyle.fillColor,
+                                          borderColor: legendStyle.boundaryColor,
+                                          borderWidth: `${legendBorderWidth}px`,
+                                        }}
+                                      />
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <span className={`min-w-0 whitespace-normal break-words font-medium leading-tight ${isVisible ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
+                              {lyr.name}
+                            </span>
+                          </label>
+                          <span className="shrink-0 text-right text-[10px] tabular-nums text-slate-400">({lyr.count.toLocaleString()})</span>
+                        </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             </div>
           </div>
         )}

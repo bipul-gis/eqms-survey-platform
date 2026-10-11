@@ -211,11 +211,26 @@ export async function patchShapefileZipUtf8Dbf(
 ): Promise<Blob> {
   if (rows.length === 0) return zipBlob;
   const zip = await JSZip.loadAsync(await zipBlob.arrayBuffer());
-  const folder = zip.folder(folderName);
-  if (!folder) return zipBlob;
   const { buffer } = buildDbfUtf8FromPropertyRows(rows);
-  folder.file(`${baseName}.dbf`, buffer);
-  folder.file(`${baseName}.cpg`, 'UTF-8');
+
+  // Find any existing .dbf file in the zip (whether in folderName, in root, or named after geometry)
+  let patched = false;
+  zip.forEach((relativePath, file) => {
+    if (relativePath.toLowerCase().endsWith('.dbf')) {
+      zip.file(relativePath, buffer);
+      // Place .cpg right alongside this .dbf
+      const cpgPath = relativePath.slice(0, -4) + '.cpg';
+      zip.file(cpgPath, 'UTF-8');
+      patched = true;
+    }
+  });
+
+  if (!patched) {
+    const targetFolder = folderName ? zip.folder(folderName) || zip : zip;
+    targetFolder.file(`${baseName}.dbf`, buffer);
+    targetFolder.file(`${baseName}.cpg`, 'UTF-8');
+  }
+
   return zip.generateAsync({ type: 'blob', compression: 'STORE' });
 }
 

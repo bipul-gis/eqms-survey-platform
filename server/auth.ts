@@ -84,10 +84,8 @@ export async function registerEnumerator(input: {
   if (await findUserByEmail(email)) {
     throw new Error('An account with this email already exists.');
   }
+  await clearDeletedEmailBlock(email);
   const uid = randomUUID();
-  if (await isUserBlocked(uid, email)) {
-    throw new Error('This email cannot be used to register.');
-  }
   const user = await createUser({
     id: uid,
     email,

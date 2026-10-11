@@ -85,12 +85,15 @@ export const isGenericGeoJsonFeature = (feature: GeoFeature): boolean => {
 const getOrderedAttributes = (
   attrs: Record<string, any>,
   featureType: FeatureType,
-  isGeneric: boolean = false
+  isGeneric: boolean = false,
+  layerStyle?: MapLayerStyle
 ): Array<[string, any]> => {
   const a = attrs || {};
+  const hiddenFields = new Set(layerStyle?.popupHiddenFields || []);
+
   if (isGeneric) {
     return Object.entries(a)
-      .filter(([k]) => !k.startsWith('__') && !k.startsWith('_') && !HIDDEN_EDITOR_KEYS.has(k))
+      .filter(([k]) => !k.startsWith('__') && !k.startsWith('_') && !HIDDEN_EDITOR_KEYS.has(k) && !hiddenFields.has(k))
       .sort((a, b) => a[0].localeCompare(b[0])) as Array<[string, any]>;
   }
 
@@ -126,7 +129,12 @@ const getOrderedAttributes = (
     ...(slum ? SLUM_DEMOGRAPHIC_KEYS : [])
   ];
   const ordered = order.map((k) => [k, normalized[k] ?? a[k] ?? '']);
-  return [...ordered, ...extra] as Array<[string, any]>;
+  const allOrdered = [...ordered, ...extra] as Array<[string, any]>;
+
+  if (hiddenFields.size > 0) {
+    return allOrdered.filter(([k]) => !hiddenFields.has(k));
+  }
+  return allOrdered;
 };
 
 const normalizeEditorHex = (value: string | undefined, fallback: string) =>
@@ -588,9 +596,10 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
           )}
 
           <div className="space-y-3">
-            {getOrderedAttributes(attributes, feature.type, isGeneric).map(([key, value]) => {
+            {getOrderedAttributes(attributes, feature.type, isGeneric, layerStyle).map(([key, value]) => {
               const isReadOnly = READ_ONLY_ATTRIBUTES.has(key);
               const stringValue = String(value ?? '');
+              const displayLabel = layerStyle?.popupFieldLabels?.[key]?.trim() || key;
 
               if (!isGeneric && key === 'Category') {
                 return (
@@ -805,7 +814,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
                 <div key={key} className="flex gap-2 items-center">
                   <div className="flex-1">
                     <p className="text-[10px] text-gray-400 font-medium ml-1 mb-0.5 flex items-center gap-1">
-                      {key}
+                      {displayLabel}
                       {!isReadOnly && !isGeneric && !(key === 'Ownership' && selectedCategory !== 'Health Facilities') && (
                         <span className="text-red-500">*</span>
                       )}

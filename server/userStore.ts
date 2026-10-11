@@ -225,41 +225,33 @@ export async function updateUser(id: string, patch: Partial<DbUser>): Promise<Db
   return rows[0] ? rowToUser(rows[0]) : null;
 }
 
-export async function isUserBlocked(uid: string, email: string): Promise<boolean> {
+export async function isUserBlocked(uid: string, _email?: string): Promise<boolean> {
   const uidCheck = await pool.query('SELECT 1 FROM deleted_users WHERE uid = $1', [uid]);
-  if (uidCheck.rowCount) return true;
-  const emailKey = encodeURIComponent(email.trim().toLowerCase());
-  const emailCheck = await pool.query('SELECT 1 FROM deleted_user_emails WHERE email_key = $1', [
-    emailKey,
-  ]);
-  return Boolean(emailCheck.rowCount);
+  return Boolean(uidCheck.rowCount);
 }
 
-/** Admin-created accounts explicitly restore a previously tombstoned email. */
+/** Admin-created or registered accounts explicitly restore a previously tombstoned email. */
 export async function clearDeletedEmailBlock(email: string): Promise<void> {
   const emailKey = encodeURIComponent(email.trim().toLowerCase());
-  await pool.query('DELETE FROM deleted_user_emails WHERE email_key = $1', [emailKey]);
+  await pool.query('DELETE FROM deleted_user_emails WHERE email_key = $1 OR email = $2', [
+    emailKey,
+    email.trim().toLowerCase(),
+  ]);
 }
 
 export async function blockDeletedUser(
   uid: string,
   email: string,
-  deletedBy: string,
-  payload: Record<string, unknown> = {}
+  _deletedBy: string,
+  _payload: Record<string, unknown> = {}
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO deleted_users (uid, email, deleted_by, payload)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (uid) DO NOTHING`,
-    [uid, email, deletedBy, JSON.stringify(payload)]
-  );
-  const emailKey = encodeURIComponent(email.trim().toLowerCase());
-  await pool.query(
-    `INSERT INTO deleted_user_emails (email_key, email)
-     VALUES ($1, $2)
-     ON CONFLICT (email_key) DO NOTHING`,
-    [emailKey, email.trim().toLowerCase()]
-  );
-  await pool.query('DELETE FROM users WHERE id = $1', [uid]);
+  // Clear any tombstone so email can be registered again
+  await clearDeletedEmailBlock(email);
+  await pool.query('DELETE FROM deleted_users WHERE uid = $1', [uid]);
+
+  // Clean up all user data from PostgreSQL (sessions, reset tokens, credentials, and user record)
+  await pool.query('DELETE FROM auth_sessions WHERE user_id = $1', [uid]);
+  await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [uid]);
   await pool.query('DELETE FROM user_credentials WHERE user_id = $1', [uid]);
+  await pool.query('DELETE FROM users WHERE id = $1', [uid]);
 }

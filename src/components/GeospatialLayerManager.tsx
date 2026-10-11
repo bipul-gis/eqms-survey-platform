@@ -1,9 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Layers, Trash2, X, Loader2, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Layers, Trash2, X, Loader2, ChevronDown, ChevronRight, Search, Download, FileSpreadsheet, FolderArchive } from 'lucide-react';
 import type { GeoFeature, SurveyLayerAction, ZoneLayer, ZonePolygon } from '../types';
 import type { Questionnaire } from '../types';
 import { geosurveyApi } from '../lib/geosurveyApi';
 import { zoneLayersApi } from '../lib/zoneLayersApi';
+import {
+  downloadLayerAsCsv,
+  downloadLayerAsShpZip,
+  downloadZonePolygonsAsShpZip,
+  filterFeaturesByStatus,
+  filterZonePolygonsByStatus,
+  type StatusFilterOption,
+} from '../lib/geospatialExport';
 import {
   DEFAULT_MAP_LAYER_STYLE,
   DEFAULT_FEATURE_STATUS_COLORS,
@@ -119,6 +127,80 @@ export const GeospatialLayerManager: React.FC<Props> = ({
   const [savingSurveyLayer, setSavingSurveyLayer] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [zoomDrafts, setZoomDrafts] = useState<Record<string, string>>({});
+  const [downloadStatusFilter, setDownloadStatusFilter] = useState<StatusFilterOption>('all');
+  const [downloadFormat, setDownloadFormat] = useState<'shp' | 'csv'>('shp');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportNotice, setExportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const handleDownloadLayer = async () => {
+    if (!selected) return;
+    setIsExporting(true);
+    setExportNotice(null);
+    try {
+      if (selected.kind === 'feature') {
+        const layerFeatures = features.filter((f) => layerNameOf(f) === selected.name);
+        if (downloadFormat === 'shp') {
+          const { count } = await downloadLayerAsShpZip(selected.name, layerFeatures, downloadStatusFilter);
+          setExportNotice({
+            type: 'success',
+            message: `Exported ${count} feature(s) as SHP ZIP (${downloadStatusFilter === 'all' ? 'All' : downloadStatusFilter}).`,
+          });
+        } else {
+          const filteredFeatures = filterFeaturesByStatus(layerFeatures, downloadStatusFilter);
+          if (filteredFeatures.length === 0) {
+            throw new Error(`No records match the status "${downloadStatusFilter}".`);
+          }
+          const items = filteredFeatures.map((f) => {
+            const coords = f.geometry?.type === 'Point' && Array.isArray(f.geometry.coordinates)
+              ? [Number(f.geometry.coordinates[0]), Number(f.geometry.coordinates[1])] as [number, number]
+              : undefined;
+            return {
+              id: f.id,
+              properties: f.attributes || {},
+              coordinates: coords,
+              status: f.status,
+            };
+          });
+          downloadLayerAsCsv(selected.name, items, columns, downloadStatusFilter);
+          setExportNotice({
+            type: 'success',
+            message: `Exported ${items.length} feature(s) as CSV (${downloadStatusFilter === 'all' ? 'All' : downloadStatusFilter}).`,
+          });
+        }
+      } else {
+        // Zone boundary layer
+        const { items: zonePolygons } = await zoneLayersApi.listPolygons({ layerId: selected.id });
+        if (downloadFormat === 'shp') {
+          const { count } = await downloadZonePolygonsAsShpZip(selected.name, zonePolygons, downloadStatusFilter);
+          setExportNotice({
+            type: 'success',
+            message: `Exported ${count} zone polygon(s) as SHP ZIP (${downloadStatusFilter === 'all' ? 'All' : downloadStatusFilter}).`,
+          });
+        } else {
+          const filteredZones = filterZonePolygonsByStatus(zonePolygons, downloadStatusFilter);
+          if (filteredZones.length === 0) {
+            throw new Error(`No zone polygons match the status "${downloadStatusFilter}".`);
+          }
+          const items = filteredZones.map((p) => ({
+            id: p.id,
+            properties: p.properties || {},
+            status: String(p.properties?.Status || p.properties?.QC_Status || 'pending'),
+          }));
+          downloadLayerAsCsv(selected.name, items, columns, downloadStatusFilter);
+          setExportNotice({
+            type: 'success',
+            message: `Exported ${items.length} zone polygon(s) as CSV (${downloadStatusFilter === 'all' ? 'All' : downloadStatusFilter}).`,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Download layer error:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setExportNotice({ type: 'error', message: msg });
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   useEffect(() => setActiveSurveyKeys(activeSurveyLayerKeys), [activeSurveyLayerKeys]);
   useEffect(() => setLayerActions(surveyLayerActions), [surveyLayerActions]);
@@ -566,6 +648,115 @@ export const GeospatialLayerManager: React.FC<Props> = ({
                   </>}
                 </div>
               </section>
+              {/* Export / Download Layer Data Section */}
+              <section className="mb-4 rounded-xl border border-sky-200 bg-sky-50/40 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <Download size={15} className="text-sky-700" />
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-sky-900">
+                      Download Layer Data
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-medium">
+                    {selected.count.toLocaleString()} record(s)
+                  </span>
+                </div>
+
+                <p className="text-[10px] text-slate-500 mb-2.5">
+                  Export features as a Shapefile ZIP (.shp, .dbf, .shx, .prj) or CSV spreadsheet, filtered by QC status.
+                </p>
+
+                <div className="grid grid-cols-2 gap-2 mb-2.5">
+                  <div>
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                      Status Filter
+                    </label>
+                    <select
+                      value={downloadStatusFilter}
+                      disabled={isExporting}
+                      onChange={(e) => setDownloadStatusFilter(e.target.value as StatusFilterOption)}
+                      className="w-full h-8 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-800 focus:border-sky-500 focus:outline-none"
+                    >
+                      <option value="all">All statuses</option>
+                      <option value="verified">Verified only</option>
+                      <option value="pending">Pending only</option>
+                      <option value="rejected">Rejected only</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                      Format
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 h-8">
+                      <button
+                        type="button"
+                        onClick={() => setDownloadFormat('shp')}
+                        className={`flex items-center justify-center gap-1 rounded-lg border text-[11px] font-semibold transition ${
+                          downloadFormat === 'shp'
+                            ? 'border-sky-500 bg-sky-600 text-white shadow-xs'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <FolderArchive size={13} />
+                        SHP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDownloadFormat('csv')}
+                        className={`flex items-center justify-center gap-1 rounded-lg border text-[11px] font-semibold transition ${
+                          downloadFormat === 'csv'
+                            ? 'border-sky-500 bg-sky-600 text-white shadow-xs'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <FileSpreadsheet size={13} />
+                        CSV
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadLayer()}
+                  disabled={isExporting || selected.count === 0}
+                  className="w-full h-8.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isExporting ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>Generating {downloadFormat.toUpperCase()}…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download size={14} />
+                      <span>
+                        Download as {downloadFormat.toUpperCase()} ({downloadStatusFilter === 'all' ? 'All' : downloadStatusFilter})
+                      </span>
+                    </>
+                  )}
+                </button>
+
+                {exportNotice && (
+                  <div
+                    className={`mt-2 rounded-lg px-2.5 py-1.5 text-[10px] font-medium flex items-center justify-between ${
+                      exportNotice.type === 'success'
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                        : 'bg-red-100 text-red-800 border border-red-200'
+                    }`}
+                  >
+                    <span>{exportNotice.message}</span>
+                    <button
+                      type="button"
+                      onClick={() => setExportNotice(null)}
+                      className="ml-2 text-slate-400 hover:text-slate-600"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
+              </section>
+
               <section>
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 transition hover:border-slate-300">
                   <button
