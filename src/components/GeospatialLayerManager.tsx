@@ -54,11 +54,7 @@ type ManagedLayer = {
 
 const layerNameOf = (feature: GeoFeature) => {
   const attrs = feature.attributes || {};
-  const name = String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
-  if (name) return name;
-  return attrs.__source === 'geojson_upload' || attrs.__source === 'shapefile_upload' || attrs.projectId || (feature as any).projectId
-    ? 'Unassigned layer'
-    : '';
+  return String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
 };
 
 export const GeospatialLayerManager: React.FC<Props> = ({

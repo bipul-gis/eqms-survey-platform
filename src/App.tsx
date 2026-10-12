@@ -669,7 +669,7 @@ const AppContent: React.FC = () => {
     [isAdmin, enumeratorMapProjects, currentProject?.surveyLayerActions]
   );
   const selectedFeatureLayerName = selectedFeature
-    ? String(selectedFeature.attributes?.__layerName || selectedFeature.attributes?.layerName || (selectedFeature as any).layerName || (selectedFeature.attributes?.projectId || (selectedFeature as any).projectId ? 'Unassigned layer' : '')).trim()
+    ? String(selectedFeature.attributes?.__layerName || selectedFeature.attributes?.layerName || (selectedFeature as any).layerName || '').trim()
     : '';
   const selectedFeatureSurveyLayerKey = selectedFeatureLayerName ? `feature:${selectedFeatureLayerName}` : '';
   const selectedFeatureProjectId = String(selectedFeature?.attributes?.projectId || (selectedFeature as any)?.projectId || currentProject?.id || '');
@@ -2819,7 +2819,7 @@ const AppContent: React.FC = () => {
       }
       captureMapViewBeforeInteraction();
       const attributes = feature.attributes || {};
-      const layerName = String(attributes.__layerName || attributes.layerName || (feature as any).layerName || (attributes.projectId || (feature as any).projectId ? 'Unassigned layer' : '')).trim();
+      const layerName = String(attributes.__layerName || attributes.layerName || (feature as any).layerName || '').trim();
       const layerKey = String(attributes.__surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
       const featureProjectId = String(attributes.projectId || (feature as any).projectId || currentProject?.id || '');
       const featureProject = enumeratorMapProjects.find((project) => project.id === featureProjectId) || currentProject;
@@ -3859,7 +3859,7 @@ const AppContent: React.FC = () => {
               assignedBoundaryLayerKey={mapProject?.geospatialAssignmentLayerId}
               assignedBoundaryField={mapProject?.geospatialAssignmentField}
               assignedBoundaryValues={mapAssignmentValues}
-              defaultBaseMap={geospatialMapMode || (isApprovedEnumerator && enumeratorHasGeoTasks) || zoneBoundaries?.features?.length ? 'satellite' : 'osm'}
+              defaultBaseMap="hybrid"
               defaultShowZones={!!zoneBoundaries?.features?.length}
               projectId={mapProjectId}
               importedExtentRequest={importedExtentRequest}

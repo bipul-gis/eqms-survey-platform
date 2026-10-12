@@ -80,13 +80,7 @@ const readStoredZoneLayerVisibility = (projectId?: string): Record<string, boole
 
 const importedLayerName = (feature: GeoFeature): string => {
   const attrs = feature.attributes || {};
-  const name = String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
-  if (name) return name;
-  const isImported =
-    attrs.__source === 'geojson_upload' ||
-    attrs.__source === 'shapefile_upload' ||
-    Boolean(attrs.projectId || (feature as any).projectId);
-  return isImported ? 'Unassigned layer' : '';
+  return String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
 };
 
 const resolveFeatureLabel = (attributes: Record<string, unknown> | undefined, preferredField?: string) => {
@@ -1166,7 +1160,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   assignedBoundaryLayerKey = null,
   assignedBoundaryField = null,
   assignedBoundaryValues = [],
-  defaultBaseMap = 'osm',
+  defaultBaseMap = 'hybrid',
   defaultShowZones = true,
   importedExtentRequest = null,
   onMapViewChange,
@@ -1488,9 +1482,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         )}
         {baseMap === 'satellite' && (
           <TileLayer
-            attribution='Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
-            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-            maxNativeZoom={19}
+            attribution='Map data &copy; Google'
+            url="https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}"
+            subdomains={['mt0', 'mt1', 'mt2', 'mt3']}
+            maxNativeZoom={20}
             maxZoom={30}
           />
         )}
@@ -1819,16 +1814,16 @@ export const MapComponent: React.FC<MapComponentProps> = ({
               <p className="font-bold text-slate-700 mb-2">Basemap</p>
               <div className="space-y-1.5">
                 <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="basemap" checked={baseMap === 'hybrid'} onChange={() => setBaseMap('hybrid')} />
+                  <span>Google Hybrid</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
                   <input type="radio" name="basemap" checked={baseMap === 'osm'} onChange={() => setBaseMap('osm')} />
                   <span>OpenStreetMap</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="radio" name="basemap" checked={baseMap === 'satellite'} onChange={() => setBaseMap('satellite')} />
-                  <span>Satellite Imagery</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="basemap" checked={baseMap === 'hybrid'} onChange={() => setBaseMap('hybrid')} />
-                  <span>Google Hybrid</span>
+                  <span>Google Satellite</span>
                 </label>
               </div>
             </div>
