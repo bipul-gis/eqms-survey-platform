@@ -383,11 +383,12 @@ export const geosurveyApi = {
         id: string;
         questionnaireId: string;
         status: string;
+        linkedFeatureId?: string;
         respondentName?: string;
         respondentEmail?: string;
         submittedAt?: unknown;
-        lat: number;
-        lng: number;
+        lat?: number;
+        lng?: number;
         accuracy?: number;
         capturedAt?: unknown;
         ward?: string;

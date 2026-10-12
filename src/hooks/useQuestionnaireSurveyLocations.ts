@@ -1,8 +1,8 @@
 /**
- * useQuestionnaireSurveyLocations — loads HH-survey GPS points for the map.
+ * Loads standalone HH survey GPS points and linked-feature completion status.
  *
- * Uses the slim `/api/responses/locations` endpoint (GPS fields only) and
- * paints instantly from session cache when available, then refreshes.
+ * Uses the slim `/api/responses/locations` endpoint (no answer payloads) and
+ * paints standalone points instantly from session cache when available, then refreshes.
  */
 
 import { useEffect, useState } from 'react';
@@ -45,8 +45,8 @@ function toPoint(item: {
   respondentName?: string;
   respondentEmail?: string;
   submittedAt?: unknown;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
   accuracy?: number;
   capturedAt?: unknown;
   ward?: string;
@@ -72,11 +72,11 @@ function toPoint(item: {
 export function useQuestionnaireSurveyLocations(options: {
   mode: SurveyLocationLoadMode;
   userUid: string | undefined;
-  /** When false, no API request is issued (admin HH layer off). Default true. */
+  /** When false, neither pins nor linked-feature status is loaded. Default true. */
   enabled?: boolean;
   /** Restrict pins to this project's questionnaires. */
   projectId?: string;
-}): { locations: SurveyLocationPoint[]; loading: boolean; error: Error | null } {
+}): { locations: SurveyLocationPoint[]; submittedFeatureIds: string[]; loading: boolean; error: Error | null } {
   const enabled = options.enabled !== false;
   const cacheKey = surveyLocationsCacheKey(
     options.projectId,
@@ -87,18 +87,21 @@ export function useQuestionnaireSurveyLocations(options: {
     if (!enabled || options.mode === 'idle') return [];
     return readCachedSurveyLocations(cacheKey) || [];
   });
+  const [submittedFeatureIds, setSubmittedFeatureIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     if (!enabled || options.mode === 'idle') {
       setLocations([]);
+      setSubmittedFeatureIds([]);
       setLoading(false);
       setError(null);
       return;
     }
     if (options.mode === 'enumerator' && !options.userUid) {
       setLocations([]);
+      setSubmittedFeatureIds([]);
       setLoading(false);
       return;
     }
@@ -121,11 +124,19 @@ export function useQuestionnaireSurveyLocations(options: {
         });
         if (cancelled) return;
         const next: SurveyLocationPoint[] = [];
+        const linkedSubmittedIds = new Set<string>();
         for (const item of result.items || []) {
+          if (item.linkedFeatureId && ['submitted', 'reviewed'].includes(normalizeStatus(item.status))) {
+            linkedSubmittedIds.add(String(item.linkedFeatureId));
+          }
+          // Linked responses should color their feature on the map, but must
+          // never appear as a separate HH Survey Location marker.
+          if (item.linkedFeatureId) continue;
           const point = toPoint(item);
           if (point) next.push(point);
         }
         setLocations(next);
+        setSubmittedFeatureIds([...linkedSubmittedIds]);
         writeCachedSurveyLocations(cacheKey, next);
         setLoading(false);
       } catch (err) {
@@ -143,5 +154,5 @@ export function useQuestionnaireSurveyLocations(options: {
     };
   }, [enabled, options.mode, options.userUid, options.projectId, cacheKey]);
 
-  return { locations, loading, error };
+  return { locations, submittedFeatureIds, loading, error };
 }

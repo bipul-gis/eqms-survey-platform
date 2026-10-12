@@ -306,6 +306,8 @@ interface MapComponentProps {
    * them.
    */
   surveyLocations?: SurveyLocationMarker[];
+  /** Linked feature IDs with a submitted/reviewed questionnaire response. */
+  submittedFeatureIds?: string[];
   /** Initial visibility for the survey-locations layer. Defaults to `true`. */
   defaultShowSurveyLocations?: boolean;
   /** Fires when the HH Survey Location layer is toggled (for parent Firestore gating). */
@@ -1155,6 +1157,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   defaultShowLandmarks = true,
   defaultShowWards,
   surveyLocations,
+  submittedFeatureIds = [],
   defaultShowSurveyLocations = true,
   onSurveyLocationsVisibilityChange,
   zoneBoundaries = null,
@@ -1175,6 +1178,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   const isApprovedAdmin =
     userProfile?.role === 'admin' && userProfile?.status === 'approved';
   const isEnumeratorUser = userProfile?.role === 'enumerator';
+  const submittedFeatureIdSet = useMemo(() => new Set(submittedFeatureIds), [submittedFeatureIds]);
   const hasWardLayer = !!(wards && Array.isArray(wards.features) && wards.features.length > 0);
   const [showWards, setShowWards] = useState(
     defaultShowWards ?? hasWardLayer
@@ -1370,7 +1374,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     // A completed linked questionnaire is distinct from QC verification, but
     // should still be visible immediately as a completed survey on the map.
     const surveyStatus = String(feature.attributes?.Survey_Status || feature.attributes?.surveyStatus || '').trim().toLowerCase();
-    if (surveyStatus === 'submitted') return '#16a34a';
+    if (surveyStatus === 'submitted' || submittedFeatureIdSet.has(String(feature.id))) return '#16a34a';
     const status = feature.status || feature.attributes?.QC_Status || feature.attributes?.Status || feature.attributes?.status;
     const key = String(status || 'pending').trim().toLocaleLowerCase() as keyof typeof DEFAULT_FEATURE_STATUS_COLORS;
     const fallback = DEFAULT_FEATURE_STATUS_COLORS[key] || DEFAULT_FEATURE_STATUS_COLORS.pending;

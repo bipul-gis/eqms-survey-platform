@@ -93,19 +93,21 @@ export type ResponseLocationRow = {
   id: string;
   questionnaireId: string;
   status: string;
+  linkedFeatureId?: string;
   respondentName?: string;
   respondentEmail?: string;
   submittedAt?: unknown;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
   accuracy?: number;
   capturedAt?: unknown;
   ward?: string;
 };
 
 /**
- * Slim map-layer query: GPS pins only (no full answer payloads).
- * Prefer submissionLocation; fall back to location. Coerce numeric strings.
+ * Slim map-layer query: GPS pins plus linked feature IDs/status (no answer payloads).
+ * Feature-linked rows may omit GPS because only their feature completion state
+ * is needed; standalone pins prefer submissionLocation, then location.
  */
 export async function listResponseLocations(filters: {
   projectId?: string;
@@ -115,10 +117,8 @@ export async function listResponseLocations(filters: {
     `(
        (payload->'submissionLocation'->>'lat') IS NOT NULL
        OR (payload->'location'->>'lat') IS NOT NULL
+       OR COALESCE(payload->>'linkedFeatureId', '') <> ''
      )`,
-    // Feature-linked questionnaire submissions belong to the geospatial
-    // feature workflow, not the standalone HH Survey Location layer.
-    `(COALESCE(payload->>'linkedFeatureId', '') = '')`,
   ];
   const params: unknown[] = [];
   if (filters.projectId) {
@@ -136,6 +136,7 @@ export async function listResponseLocations(filters: {
        id,
        questionnaire_id,
        status,
+       payload->>'linkedFeatureId' AS linked_feature_id,
        payload->>'respondentName' AS respondent_name,
        payload->>'respondentEmail' AS respondent_email,
        payload->'submittedAt' AS submitted_at,
@@ -159,7 +160,8 @@ export async function listResponseLocations(filters: {
     const lngRaw = sub?.lng ?? loc?.lng;
     const lat = typeof latRaw === 'number' ? latRaw : Number(latRaw);
     const lng = typeof lngRaw === 'number' ? lngRaw : Number(lngRaw);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const linkedFeatureId = row.linked_feature_id ? String(row.linked_feature_id) : undefined;
+    if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && !linkedFeatureId) continue;
     const accuracy =
       typeof sub?.accuracy === 'number'
         ? sub.accuracy
@@ -170,11 +172,12 @@ export async function listResponseLocations(filters: {
       id: String(row.id),
       questionnaireId: String(row.questionnaire_id || ''),
       status: String(row.status || 'draft'),
+      linkedFeatureId,
       respondentName: row.respondent_name ? String(row.respondent_name) : undefined,
       respondentEmail: row.respondent_email ? String(row.respondent_email) : undefined,
       submittedAt: row.submitted_at ?? undefined,
-      lat,
-      lng,
+      lat: Number.isFinite(lat) ? lat : undefined,
+      lng: Number.isFinite(lng) ? lng : undefined,
       accuracy,
       capturedAt: sub?.capturedAt,
       ward: typeof loc?.ward === 'string' ? loc.ward : undefined,

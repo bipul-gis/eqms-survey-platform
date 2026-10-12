@@ -1333,12 +1333,9 @@ const AppContent: React.FC = () => {
     return 'idle';
   }, [authLoading, user, userProfile?.role, userProfile?.status]);
 
-  const [hhSurveyLayerEnabled, setHhSurveyLayerEnabled] = useState(true);
-
-  const { locations: surveyLocations } = useQuestionnaireSurveyLocations({
+  const { locations: surveyLocations, submittedFeatureIds } = useQuestionnaireSurveyLocations({
     mode: surveyLocationsMode,
     userUid: user?.uid,
-    enabled: surveyLocationsMode !== 'admin' || hhSurveyLayerEnabled,
     // Geospatial Assignment shows the questionnaire GPS captures of the open
     // project only — responses from other projects stay off this map.
     projectId: currentProject?.id
@@ -3854,8 +3851,8 @@ const AppContent: React.FC = () => {
               defaultShowLandmarks={!geospatialMapMode && !currentProject && !mapProjectId}
               defaultShowWards={!geospatialMapMode && !currentProject && !mapProjectId}
               surveyLocations={surveyLocations}
+              submittedFeatureIds={submittedFeatureIds}
               defaultShowSurveyLocations
-              onSurveyLocationsVisibilityChange={setHhSurveyLayerEnabled}
               zoneBoundaries={zoneBoundaries}
               importedZoneLayers={(geospatialMapMode || zoneBoundaryLayers.length > 0) ? zoneBoundaryLayers : undefined}
               zoneFitKey={zoneFitKey}
