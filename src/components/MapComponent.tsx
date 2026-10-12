@@ -1367,6 +1367,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
   );
 
   const getFeatureColor = (feature: GeoFeature, statusColors?: MapLayerStyle['statusColors']) => {
+    // A completed linked questionnaire is distinct from QC verification, but
+    // should still be visible immediately as a completed survey on the map.
+    const surveyStatus = String(feature.attributes?.Survey_Status || feature.attributes?.surveyStatus || '').trim().toLowerCase();
+    if (surveyStatus === 'submitted') return '#16a34a';
     const status = feature.status || feature.attributes?.QC_Status || feature.attributes?.Status || feature.attributes?.status;
     const key = String(status || 'pending').trim().toLocaleLowerCase() as keyof typeof DEFAULT_FEATURE_STATUS_COLORS;
     const fallback = DEFAULT_FEATURE_STATUS_COLORS[key] || DEFAULT_FEATURE_STATUS_COLORS.pending;

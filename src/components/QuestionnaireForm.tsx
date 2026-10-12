@@ -143,6 +143,11 @@ interface QuestionnaireFormProps {
     attributes?: Record<string, any>;
     surveyLayerKey?: string;
   };
+  /** Require the enumerator's current GPS to be inside their assigned geospatial boundary. */
+  assignedBoundaryRequired?: boolean;
+  assignedBoundaryValues?: string[];
+  /** Warning message displayed if linked feature or enumerator is outside assigned boundary */
+  assignedBoundaryWarning?: string;
 }
 
 interface CapturedGps {
@@ -379,12 +384,15 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
   strictGeofence = false,
   geofenceBufferMeters = ASSIGNED_ZONE_BUFFER_METERS,
   linkedFeature,
+  assignedBoundaryRequired = false,
+  assignedBoundaryValues = [],
+  assignedBoundaryWarning,
 }) => {
   const { user, userProfile } = useAuth();
   const { location: deviceLocation, requestLocation } = useGeoLocation();
   const projectId = projectIdProp || questionnaire.projectId || DEFAULT_PROJECT_ID;
   const isFullscreen = variant === 'fullscreen';
-  const geofenceActive = strictGeofence && !readOnly && geofenceZones.length > 0;
+  const geofenceActive = (strictGeofence || assignedBoundaryRequired) && !readOnly;
 
   const draftStorageKey =
     user?.uid && questionnaire.id
@@ -1080,10 +1088,14 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
           `Strict geofence is on. Capture GPS inside your assigned zone or within ${geofenceBufferMeters} m of its boundary before submitting.`,
       };
     }
+    const allowedValues = new Set(assignedBoundaryValues.map((value) => value.trim().toLocaleLowerCase()));
+    const eligibleZones = assignedBoundaryRequired && allowedValues.size > 0
+      ? geofenceZones.filter((zone) => allowedValues.has(String(zone.assignValue || '').trim().toLocaleLowerCase()))
+      : geofenceZones;
     const proximity = findZoneWithinDistance(
       pt.lng,
       pt.lat,
-      geofenceZones,
+      eligibleZones,
       geofenceBufferMeters
     );
     if (!proximity) {
@@ -1585,6 +1597,17 @@ export const QuestionnaireForm: React.FC<QuestionnaireFormProps> = ({
               : ` (${geofenceZones.length} zone${geofenceZones.length === 1 ? '' : 's'})`}
             .
           </span>
+        </div>
+      )}
+
+      {/* Boundary Warning Banner before fill up */}
+      {assignedBoundaryWarning && (
+        <div className="px-5 py-2.5 bg-amber-50 border-b border-amber-200 text-amber-950 flex items-start gap-2 shrink-0">
+          <AlertCircle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-xs">
+            <span className="font-semibold text-amber-900">Warning before filling survey: </span>
+            <span className="text-amber-800">{assignedBoundaryWarning}</span>
+          </div>
         </div>
       )}
 

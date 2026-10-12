@@ -116,6 +116,9 @@ export async function listResponseLocations(filters: {
        (payload->'submissionLocation'->>'lat') IS NOT NULL
        OR (payload->'location'->>'lat') IS NOT NULL
      )`,
+    // Feature-linked questionnaire submissions belong to the geospatial
+    // feature workflow, not the standalone HH Survey Location layer.
+    `(COALESCE(payload->>'linkedFeatureId', '') = '')`,
   ];
   const params: unknown[] = [];
   if (filters.projectId) {

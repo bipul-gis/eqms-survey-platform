@@ -232,3 +232,22 @@ export function lngLatBoundsOfGeometry(
   }
   return { minLng, minLat, maxLng, maxLat };
 }
+
+/** Extracts a representative coordinate (point, or centroid of line/polygon) for boundary proximity checks. */
+export function featureRepresentativeLngLat(
+  geometry: { type?: string; coordinates?: unknown } | null | undefined
+): { lng: number; lat: number } | null {
+  if (!geometry?.type || geometry.coordinates == null) return null;
+  const coords = geometry.coordinates;
+  if (geometry.type === 'Point' && Array.isArray(coords) && coords.length >= 2) {
+    const lng = Number(coords[0]);
+    const lat = Number(coords[1]);
+    return Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null;
+  }
+  const bounds = lngLatBoundsOfGeometry(geometry);
+  if (!bounds) return null;
+  return {
+    lng: (bounds.minLng + bounds.maxLng) / 2,
+    lat: (bounds.minLat + bounds.maxLat) / 2
+  };
+}

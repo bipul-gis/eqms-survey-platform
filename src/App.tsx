@@ -157,6 +157,11 @@ import { formatChangeAtReadable } from './lib/formatChangeAt';
 import { patchShapefileZipUtf8Dbf } from './lib/dbfUtf8';
 import { appendAdminRm } from './lib/adminRm';
 import { ENUMERATOR_UPDATED_BY_PLACEHOLDER, stampsForUpdatedBy } from './lib/featureUpdatedBy';
+import {
+  ASSIGNED_ZONE_BUFFER_METERS,
+  featureRepresentativeLngLat,
+  findZoneWithinDistance
+} from './lib/pointInPolygon';
 
 const isImportedLandmarkPoint = (f: GeoFeature) => {
   if (f.type !== 'point') return false;
@@ -1297,6 +1302,20 @@ const AppContent: React.FC = () => {
     currentProject?.segments?.questionnaireGeofence,
   ]);
 
+  // A linked feature questionnaire must validate the enumerator's capture GPS
+  // against the selected questionnaire project's assigned zones even when the
+  // project's general questionnaire geofence toggle is off.
+  const linkedQuestionnaireAssignedZoneValues = useMemo(
+    () => assignedZoneValuesFromProfile(
+      {
+        assignedZoneValues: userProfile?.assignedZoneValues,
+        projectZoneAssignments: userProfile?.projectZoneAssignments,
+      },
+      selectedQuestionnaire?.projectId || currentProject?.id
+    ),
+    [userProfile?.assignedZoneValues, userProfile?.projectZoneAssignments, selectedQuestionnaire?.projectId, currentProject?.id]
+  );
+
   const zoneFitKey = `${mapProjectId || currentProject?.id || userProfile?.assignedZoneLayerId || 'zones'}:${zoneLayer?.id || ''}:${zonePolygons.length}`;
   const mapAssignmentValues = !isAdmin && mapProjectId
     ? (userProfile?.projectZoneAssignments?.[mapProjectId] || (mapProjectId === currentProject?.id ? userProfile?.assignedZoneValues : []) || [])
@@ -2327,6 +2346,73 @@ const AppContent: React.FC = () => {
     }
   };
 
+  /**
+   * Check if a feature / coordinate falls inside the enumerator's assigned boundary + admin buffer.
+   * If the project has an assigned boundary and the enumerator has assigned values, verifies proximity.
+   */
+  const checkFeatureAssignedBoundary = useCallback(
+    (targetFeature: GeoFeature | { geometry: any; attributes?: Record<string, any>; projectId?: string }, targetProjectId?: string) => {
+      if (isAdmin) {
+        return { isRestricted: false, isInside: true, distanceMeters: 0, bufferMeters: 50, assignedValues: [] as string[] };
+      }
+      const prjId = String(targetProjectId || targetFeature.attributes?.projectId || (targetFeature as any).projectId || currentProject?.id || '');
+      const prj = enumeratorMapProjects.find((p) => p.id === prjId) || currentProject;
+      const assignedValues: string[] = (userProfile?.projectZoneAssignments?.[prjId] || (prjId === currentProject?.id ? userProfile?.assignedZoneValues || [] : []))
+        .map((v) => String(v).trim())
+        .filter(Boolean);
+
+      if (!assignedValues.length) {
+        return { isRestricted: false, isInside: true, distanceMeters: 0, bufferMeters: 50, assignedValues: [] as string[] };
+      }
+
+      const bufferMeters = userProfile?.projectZoneBufferMeters?.[prjId] ?? ASSIGNED_ZONE_BUFFER_METERS;
+      const coords = featureRepresentativeLngLat(targetFeature.geometry);
+      if (!coords) {
+        return { isRestricted: true, isInside: true, distanceMeters: 0, bufferMeters, assignedValues };
+      }
+
+      const assignedValSet = new Set(assignedValues.map((v) => v.toLowerCase()));
+      const testZones: Array<{ geometry: unknown; assignValue?: string | null }> = [];
+
+      // 1) Zone polygons
+      if (zonePolygons.length > 0) {
+        for (const z of zonePolygons) {
+          if (!z.assignValue || assignedValSet.has(String(z.assignValue).trim().toLowerCase())) {
+            testZones.push({ geometry: z.geometry, assignValue: z.assignValue });
+          }
+        }
+      }
+
+      // 2) Assignment layer features
+      const assignmentKey = prj?.geospatialAssignmentLayerId || '';
+      if (assignmentKey.startsWith('feature:')) {
+        const lName = assignmentKey.slice('feature:'.length);
+        const fField = prj?.geospatialAssignmentField || '';
+        for (const f of features) {
+          const flName = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || '');
+          if (flName !== lName) continue;
+          if (!['Polygon', 'MultiPolygon'].includes(String(f.geometry?.type))) continue;
+          const fVal = String(f.attributes?.[fField] ?? '').trim().toLowerCase();
+          if (assignedValSet.has(fVal)) {
+            testZones.push({ geometry: f.geometry, assignValue: String(f.attributes?.[fField] ?? '') });
+          }
+        }
+      }
+
+      if (!testZones.length) {
+        return { isRestricted: false, isInside: true, distanceMeters: 0, bufferMeters, assignedValues };
+      }
+
+      const proximity = findZoneWithinDistance(coords.lng, coords.lat, testZones, bufferMeters);
+      if (proximity) {
+        return { isRestricted: true, isInside: true, distanceMeters: proximity.distanceMeters, bufferMeters, assignedValues };
+      }
+
+      return { isRestricted: true, isInside: false, distanceMeters: 0, bufferMeters, assignedValues };
+    },
+    [isAdmin, currentProject, enumeratorMapProjects, userProfile, zonePolygons, features]
+  );
+
   const handleMapClick = async (lat: number, lng: number) => {
     if (!user) return;
 
@@ -2390,6 +2476,19 @@ const AppContent: React.FC = () => {
           if (d > NEW_POINT_ADD_PROXIMITY_METERS) {
             alert(
               `You are ${d.toFixed(1)}m away from the selected point. Move within ${NEW_POINT_ADD_PROXIMITY_METERS}m to add a landmark point.`
+            );
+            return;
+          }
+
+          // Also check boundary assignment
+          const boundaryCheck = checkFeatureAssignedBoundary({
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            attributes: {},
+            projectId: currentProject?.id
+          });
+          if (boundaryCheck.isRestricted && !boundaryCheck.isInside) {
+            alert(
+              `⚠️ You cannot add features outside your assigned boundary (${boundaryCheck.assignedValues.join(', ')} + ${boundaryCheck.bufferMeters}m buffer).`
             );
             return;
           }
@@ -2474,11 +2573,18 @@ const AppContent: React.FC = () => {
 
   const handleMapFeatureSelect = useCallback((feature: GeoFeature) => {
     if (movingFeatureRef.current) return;
+    const boundaryCheck = checkFeatureAssignedBoundary(feature);
+    if (boundaryCheck.isRestricted && !boundaryCheck.isInside) {
+      const proceed = window.confirm(
+        `⚠️ Boundary Warning:\n\nThis feature is located outside your assigned boundary (${boundaryCheck.assignedValues.join(', ')} + ${boundaryCheck.bufferMeters}m buffer).\n\nDo you want to proceed with editing attributes?`
+      );
+      if (!proceed) return;
+    }
     captureMapViewBeforeInteraction();
     setSelectedFeature(feature);
     setFeatureFocusRequestKey((k) => k + 1);
     setActiveTab('map');
-  }, [captureMapViewBeforeInteraction]);
+  }, [captureMapViewBeforeInteraction, checkFeatureAssignedBoundary]);
 
   const handleSurveyActionRequest = useCallback((feature: GeoFeature) => {
     captureMapViewBeforeInteraction();
@@ -2707,6 +2813,13 @@ const AppContent: React.FC = () => {
   /** Launch questionnaire survey directly linked to a geospatial feature */
   const handleStartQuestionnaireForFeature = useCallback(
     (feature: GeoFeature) => {
+      const boundaryCheck = checkFeatureAssignedBoundary(feature);
+      if (boundaryCheck.isRestricted && !boundaryCheck.isInside) {
+        const proceed = window.confirm(
+          `⚠️ Boundary Warning:\n\nThis feature is located outside your assigned boundary (${boundaryCheck.assignedValues.join(', ')} + ${boundaryCheck.bufferMeters}m buffer).\n\nDo you want to proceed with filling the questionnaire survey?`
+        );
+        if (!proceed) return;
+      }
       captureMapViewBeforeInteraction();
       const attributes = feature.attributes || {};
       const layerName = String(attributes.__layerName || attributes.layerName || (feature as any).layerName || (attributes.projectId || (feature as any).projectId ? 'Unassigned layer' : '')).trim();
@@ -2771,7 +2884,7 @@ const AppContent: React.FC = () => {
         setFeatureQuestionnairePickerOpen(true);
       }
     },
-    [projectQuestionnaires, currentProject, enumeratorMapProjects, captureMapViewBeforeInteraction]
+    [projectQuestionnaires, currentProject, enumeratorMapProjects, captureMapViewBeforeInteraction, checkFeatureAssignedBoundary]
   );
 
   if (authLoading) return <AppPreloader label="Starting secure workspace" />;
@@ -4254,12 +4367,45 @@ const AppContent: React.FC = () => {
                 initialLocation={questionnaireLocation || undefined}
                 geofenceZones={zonePolygons}
                 strictGeofence={questionnaireStrictGeofence}
+                assignedBoundaryRequired={Boolean(
+                  !isAdmin && linkedSurveyFeature && linkedQuestionnaireAssignedZoneValues.length > 0
+                )}
+                assignedBoundaryValues={linkedQuestionnaireAssignedZoneValues}
                 geofenceBufferMeters={
                   userProfile?.projectZoneBufferMeters?.[selectedQuestionnaire.projectId || DEFAULT_PROJECT_ID]
                 }
                 linkedFeature={linkedSurveyFeature || undefined}
+                assignedBoundaryWarning={
+                  linkedSurveyFeature
+                    ? (() => {
+                        const chk = checkFeatureAssignedBoundary(linkedSurveyFeature, selectedQuestionnaire.projectId);
+                        if (chk.isRestricted && !chk.isInside) {
+                          return `This linked feature is located outside your assigned boundary (${chk.assignedValues.join(', ')} + ${chk.bufferMeters}m buffer). Please verify before filling up responses.`;
+                        }
+                        return undefined;
+                      })()
+                    : undefined
+                }
                 variant="fullscreen"
-                onSubmit={() => {
+                onSubmit={(response) => {
+                  const submittedFeature = linkedSurveyFeature;
+                  if (submittedFeature && response.status === 'submitted') {
+                    const updatedFeature = {
+                      ...submittedFeature,
+                      attributes: {
+                        ...(submittedFeature.attributes || {}),
+                        Survey_Status: 'submitted',
+                        Survey_SubmittedAt: response.submittedAt || new Date().toISOString(),
+                      },
+                      updatedAt: new Date().toISOString(),
+                    };
+                    void updateFeature(submittedFeature.id, updatedFeature).then(() => {
+                      if (isAdmin) setAdminFeaturesRefreshKey((key) => key + 1);
+                      else setEnumeratorFeaturesRefreshKey((key) => key + 1);
+                    }).catch((error) => {
+                      console.error('Failed to update linked feature after questionnaire submission:', error);
+                    });
+                  }
                   restoreMapViewAfterInteraction();
                   setSelectedQuestionnaire(null);
                   setLinkedSurveyFeature(null);
@@ -4275,11 +4421,25 @@ const AppContent: React.FC = () => {
             const pendingProjectId = String(pendingSurveyFeature.attributes?.projectId || (pendingSurveyFeature as any).projectId || '');
             const pendingProject = enumeratorMapProjects.find((project) => project.id === pendingProjectId) || currentProject;
             const action = pendingProject?.surveyLayerActions?.[surveyKey] || 'both';
+            const boundaryCheck = checkFeatureAssignedBoundary(pendingSurveyFeature, pendingProjectId);
             return (
           <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-slate-900/40 p-4">
             <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
               <h2 className="text-base font-bold text-slate-900">Choose an action</h2>
               <p className="mt-1 text-xs text-slate-500">{pendingSurveyFeature.attributes?.__layerName || pendingSurveyFeature.attributes?.layerName || 'Selected survey area'}</p>
+
+              {boundaryCheck.isRestricted && !boundaryCheck.isInside && (
+                <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900 flex items-start gap-2">
+                  <span className="text-sm shrink-0">⚠️</span>
+                  <div>
+                    <p className="font-semibold text-amber-950">Outside Assigned Boundary</p>
+                    <p className="mt-0.5 text-[11px] text-amber-800 leading-snug">
+                      This feature is outside your assigned boundary ({boundaryCheck.assignedValues.join(', ')} + {boundaryCheck.bufferMeters}m buffer). Please verify before editing or surveying.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="mt-4 grid gap-2">
                 {action !== 'questionnaire' && <button type="button" onClick={() => { const feature = pendingSurveyFeature; setPendingSurveyFeature(null); handleMapFeatureSelect(feature); }} className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700">Edit attributes</button>}
                 {action !== 'edit' && <button type="button" onClick={() => { const feature = pendingSurveyFeature; setPendingSurveyFeature(null); handleStartQuestionnaireForFeature(feature); }} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">Fill questionnaire survey</button>}
@@ -4322,6 +4482,15 @@ const AppContent: React.FC = () => {
                   else setEnumeratorFeaturesRefreshKey((k) => k + 1);
                 }}
                 onFillQuestionnaire={selectedFeatureCanFillQuestionnaire ? handleStartQuestionnaireForFeature : undefined}
+                assignedBoundaryWarning={
+                  (() => {
+                    const chk = checkFeatureAssignedBoundary(selectedFeature);
+                    if (chk.isRestricted && !chk.isInside) {
+                      return `This feature is located outside your assigned boundary (${chk.assignedValues.join(', ')} + ${chk.bufferMeters}m buffer). Please verify your work before saving.`;
+                    }
+                    return undefined;
+                  })()
+                }
               />
             </PanelSuspense>
           </div>

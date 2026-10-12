@@ -157,6 +157,7 @@ interface FeatureEditorProps {
   /** Triggered when the user wants to fill/link a questionnaire for this geospatial feature */
   onFillQuestionnaire?: (feature: GeoFeature) => void;
   layerStyle?: MapLayerStyle;
+  assignedBoundaryWarning?: string;
 }
 
 export const FeatureEditor: React.FC<FeatureEditorProps> = ({
@@ -172,6 +173,7 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
   onPersistSuccess,
   onFillQuestionnaire,
   layerStyle,
+  assignedBoundaryWarning,
 }) => {
   const { user, userProfile } = useAuth();
   const { location, requestLocation } = useGeoLocation();
@@ -493,6 +495,17 @@ export const FeatureEditor: React.FC<FeatureEditorProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {/* Assigned Boundary Warning Banner */}
+        {assignedBoundaryWarning && (
+          <div className="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg flex items-start gap-2 shadow-sm">
+            <AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <p className="font-semibold text-amber-950">Boundary Warning</p>
+              <p className="mt-0.5 text-amber-800 leading-relaxed">{assignedBoundaryWarning}</p>
+            </div>
+          </div>
+        )}
+
         {/* Verification Alert */}
         {isAdmin && feature.collectorLocation && (
           <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg flex items-start gap-2 mb-4">
