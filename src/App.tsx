@@ -671,7 +671,7 @@ const AppContent: React.FC = () => {
   const selectedFeatureLayerName = selectedFeature
     ? String(selectedFeature.attributes?.__layerName || selectedFeature.attributes?.layerName || (selectedFeature as any).layerName || '').trim()
     : '';
-  const selectedFeatureSurveyLayerKey = selectedFeatureLayerName ? `feature:${selectedFeatureLayerName}` : '';
+  const selectedFeatureSurveyLayerKey = String(selectedFeature?.attributes?.__surveyLayerKey || selectedFeature?.surveyLayerKey || (selectedFeatureLayerName ? `feature:${selectedFeatureLayerName}` : ''));
   const selectedFeatureProjectId = String(selectedFeature?.attributes?.projectId || (selectedFeature as any)?.projectId || currentProject?.id || '');
   const selectedFeatureProject = enumeratorMapProjects.find((project) => project.id === selectedFeatureProjectId) || currentProject;
   const selectedFeatureSurveyAction = Object.entries(selectedFeatureProject?.surveyLayerActions || {})
@@ -2820,13 +2820,14 @@ const AppContent: React.FC = () => {
       captureMapViewBeforeInteraction();
       const attributes = feature.attributes || {};
       const layerName = String(attributes.__layerName || attributes.layerName || (feature as any).layerName || '').trim();
-      const layerKey = String(attributes.__surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
+      const layerKey = String(attributes.__surveyLayerKey || feature.surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
       const featureProjectId = String(attributes.projectId || (feature as any).projectId || currentProject?.id || '');
       const featureProject = enumeratorMapProjects.find((project) => project.id === featureProjectId) || currentProject;
       const requiredQuestionnaireId = layerKey ? featureProject?.surveyLayerQuestionnaireIds?.[layerKey] : undefined;
-      const selectedFields = layerKey ? featureProject?.surveyLayerQuestionFields?.[layerKey] || [] : [];
-      const linkedAttributes = Object.fromEntries(selectedFields.filter((field) => Object.prototype.hasOwnProperty.call(attributes, field)).map((field) => [field, attributes[field]]));
-      setLinkedSurveyFeature({ ...feature, surveyLayerKey: layerKey, attributes: linkedAttributes });
+      // Keep the full source properties on the linked feature. QuestionnaireForm
+      // uses the layer mapping to select linked fields, while submission must
+      // preserve layer metadata and all unlinked feature attributes.
+      setLinkedSurveyFeature({ ...feature, surveyLayerKey: layerKey });
 
       // Compute centroid or point coordinates for initial location
       let lat: number | undefined;
@@ -4414,7 +4415,7 @@ const AppContent: React.FC = () => {
 
         {pendingSurveyFeature && (
           (() => {
-            const surveyKey = String(pendingSurveyFeature.attributes?.__surveyLayerKey || '');
+            const surveyKey = String(pendingSurveyFeature.attributes?.__surveyLayerKey || pendingSurveyFeature.surveyLayerKey || '');
             const pendingProjectId = String(pendingSurveyFeature.attributes?.projectId || (pendingSurveyFeature as any).projectId || '');
             const pendingProject = enumeratorMapProjects.find((project) => project.id === pendingProjectId) || currentProject;
             const action = pendingProject?.surveyLayerActions?.[surveyKey] || 'both';

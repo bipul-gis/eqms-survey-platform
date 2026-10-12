@@ -1574,9 +1574,10 @@ export const MapComponent: React.FC<MapComponentProps> = ({
           const isMoveTarget = feature.id === movingFeatureId;
           const isPulsing = feature.id === pulseFeatureId;
           const layerName = importedLayerName(feature);
-          const isImportedLayerFeature = Boolean(layerName);
-          const surveySelectable = isImportedLayerFeature && surveyLayerKeyMatches(activeSurveyLayerKeys, `feature:${layerName}`);
-          const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === `feature:${layerName}`.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
+          const surveyLayerKey = String(feature.attributes?.__surveyLayerKey || feature.surveyLayerKey || (layerName ? `feature:${layerName}` : ''));
+          const isImportedLayerFeature = Boolean(layerName || surveyLayerKey);
+          const surveySelectable = Boolean(surveyLayerKey) && surveyLayerKeyMatches(activeSurveyLayerKeys, surveyLayerKey);
+          const surveyAction = Object.entries(surveyLayerActions).find(([key]) => key.trim().normalize('NFKC').toLocaleLowerCase() === surveyLayerKey.trim().normalize('NFKC').toLocaleLowerCase())?.[1] || 'both';
           const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || projectId || '');
           const layerStyle = isImportedLayerFeature ? getLayerStyle('feature', layerName, featureProjectId) : undefined;
           const color = getFeatureColor(feature, surveySelectable ? layerStyle?.statusColors : undefined);
