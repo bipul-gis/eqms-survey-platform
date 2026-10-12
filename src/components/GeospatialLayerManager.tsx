@@ -54,7 +54,11 @@ type ManagedLayer = {
 
 const layerNameOf = (feature: GeoFeature) => {
   const attrs = feature.attributes || {};
-  return String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
+  const name = String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
+  if (name) return name;
+  const surveyLayerKey = String(attrs.__surveyLayerKey || feature.surveyLayerKey || '').trim();
+  const linkedLayerName = surveyLayerKey.startsWith('feature:') ? surveyLayerKey.slice('feature:'.length).trim() : '';
+  return linkedLayerName && linkedLayerName.toLocaleLowerCase() !== 'unassigned layer' ? linkedLayerName : '';
 };
 
 export const GeospatialLayerManager: React.FC<Props> = ({

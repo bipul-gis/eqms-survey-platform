@@ -80,7 +80,11 @@ const readStoredZoneLayerVisibility = (projectId?: string): Record<string, boole
 
 const importedLayerName = (feature: GeoFeature): string => {
   const attrs = feature.attributes || {};
-  return String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
+  const name = String(attrs.__layerName || attrs.layerName || (feature as any).layerName || '').trim();
+  if (name) return name;
+  const surveyLayerKey = String(attrs.__surveyLayerKey || feature.surveyLayerKey || '').trim();
+  const linkedLayerName = surveyLayerKey.startsWith('feature:') ? surveyLayerKey.slice('feature:'.length).trim() : '';
+  return linkedLayerName && linkedLayerName.toLocaleLowerCase() !== 'unassigned layer' ? linkedLayerName : '';
 };
 
 const resolveFeatureLabel = (attributes: Record<string, unknown> | undefined, preferredField?: string) => {

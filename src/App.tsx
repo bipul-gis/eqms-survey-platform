@@ -669,7 +669,7 @@ const AppContent: React.FC = () => {
     [isAdmin, enumeratorMapProjects, currentProject?.surveyLayerActions]
   );
   const selectedFeatureLayerName = selectedFeature
-    ? String(selectedFeature.attributes?.__layerName || selectedFeature.attributes?.layerName || (selectedFeature as any).layerName || '').trim()
+    ? String(selectedFeature.attributes?.__layerName || selectedFeature.attributes?.layerName || (selectedFeature as any).layerName || (selectedFeature.surveyLayerKey?.startsWith('feature:') ? selectedFeature.surveyLayerKey.slice('feature:'.length) : '')).trim()
     : '';
   const selectedFeatureSurveyLayerKey = String(selectedFeature?.attributes?.__surveyLayerKey || selectedFeature?.surveyLayerKey || (selectedFeatureLayerName ? `feature:${selectedFeatureLayerName}` : ''));
   const selectedFeatureProjectId = String(selectedFeature?.attributes?.projectId || (selectedFeature as any)?.projectId || currentProject?.id || '');
@@ -1358,7 +1358,7 @@ const AppContent: React.FC = () => {
     };
 
     const matchesAssignedPolygonLayer = (feature: GeoFeature) => {
-      const layerName = String(feature.attributes?.__layerName || feature.attributes?.layerName || (feature as any).layerName || '');
+      const layerName = String(feature.attributes?.__layerName || feature.attributes?.layerName || (feature as any).layerName || (feature.surveyLayerKey?.startsWith('feature:') ? feature.surveyLayerKey.slice('feature:'.length) : ''));
       const featureProjectId = String(feature.attributes?.projectId || (feature as any).projectId || mapProjectId || '');
       const project = enumeratorMapProjects.find((item) => item.id === featureProjectId);
       const assignmentKey = project?.geospatialAssignmentLayerId || '';
@@ -1417,7 +1417,7 @@ const AppContent: React.FC = () => {
     // 4. Features loaded in memory
     return features.some((feature) => {
       const fProjId = String(feature.attributes?.projectId || (feature as any).projectId || '');
-      const hasLayer = Boolean(feature.attributes?.__layerName || feature.attributes?.layerName);
+      const hasLayer = Boolean(feature.attributes?.__layerName || feature.attributes?.layerName || feature.surveyLayerKey?.startsWith('feature:'));
       const isUpload = feature.attributes?.__source === 'geojson_upload' || feature.attributes?.__source === 'shapefile_upload';
       return (fProjId === currentProject.id) || ((hasLayer || isUpload) && (!fProjId || fProjId === currentProject.id));
     });
@@ -2386,7 +2386,7 @@ const AppContent: React.FC = () => {
         const lName = assignmentKey.slice('feature:'.length);
         const fField = prj?.geospatialAssignmentField || '';
         for (const f of features) {
-          const flName = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || '');
+          const flName = String(f.attributes?.__layerName || f.attributes?.layerName || (f as any).layerName || (f.surveyLayerKey?.startsWith('feature:') ? f.surveyLayerKey.slice('feature:'.length) : ''));
           if (flName !== lName) continue;
           if (!['Polygon', 'MultiPolygon'].includes(String(f.geometry?.type))) continue;
           const fVal = String(f.attributes?.[fField] ?? '').trim().toLowerCase();
