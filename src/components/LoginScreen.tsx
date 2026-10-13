@@ -90,6 +90,30 @@ export const LoginScreen: React.FC = () => {
   const [signUpSuccess, setSignUpSuccess] = useState(false);
   const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
 
+  const mapAuthError = (err: unknown, kind: 'login' | 'signup'): string => {
+    if (err instanceof ApiError) {
+      if (err.status === 401 || /invalid email or password|incorrect email or password/i.test(err.message)) {
+        return 'Incorrect email or password.';
+      }
+      if (err.status === 403) {
+        return 'Your account has been disabled. Please contact an administrator.';
+      }
+      if (err.status === 0 || /unable to reach the server|failed to fetch|network/i.test(err.message)) {
+        return kind === 'login'
+          ? 'Incorrect email or password. If you are sure they are correct, check your internet connection.'
+          : 'Unable to create account. Check your internet connection and try again.';
+      }
+      return err.message || (kind === 'signup' ? 'Sign up failed.' : 'Sign in failed.');
+    }
+    const message = err instanceof Error ? err.message : String(err || '');
+    if (/failed to fetch|networkerror|load failed|network request failed/i.test(message)) {
+      return kind === 'login'
+        ? 'Incorrect email or password. If you are sure they are correct, check your internet connection.'
+        : 'Unable to create account. Check your internet connection and try again.';
+    }
+    return message || (kind === 'signup' ? 'Sign up failed.' : 'Sign in failed.');
+  };
+
   const mapForgotPasswordError = (err: unknown): string => {
     if (err instanceof ApiError) {
       if (err.status === 400) {
@@ -198,15 +222,9 @@ export const LoginScreen: React.FC = () => {
         await login(trimmedEmail, password);
         persistRememberedLogin(rememberLogin, trimmedEmail, password);
       }
-    } catch (err: any) {
-      if (err instanceof ApiError && err.status === 401) {
-        setError('Incorrect email or password');
-        persistRememberedLogin(rememberLogin, email, '');
-      } else if (err instanceof ApiError && err.status === 403) {
-        setError('Your account has been disabled. Please contact an administrator.');
-      } else {
-        setError(err.message || 'Login failed');
-      }
+    } catch (err: unknown) {
+      if (mode === 'login') persistRememberedLogin(rememberLogin, email, '');
+      setError(mapAuthError(err, mode === 'signup' ? 'signup' : 'login'));
     } finally {
       setLoading(false);
     }

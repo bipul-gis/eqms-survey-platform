@@ -238,8 +238,11 @@ export const EnumeratorAssignedZoneMap: React.FC<{
               attributionControl
             >
               <TileLayer
-                attribution="Tiles &copy; Esri"
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                attribution="Map data &copy; Google"
+                url="https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+                subdomains={['mt0', 'mt1', 'mt2', 'mt3']}
+                maxNativeZoom={20}
+                maxZoom={30}
               />
               <GeoJSON
                 key={`${zones.map((zone) => zone.id).join(':')}:${JSON.stringify(projectMapLayerStylesByProject)}:${JSON.stringify(projectMapLayerStyles)}`}

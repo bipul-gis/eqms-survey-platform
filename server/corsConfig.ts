@@ -2,7 +2,9 @@ import type { CorsOptions } from 'cors';
 
 const DEFAULT_ORIGINS = [
   'http://localhost:3000',
+  'http://localhost:3005',
   'http://127.0.0.1:3000',
+  'http://127.0.0.1:3005',
   'https://localhost',
   'http://localhost',
   'capacitor://localhost',
@@ -22,11 +24,14 @@ function isPrivateLanHost(hostname: string): boolean {
   return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
-function isAllowedDevOrigin(origin: string): boolean {
-  if (process.env.NODE_ENV === 'production') return false;
+function isCapacitorOrLocalOrigin(origin: string): boolean {
   try {
     const url = new URL(origin);
-    return (url.protocol === 'http:' || url.protocol === 'https:') && isPrivateLanHost(url.hostname);
+    const protocol = url.protocol;
+    const host = url.hostname;
+    if (protocol === 'capacitor:' || protocol === 'ionic:' || protocol === 'ncap:') return true;
+    if ((protocol === 'http:' || protocol === 'https:') && isPrivateLanHost(host)) return true;
+    return false;
   } catch {
     return false;
   }
@@ -40,11 +45,12 @@ export function buildCorsOptions(): CorsOptions {
   const allowed = new Set([...DEFAULT_ORIGINS, ...extra]);
   return {
     origin(origin, callback) {
-      if (!origin || allowed.has(origin) || isAllowedDevOrigin(origin)) {
+      if (!origin || allowed.has(origin) || isCapacitorOrLocalOrigin(origin)) {
         callback(null, true);
         return;
       }
-      callback(new Error(`CORS blocked: ${origin}`));
+      // Never throw — a thrown CORS error hides 401/400 as "Failed to fetch".
+      callback(null, false);
     },
     credentials: true,
   };

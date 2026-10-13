@@ -58,6 +58,15 @@ export default defineConfig(({mode}) => {
           // bypasses the SW so its own offline cache keeps authority.
           runtimeCaching: [
             {
+              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
+              handler: 'NetworkOnly',
+              method: 'POST',
+            },
+            {
+              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
+              handler: 'NetworkOnly',
+            },
+            {
               urlPattern:
                 /^https:\/\/[a-c]\.tile\.openstreetmap\.org\/.*\.png$/,
               handler: 'CacheFirst',
@@ -76,7 +85,7 @@ export default defineConfig(({mode}) => {
             }
           ],
           // Don't try to handle the Capacitor APK's `capacitor://` scheme.
-          navigateFallbackDenylist: [/^\/_/, /\/[^/?]+\.[^/]+$/]
+          navigateFallbackDenylist: [/^\/_/, /^\/api\//, /\/[^/?]+\.[^/]+$/]
         },
         // Disable the SW in development so HMR / live-reload aren't fighting
         // a cache layer; the plugin still exposes itself for testing if you

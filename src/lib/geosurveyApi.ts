@@ -1,7 +1,18 @@
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function hostnameOf(value: string): string {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return '';
+  }
+}
+
 export function getApiBase(): string {
   const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  const base = env?.VITE_API_BASE_URL as string | undefined;
-  if (base) return base.replace(/\/$/, '');
+  const configured = String(env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
   if (typeof window !== 'undefined') {
     const cap = (
       window as unknown as {
@@ -9,17 +20,25 @@ export function getApiBase(): string {
         location?: { origin?: string; href?: string };
       }
     ).Capacitor;
+    const origin = String(window.location?.origin || '').replace(/\/$/, '');
+    const pageHost = hostnameOf(origin);
+    const configuredHost = hostnameOf(configured);
     if (cap?.isNativePlatform?.()) {
+      if (configured && !isLoopbackHost(configuredHost)) return configured;
       return 'https://geosurvey.eqmscl.com';
     }
-    const origin = window.location?.origin;
-    if (origin && !origin.startsWith('file://')) {
-      return origin;
+    // A loopback API URL is unreachable from a phone / LAN host using the
+    // Vite dev server. Fall back to same-origin `/api` (proxied).
+    if (configured) {
+      if (isLoopbackHost(configuredHost) && pageHost && !isLoopbackHost(pageHost)) {
+        return origin.startsWith('file://') ? '' : origin;
+      }
+      return configured;
     }
-    // Browser builds served from the same host use relative /api paths.
+    if (origin && !origin.startsWith('file://')) return origin;
     return '';
   }
-  return 'http://127.0.0.1:3002';
+  return configured || 'http://127.0.0.1:3002';
 }
 
 const SESSION_STORAGE_KEY = 'geosurvey_session_token';
@@ -78,6 +97,14 @@ export class ApiError extends Error {
   }
 }
 
+function isNetworkFailure(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /failed to fetch|networkerror|load failed|network request failed|the internet connection appears to be offline/i.test(
+    message
+  );
+}
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getStoredSessionToken();
   const headers = new Headers(init.headers);
@@ -85,7 +112,19 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set('Content-Type', 'application/json');
   }
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  const res = await fetch(`${getApiBase()}${path}`, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${getApiBase()}${path}`, { ...init, headers });
+  } catch (error) {
+    throw new ApiError(
+      isNetworkFailure(error)
+        ? 'Unable to reach the server. Check your internet connection and try again.'
+        : error instanceof Error
+          ? error.message
+          : 'Request failed',
+      0
+    );
+  }
   const text = await res.text();
   let data: unknown = null;
   if (text) {

@@ -807,6 +807,10 @@ export const UserManagement: React.FC<{
 
   useEffect(() => {
     void refreshAll();
+    const interval = window.setInterval(() => {
+      void refreshAll();
+    }, 8_000);
+    return () => window.clearInterval(interval);
   }, [project?.id]);
 
   useEffect(() => {
