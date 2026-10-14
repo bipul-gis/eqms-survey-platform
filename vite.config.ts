@@ -58,15 +58,6 @@ export default defineConfig(({mode}) => {
           // bypasses the SW so its own offline cache keeps authority.
           runtimeCaching: [
             {
-              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
-              handler: 'NetworkOnly',
-              method: 'POST',
-            },
-            {
-              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
-              handler: 'NetworkOnly',
-            },
-            {
               urlPattern:
                 /^https:\/\/[a-c]\.tile\.openstreetmap\.org\/.*\.png$/,
               handler: 'CacheFirst',

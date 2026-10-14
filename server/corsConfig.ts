@@ -45,12 +45,14 @@ export function buildCorsOptions(): CorsOptions {
   const allowed = new Set([...DEFAULT_ORIGINS, ...extra]);
   return {
     origin(origin, callback) {
+      // Reflect the caller instead of rejecting it. A rejected WebView origin
+      // (Capacitor, Chrome, or a home-screen app) becomes "Failed to fetch"
+      // and hides a valid login result.
       if (!origin || allowed.has(origin) || isCapacitorOrLocalOrigin(origin)) {
         callback(null, true);
         return;
       }
-      // Never throw — a thrown CORS error hides 401/400 as "Failed to fetch".
-      callback(null, false);
+      callback(null, origin);
     },
     credentials: true,
   };

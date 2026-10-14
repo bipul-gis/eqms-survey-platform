@@ -113,8 +113,15 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (token) headers.set('Authorization', `Bearer ${token}`);
   let res: Response;
+  const request = () => fetch(`${getApiBase()}${path}`, { ...init, headers, cache: 'no-store' });
   try {
-    res = await fetch(`${getApiBase()}${path}`, { ...init, headers });
+    try {
+      res = await request();
+    } catch (firstError) {
+      if (!isNetworkFailure(firstError)) throw firstError;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      res = await request();
+    }
   } catch (error) {
     throw new ApiError(
       isNetworkFailure(error)

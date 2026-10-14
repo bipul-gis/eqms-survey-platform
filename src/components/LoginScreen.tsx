@@ -99,17 +99,13 @@ export const LoginScreen: React.FC = () => {
         return 'Your account has been disabled. Please contact an administrator.';
       }
       if (err.status === 0 || /unable to reach the server|failed to fetch|network/i.test(err.message)) {
-        return kind === 'login'
-          ? 'Incorrect email or password. If you are sure they are correct, check your internet connection.'
-          : 'Unable to create account. Check your internet connection and try again.';
+        return 'Unable to reach the server. Check your internet connection and try again.';
       }
       return err.message || (kind === 'signup' ? 'Sign up failed.' : 'Sign in failed.');
     }
     const message = err instanceof Error ? err.message : String(err || '');
     if (/failed to fetch|networkerror|load failed|network request failed/i.test(message)) {
-      return kind === 'login'
-        ? 'Incorrect email or password. If you are sure they are correct, check your internet connection.'
-        : 'Unable to create account. Check your internet connection and try again.';
+      return 'Unable to reach the server. Check your internet connection and try again.';
     }
     return message || (kind === 'signup' ? 'Sign up failed.' : 'Sign in failed.');
   };
