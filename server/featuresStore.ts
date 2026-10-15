@@ -1,6 +1,29 @@
 import { randomUUID } from 'crypto';
 import { pool } from './db';
 
+/**
+ * A survey save can send only the attributes loaded in the browser. Keep
+ * stored keys the incoming payload does not mention, so tree measurements
+ * and other source fields are not dropped. Keys the client does send,
+ * including Survey_Status, still replace the stored value.
+ */
+function mergeStoredAttributes(
+  existingPayload: Record<string, unknown> | undefined,
+  incomingPayload: Record<string, unknown>
+): Record<string, unknown> {
+  const existing = existingPayload?.attributes;
+  const incoming = incomingPayload.attributes;
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return incomingPayload;
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incomingPayload;
+  return {
+    ...incomingPayload,
+    attributes: {
+      ...(existing as Record<string, unknown>),
+      ...(incoming as Record<string, unknown>),
+    },
+  };
+}
+
 function extractFeatureIndexFields(payload: Record<string, unknown>) {
   const attrs = (payload.attributes as Record<string, unknown>) || {};
   const projectId =
@@ -100,7 +123,12 @@ export async function upsertFeature(
   payload: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
   const featureId = id || randomUUID();
-  const full = { ...payload, id: featureId, updatedAt: new Date().toISOString() };
+  const existing = await pool.query('SELECT payload FROM features WHERE id = $1', [featureId]);
+  const full = {
+    ...mergeStoredAttributes(existing.rows[0]?.payload as Record<string, unknown> | undefined, payload),
+    id: featureId,
+    updatedAt: new Date().toISOString(),
+  };
   const idx = extractFeatureIndexFields(full);
   await pool.query(
     `INSERT INTO features (id, payload, type, status, created_by_uid, created_by, project_id, task_ward, ward_name, updated_at)
@@ -138,10 +166,22 @@ export async function bulkUpsertFeatures(items: Record<string, unknown>[]): Prom
   const batchSize = 500;
   for (let offset = 0; offset < items.length; offset += batchSize) {
     const batch = items.slice(offset, offset + batchSize);
+    const ids = batch.map((item) => String(item.id || ''));
+    const existing = await pool.query(
+      'SELECT id, payload FROM features WHERE id = ANY($1::text[])',
+      [ids.filter(Boolean)]
+    );
+    const existingById = new Map(
+      existing.rows.map((row) => [String(row.id), row.payload as Record<string, unknown>])
+    );
     const values: unknown[] = [];
     const rows = batch.map((item, index) => {
       const id = String(item.id || randomUUID());
-      const full = { ...item, id, updatedAt: new Date().toISOString() };
+      const full = {
+        ...mergeStoredAttributes(existingById.get(id), item),
+        id,
+        updatedAt: new Date().toISOString(),
+      };
       const idx = extractFeatureIndexFields(full);
       const base = index * 10;
       values.push(
