@@ -41,11 +41,32 @@ const response = {
 test('CSV keeps all defined fields, removed answers, and legacy matrix rows', () => {
   const table = buildResponsesTable(questionnaire, [response]);
   assert.ok(table.header.includes('Info: Enumerator name'));
-  assert.ok(table.header.includes('Services — Water'));
-  assert.ok(table.header.includes('Services — Legacy row'));
+  assert.ok(table.header.some((header) => header.endsWith('Services — Water')));
+  assert.ok(table.header.some((header) => header.endsWith('Services — Legacy row')));
   assert.ok(table.header.includes('deletedQuestion (removed from questionnaire)'));
   assert.equal(table.header.length, table.rows[0].length);
   assert.ok(buildResponsesCsvFromTable(table).includes('A long answer, with ""quotes"" and বাংলা text'));
+});
+
+test('CSV includes map-feature fields stored beside the questionnaire answers', () => {
+  const table = buildResponsesTable(questionnaire, [
+    {
+      ...response,
+      responses: {
+        ...response.responses,
+        'linked_attribute:Dia_cm': 42,
+        'linked_attribute:Local_Name': 'Shimul'
+      },
+      linkedFeatureProperties: { Height_m: 12.5, Dia_cm: 42 }
+    } as unknown as QuestionnaireResponse
+  ]);
+  assert.ok(table.header.includes('Dia_cm'));
+  assert.ok(table.header.includes('Local_Name'));
+  assert.ok(table.header.includes('Height_m'));
+  const row = table.rows[0];
+  assert.equal(row[table.header.indexOf('Dia_cm')], '42');
+  assert.equal(row[table.header.indexOf('Local_Name')], 'Shimul');
+  assert.equal(row[table.header.indexOf('Height_m')], '12.5');
 });
 
 test('SHP mapping gives every export field a unique DBF field name', () => {
@@ -53,5 +74,5 @@ test('SHP mapping gives every export field a unique DBF field name', () => {
   assert.equal(mapping.length, buildResponsesTable(questionnaire, [response]).header.length);
   assert.equal(new Set(mapping.map((field) => field.shpDbfField)).size, mapping.length);
   assert.ok(mapping.every((field) => /^[A-Z0-9_]{1,8}$/.test(field.shpDbfField)));
-  assert.ok(mapping.some((field) => field.csvHeader === 'Services — Legacy row'));
+  assert.ok(mapping.some((field) => field.csvHeader.endsWith('Services — Legacy row')));
 });

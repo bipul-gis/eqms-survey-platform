@@ -316,24 +316,106 @@ const getExportQuestionsForResponses = (
   return mergeQuestionsWithResponseKeys(ordered, responses);
 };
 
+const LINKED_ATTRIBUTE_PREFIX = 'linked_attribute:';
+
+const isBlankStoredAnswer = (value: unknown): boolean =>
+  value === undefined || value === null || value === '';
+
+/** Column / detail label for a raw answer key, including map-feature attributes. */
+export const rawStoredAnswerLabel = (key: string): string => {
+  if (key.startsWith(LINKED_ATTRIBUTE_PREFIX)) return key.slice(LINKED_ATTRIBUTE_PREFIX.length);
+  return `${key} (removed from questionnaire)`;
+};
+
+/** Keys that may hold this question's answer after id changes or map-feature copy. */
+const answerKeysForQuestion = (question: Question): string[] => {
+  const keys = [question.id];
+  if (question.key && question.key !== question.id) keys.push(question.key);
+  if (question.repeatSourceId && question.repeatIndex) {
+    keys.push(`${question.repeatSourceId}__repeat_${question.repeatIndex}`);
+    if (question.key) keys.push(`${question.key}__repeat_${question.repeatIndex}`);
+  }
+  const field = question.featureAttributeLink?.field?.trim();
+  if (field) {
+    keys.push(field);
+    keys.push(`${LINKED_ATTRIBUTE_PREFIX}${field}`);
+  }
+  return keys;
+};
+
+/**
+ * Copy linked feature attributes and key/repeat aliases onto the question id
+ * when that id is empty, without dropping the original raw keys.
+ */
+export const withStoredAnswerAliases = (
+  questions: Question[],
+  answers: Record<string, unknown>,
+  linkedFeatureProperties?: Record<string, unknown> | null
+): Record<string, unknown> => {
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(linkedFeatureProperties || {})) {
+    merged[`${LINKED_ATTRIBUTE_PREFIX}${key}`] = value;
+  }
+  Object.assign(merged, answers);
+  for (const question of questions) {
+    if (question.type === 'section') continue;
+    if (!isBlankStoredAnswer(merged[question.id])) continue;
+    for (const key of answerKeysForQuestion(question)) {
+      if (key === question.id) continue;
+      if (!(key in merged) || isBlankStoredAnswer(merged[key])) continue;
+      merged[question.id] = merged[key];
+      break;
+    }
+  }
+  return merged;
+};
+
+/** Raw keys that are not already shown as a questionnaire question. */
+export const extraStoredAnswers = (
+  questions: Question[],
+  answers: Record<string, unknown>
+): { key: string; label: string; value: unknown }[] => {
+  const consumed = new Set<string>();
+  for (const question of questions) {
+    if (question.type === 'section') continue;
+    consumed.add(question.id);
+    const shown = answers[question.id];
+    if (isBlankStoredAnswer(shown)) continue;
+    for (const key of answerKeysForQuestion(question)) {
+      if (key in answers && Object.is(answers[key], shown)) consumed.add(key);
+    }
+  }
+  return Object.keys(answers)
+    .filter((key) => !consumed.has(key) && !isBlankStoredAnswer(answers[key]))
+    .sort((a, b) => rawStoredAnswerLabel(a).localeCompare(rawStoredAnswerLabel(b)))
+    .map((key) => ({ key, label: rawStoredAnswerLabel(key), value: answers[key] }));
+};
+
 /** Include answer keys from responses whose question was removed from the form. */
 const mergeQuestionsWithResponseKeys = (
   ordered: Question[],
   responses: QuestionnaireResponse[]
 ): Question[] => {
   const known = new Set(ordered.map((q) => q.id));
+  const claimed = new Set<string>();
+  for (const question of ordered) {
+    for (const key of answerKeysForQuestion(question)) claimed.add(key);
+  }
   const orphanIds = new Set<string>();
+  const keep = (id: string) => {
+    if (!known.has(id) && !claimed.has(id)) orphanIds.add(id);
+  };
   for (const r of responses) {
-    if (!r.responses) continue;
-    for (const id of Object.keys(r.responses)) {
-      if (!known.has(id)) orphanIds.add(id);
+    for (const id of Object.keys(r.responses || {})) keep(id);
+    for (const key of Object.keys(r.linkedFeatureProperties || {})) {
+      keep(`${LINKED_ATTRIBUTE_PREFIX}${key}`);
     }
   }
   if (orphanIds.size === 0) return ordered;
   const orphans: Question[] = [...orphanIds].sort().map((id) => ({
     id,
-    type: 'text',
-    question: `${id} (removed from questionnaire)`,
+    type: 'text' as const,
+    question: rawStoredAnswerLabel(id),
     required: false
   }));
   return [...ordered, ...orphans];
@@ -629,7 +711,11 @@ const buildResponseRow = (
 ): string[] => {
   const responseAnswers = calculateComputedAnswers(
     plan.questions,
-    withInferredRepeatCounts(plan.baseQuestions, r.responses || {})
+    withStoredAnswerAliases(
+      plan.questions,
+      withInferredRepeatCounts(plan.baseQuestions, r.responses || {}),
+      r.linkedFeatureProperties
+    )
   );
   let photoSerial = 0;
   const enumValues = plan.enumFields.map((f) => {

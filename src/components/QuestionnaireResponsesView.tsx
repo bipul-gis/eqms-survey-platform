@@ -44,8 +44,10 @@ import {
   buildResponsesTable,
   createResponsesExportAccumulator,
   downloadResponsesCsvFromTable,
+  extraStoredAnswers,
   fmtDate,
-  tsToDate
+  tsToDate,
+  withStoredAnswerAliases
 } from '../lib/responseExport';
 // Lazy-load SHP export (jszip + shp-write) — only when the button is clicked.
 const loadDownloadResponsesShpZip = () =>
@@ -1775,9 +1777,17 @@ const ResponseDetailDialog: React.FC<{
     questionnaire.sections || []
   ));
   const baseQuestionNumbers = buildQuestionNumbering(allQuestions).questionNumbers;
-  const responseAnswers = withInferredRepeatCounts(allQuestions, response.responses || {});
+  const responseAnswers = withStoredAnswerAliases(
+    allQuestions,
+    withInferredRepeatCounts(allQuestions, response.responses || {}),
+    response.linkedFeatureProperties
+  );
   const expandedQuestions = expandRepeatedQuestions(allQuestions, responseAnswers);
-  const resolvedAnswers = calculateComputedAnswers(expandedQuestions, responseAnswers);
+  const resolvedAnswers = calculateComputedAnswers(
+    expandedQuestions,
+    withStoredAnswerAliases(expandedQuestions, responseAnswers, response.linkedFeatureProperties)
+  );
+  const savedFields = extraStoredAnswers(expandedQuestions, resolvedAnswers);
   const questionNumbers = new Map(baseQuestionNumbers);
   for (const question of expandedQuestions) {
     if (!question.repeatSourceId || !question.repeatIndex) continue;
@@ -1950,6 +1960,35 @@ const ResponseDetailDialog: React.FC<{
               </div>
             )}
           </section>
+
+          {savedFields.length > 0 && (
+            <section>
+              <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                Saved fields ({savedFields.length})
+              </h4>
+              <p className="text-[11px] text-slate-500 mb-2">
+                Values stored with this response that are not a current question.
+              </p>
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {savedFields.map((field) => (
+                      <tr key={field.key} className="border-t first:border-t-0 border-slate-100">
+                        <th className="text-left text-xs font-semibold text-slate-600 align-top bg-slate-50 px-3 py-2 w-2/5">
+                          {field.label}
+                        </th>
+                        <td className="px-3 py-2 text-slate-800 whitespace-pre-wrap">
+                          {formatAnswerForDisplay(field.value) || (
+                            <span className="text-slate-400 italic">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
         </div>
 
         <footer className="px-6 py-3 border-t border-slate-200 bg-slate-50 rounded-b-xl flex items-center justify-between gap-2">
